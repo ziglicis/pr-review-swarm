@@ -1,13 +1,14 @@
-"""Correctness agent: single-pass in Phase 1, tool loop arrives in Phase 2."""
+"""Correctness agent: bounded investigation loop (max 3 tool calls)."""
 
 from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 
-from src.agents.base import run_single_pass
+from src.agents.base import run_with_tools
 from src.diff_parser import FileDiff, Hunk
 from src.github_client import PRData
 from src.models import AgentRun
+from src.tools import EXPAND_CONTEXT_TOOL, READ_FILE_TOOL, ToolExecutor, numbered
 
 CONTEXT_LINES = 30  # surrounding-function context around each hunk
 
@@ -26,6 +27,10 @@ Cite those numbers. Lines starting with '+' are added, '-' removed, others conte
 
 Report every correctness issue you find, including ones you are uncertain about —
 set confidence (0.0-1.0) to reflect your certainty; a downstream filter ranks them.
+
+You may use read_file and expand_context (a few calls at most) to check code outside
+the diff before claiming a bug (e.g. how a modified function is called elsewhere).
+When you have enough evidence, call report_findings.
 """
 
 
@@ -42,21 +47,16 @@ def build_context(pr: PRData, files: list[FileDiff], file_contents: dict[str, st
     return "\n".join(parts)
 
 
-def _numbered(lines: list[str], start: int, end: int) -> str:
-    """1-based inclusive slice of file lines, formatted like Hunk.annotated()."""
-    return "\n".join(f"{n:>5}  {lines[n - 1]}" for n in range(start, end + 1))
-
-
 def _expand_hunk(hunk: Hunk, lines: list[str]) -> str:
     parts = []
     before_start = max(1, hunk.new_start - CONTEXT_LINES)
     if lines and before_start < hunk.new_start:
-        parts.append(_numbered(lines, before_start, hunk.new_start - 1))
+        parts.append(numbered(lines, before_start, hunk.new_start - 1))
     parts.append(hunk.annotated())
     after_start = hunk.new_start + hunk.new_count
     after_end = min(len(lines), after_start + CONTEXT_LINES - 1)
     if lines and after_start <= after_end:
-        parts.append(_numbered(lines, after_start, after_end))
+        parts.append(numbered(lines, after_start, after_end))
     return "\n".join(parts)
 
 
@@ -64,12 +64,15 @@ async def run(
     pr: PRData,
     files: list[FileDiff],
     file_contents: dict[str, str],
+    executor: ToolExecutor,
     client: AsyncAnthropic | None = None,
 ) -> AgentRun:
-    return await run_single_pass(
+    return await run_with_tools(
         agent_name="correctness",
         system=SYSTEM,
         user_content=build_context(pr, files, file_contents),
         valid_files={f.path for f in files},
+        executor=executor,
+        investigation_tools=[EXPAND_CONTEXT_TOOL, READ_FILE_TOOL],
         client=client,
     )

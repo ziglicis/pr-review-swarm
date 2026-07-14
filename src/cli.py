@@ -14,6 +14,7 @@ from src.agents import correctness
 from src.diff_parser import parse_diff
 from src.github_client import GitHubClient, PRData, PRTooLargeError
 from src.models import AgentRun
+from src.tools import ToolExecutor
 
 SEVERITY_ORDER = ("critical", "major", "minor", "nit")
 
@@ -31,7 +32,7 @@ async def review(url: str) -> tuple[PRData, AgentRun]:
                 contents[fd.path] = await gh.get_file(pr.owner, pr.repo, fd.path, pr.head_sha)
             except httpx.HTTPError:
                 pass  # context builder falls back to bare hunks for this file
-        run = await correctness.run(pr, files, contents)
+        run = await correctness.run(pr, files, contents, executor=ToolExecutor(gh, pr))
         return pr, run
     finally:
         await gh.aclose()

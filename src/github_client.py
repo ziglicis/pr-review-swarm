@@ -91,3 +91,12 @@ class GitHubClient:
             f"/repos/{owner}/{repo}/contents/{path}?ref={ref}",
             "application/vnd.github.raw+json",
         )
+
+    async def get_tree(self, owner: str, repo: str, sha: str) -> list[str]:
+        """All blob paths in the repo tree at a commit."""
+        raw = await self._get(
+            f"/repos/{owner}/{repo}/git/trees/{sha}?recursive=1",
+            "application/vnd.github+json",
+        )
+        tree = json.loads(raw)
+        return [entry["path"] for entry in tree["tree"] if entry["type"] == "blob"]
