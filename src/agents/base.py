@@ -13,7 +13,7 @@ from anthropic import AsyncAnthropic
 
 from src.models import AgentRun, Finding
 
-MODEL = os.environ.get("PR_REVIEW_MODEL", "claude-sonnet-4-6")
+DEFAULT_MODEL = "claude-sonnet-4-6"
 # TODO: prices hardcoded for claude-sonnet-4-6 ($/MTok); revisit if MODEL changes
 PRICE_IN_PER_MTOK = 3.00
 PRICE_OUT_PER_MTOK = 15.00
@@ -96,7 +96,7 @@ async def run_single_pass(
     try:
         for _attempt in range(2):  # initial call + at most one corrective retry
             resp = await client.messages.create(
-                model=MODEL,
+                model=os.environ.get("PR_REVIEW_MODEL", DEFAULT_MODEL),
                 max_tokens=8000,
                 system=system,
                 tools=[REPORT_FINDINGS_TOOL],
