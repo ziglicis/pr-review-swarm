@@ -13,6 +13,7 @@ from anthropic import AsyncAnthropic
 
 from src.models import AgentRun, Finding
 from src.tools import ToolExecutor
+from src.trace import Tracer, clip
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 # TODO: prices hardcoded for claude-sonnet-4-6 ($/MTok); revisit if MODEL changes
@@ -105,6 +106,7 @@ async def run_with_tools(
     executor: ToolExecutor | None = None,
     investigation_tools: list[dict] | None = None,
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     """Bounded observe→decide→act loop ending in a validated report_findings call.
 
@@ -112,7 +114,13 @@ async def run_with_tools(
     (plus at most one corrective retry on validation failure).
     """
     client = client or AsyncAnthropic()
+    tracer = tracer or Tracer()  # throwaway when not tracing
     investigation_tools = investigation_tools or []
+    tracer.event(
+        "agent_start", agent=agent_name,
+        tools=[t["name"] for t in investigation_tools],
+        system=clip(system), context=clip(user_content),
+    )
     tools = [*investigation_tools, REPORT_FINDINGS_TOOL]
     start = time.monotonic()
     messages: list[dict] = [{"role": "user", "content": user_content}]
@@ -140,6 +148,11 @@ async def run_with_tools(
             )
             tokens_in += resp.usage.input_tokens
             tokens_out += resp.usage.output_tokens
+            tracer.event(
+                "model_call", agent=agent_name, forced=force,
+                tokens_in=resp.usage.input_tokens, tokens_out=resp.usage.output_tokens,
+                blocks=tracer.blocks(resp.content),
+            )
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             report = next((b for b in tool_uses if b.name == "report_findings"), None)
 
@@ -150,6 +163,7 @@ async def run_with_tools(
                     findings = _to_findings(agent_name, raw)
                     break
                 reason = "; ".join(errors)
+                tracer.event("validation_failed", agent=agent_name, errors=errors)
                 if validation_retries >= 1:
                     break  # -> status "error" with the validation reason
                 validation_retries += 1
@@ -186,6 +200,10 @@ async def run_with_tools(
             results = []
             for tu in tool_uses:
                 content, is_error = await executor.execute(tu.name, tu.input)
+                tracer.event(
+                    "tool_call", agent=agent_name, tool=tu.name, input=tu.input,
+                    is_error=is_error, result=clip(content, 5000),
+                )
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": tu.id,
@@ -201,6 +219,11 @@ async def run_with_tools(
         reason = f"{type(e).__name__}: {e}"
 
     ok = findings is not None
+    tracer.event(
+        "agent_end", agent=agent_name, status="ok" if ok else "error",
+        findings=len(findings or []), tool_calls=investigations,
+        tokens_in=tokens_in, tokens_out=tokens_out, reason=reason if not ok else None,
+    )
     return AgentRun(
         agent=agent_name,
         status="ok" if ok else "error",
@@ -220,6 +243,9 @@ async def run_single_pass(
     user_content: str,
     valid_files: set[str],
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     """One forced report_findings call, semantic validation, one corrective retry."""
-    return await run_with_tools(agent_name, system, user_content, valid_files, client=client)
+    return await run_with_tools(
+        agent_name, system, user_content, valid_files, client=client, tracer=tracer
+    )

@@ -20,6 +20,7 @@ from src.agents.base import (
 )
 from src.github_client import PRData
 from src.models import AgentRun, Finding, Review, ReviewStats
+from src.trace import Tracer, clip
 
 CONFIDENCE_THRESHOLD = 0.4  # default for now, future calibration analysis to revisit this
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITIES)}
@@ -162,8 +163,11 @@ async def synthesize(
     runs: list[AgentRun],
     valid_files: set[str],
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> Review:
+    tracer = tracer or Tracer()
     source = [f for r in runs if r.status == "ok" for f in r.findings]
+    tracer.event("synthesis_start", n_source_findings=len(source))
     if not source:
         if any(r.status == "ok" for r in runs):
             summary = "No issues found by any reviewer."
@@ -193,6 +197,11 @@ async def synthesize(
             )
             tokens_in += resp.usage.input_tokens
             tokens_out += resp.usage.output_tokens
+            tracer.event(
+                "model_call", agent="synthesizer",
+                tokens_in=resp.usage.input_tokens, tokens_out=resp.usage.output_tokens,
+                blocks=tracer.blocks(resp.content),
+            )
             tool_use = next(b for b in resp.content if b.type == "tool_use")
             errors = _validate(tool_use.input["findings"], len(source), valid_files)
             if not errors:
@@ -239,6 +248,10 @@ async def synthesize(
 
     merged = _sort(_to_findings(result["findings"], source))
     kept = [f for f in merged if f.confidence >= CONFIDENCE_THRESHOLD]
+    tracer.event(
+        "synthesis_end", merged=len(merged), kept=len(kept),
+        summary=clip(result["summary"], 2000),
+    )
     summary = result["summary"]
     if len(kept) < len(merged):
         summary += (

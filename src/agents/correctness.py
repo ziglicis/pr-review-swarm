@@ -9,6 +9,7 @@ from src.diff_parser import FileDiff, Hunk
 from src.github_client import PRData
 from src.models import AgentRun
 from src.tools import EXPAND_CONTEXT_TOOL, READ_FILE_TOOL, ToolExecutor, numbered
+from src.trace import Tracer
 
 CONTEXT_LINES = 30  # surrounding-function context around each hunk
 
@@ -66,6 +67,7 @@ async def run(
     file_contents: dict[str, str],
     executor: ToolExecutor,
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     return await run_with_tools(
         agent_name="correctness",
@@ -75,4 +77,5 @@ async def run(
         executor=executor,
         investigation_tools=[EXPAND_CONTEXT_TOOL, READ_FILE_TOOL],
         client=client,
+        tracer=tracer,
     )

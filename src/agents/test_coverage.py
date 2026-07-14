@@ -10,6 +10,7 @@ from src.agents.base import run_single_pass
 from src.diff_parser import FileDiff
 from src.github_client import PRData
 from src.models import AgentRun
+from src.trace import Tracer
 
 SYSTEM = """\
 You are reviewing a pull request strictly for TEST COVERAGE.
@@ -71,6 +72,7 @@ async def run(
     repo_test_paths: list[str],
     test_file_contents: dict[str, str],
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     return await run_single_pass(
         agent_name="test_coverage",
@@ -78,4 +80,5 @@ async def run(
         user_content=build_context(pr, files, repo_test_paths, test_file_contents),
         valid_files={f.path for f in files},
         client=client,
+        tracer=tracer,
     )

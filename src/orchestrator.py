@@ -19,6 +19,7 @@ from src.diff_parser import FileDiff
 from src.github_client import GitHubClient, PRData
 from src.models import AgentRun
 from src.tools import ToolExecutor
+from src.trace import Tracer
 
 AGENT_TIMEOUT_S = 120
 CONTEXT_BUDGET_CHARS = 80_000  # ~20k tokens at ~4 chars/token
@@ -161,11 +162,19 @@ async def run_review(
     files: list[FileDiff],
     gh: GitHubClient,
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> list[AgentRun]:
     """Select and run agents concurrently; returns one AgentRun per agent, in order."""
+    tracer = tracer or Tracer()
     selection = select_agents(files)
     reviewable = [f for f in files if not f.is_binary and f.hunks]
     executor = ToolExecutor(gh, pr)
+    tracer.event(
+        "plan",
+        classification=classify(files),
+        files=[f.path for f in files],
+        selection={k: v or "run" for k, v in selection.items()},
+    )
 
     file_contents: dict[str, str] = {}
     for fd in reviewable:
@@ -178,17 +187,19 @@ async def run_review(
 
     async def correctness_task() -> AgentRun:
         return await _batched(
-            lambda batch: correctness.run(pr, batch, file_contents, executor, client=client),
+            lambda batch: correctness.run(
+                pr, batch, file_contents, executor, client=client, tracer=tracer
+            ),
             reviewable,
             lambda fd: len(correctness.build_context(pr, [fd], file_contents)),
         )
 
     async def security_task() -> AgentRun:
-        return await security.run(pr, files, executor, client=client)
+        return await security.run(pr, files, executor, client=client, tracer=tracer)
 
     async def style_task() -> AgentRun:
         return await _batched(
-            lambda batch: style.run(pr, batch, file_contents, client=client),
+            lambda batch: style.run(pr, batch, file_contents, client=client, tracer=tracer),
             reviewable,
             lambda fd: len(style.build_context(pr, [fd], file_contents)),
         )
@@ -200,7 +211,9 @@ async def run_review(
         except httpx.HTTPError:
             test_paths = []
         test_contents = {p: c for p, c in file_contents.items() if looks_like_test(p)}
-        return await test_coverage.run(pr, files, test_paths, test_contents, client=client)
+        return await test_coverage.run(
+            pr, files, test_paths, test_contents, client=client, tracer=tracer
+        )
 
     tasks = {
         "correctness": correctness_task,
