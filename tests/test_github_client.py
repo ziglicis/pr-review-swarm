@@ -27,6 +27,15 @@ def make_client(meta: str = META, requests_seen: list | None = None) -> GitHubCl
             return httpx.Response(200, text=meta)
         if request.url.path.startswith("/repos/psf/requests/contents/"):
             return httpx.Response(200, text="line1\nline2\n")
+        if request.url.path.startswith("/repos/psf/requests/git/trees/"):
+            return httpx.Response(200, json={
+                "tree": [
+                    {"path": "src/a.py", "type": "blob"},
+                    {"path": "src", "type": "tree"},
+                    {"path": "README.md", "type": "blob"},
+                ],
+                "truncated": False,
+            })
         return httpx.Response(404)
 
     http = httpx.AsyncClient(
@@ -70,6 +79,11 @@ async def test_size_cap():
     meta["additions"] = MAX_CHANGED_LINES + 1
     with pytest.raises(PRTooLargeError):
         await make_client(meta=json.dumps(meta)).fetch_pr(PR_URL)
+
+
+async def test_get_tree_returns_blob_paths_only():
+    paths = await make_client().get_tree("psf", "requests", "abc")
+    assert paths == ["src/a.py", "README.md"]
 
 
 async def test_cache_prevents_refetch():

@@ -44,7 +44,7 @@ class StubClient:
     async def _create(self, **kwargs):
         self.calls.append(kwargs)
         block = SimpleNamespace(
-            type="tool_use", id=f"toolu_{len(self.calls)}",
+            type="tool_use", name="report_findings", id=f"toolu_{len(self.calls)}",
             input={"findings": self._payloads.pop(0)},
         )
         return SimpleNamespace(
@@ -57,7 +57,8 @@ async def test_single_pass_ok():
     client = StubClient([[GOOD]])
     run = await run_single_pass("correctness", "sys", "ctx", VALID_FILES, client=client)
     assert run.status == "ok"
-    assert run.tool_calls == 1
+    assert run.tool_calls == 0  # no investigation tools in single-pass mode
+    assert len(client.calls) == 1
     assert run.findings[0].line_range == (10, 12)
     assert run.findings[0].agent == "correctness"
     assert run.tokens_in == 1000 and run.tokens_out == 100
@@ -70,7 +71,7 @@ async def test_corrective_retry_then_ok():
     client = StubClient([[{**GOOD, "severity": "blocker"}], [GOOD]])
     run = await run_single_pass("correctness", "sys", "ctx", VALID_FILES, client=client)
     assert run.status == "ok"
-    assert run.tool_calls == 2
+    assert len(client.calls) == 2
     # retry message carries the validation error back
     retry_messages = client.calls[1]["messages"]
     assert retry_messages[-1]["content"][0]["is_error"] is True
@@ -84,7 +85,7 @@ async def test_retry_exhausted_is_error_not_raise():
     assert run.status == "error"
     assert run.findings == []
     assert "confidence" in run.skip_or_error_reason
-    assert run.tool_calls == 2  # accounting still recorded
+    assert len(client.calls) == 2  # initial + one corrective retry, then gave up
 
 
 async def test_api_exception_recorded_not_raised():
