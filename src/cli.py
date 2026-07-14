@@ -10,21 +10,22 @@ from pathlib import Path
 
 import httpx
 
-from src import orchestrator
+from src import orchestrator, synthesizer
 from src.diff_parser import parse_diff
 from src.github_client import GitHubClient, PRData, PRTooLargeError
-from src.models import AgentRun
+from src.models import AgentRun, Review
 
 SEVERITY_ORDER = ("critical", "major", "minor", "nit")
 
 
-async def review(url: str) -> tuple[PRData, list[AgentRun]]:
+async def review(url: str) -> tuple[PRData, Review]:
     gh = GitHubClient()
     try:
         pr = await gh.fetch_pr(url)
         files = parse_diff(pr.diff)
         runs = await orchestrator.run_review(pr, files, gh)
-        return pr, runs
+        result = await synthesizer.synthesize(pr, runs, {f.path for f in files})
+        return pr, result
     finally:
         await gh.aclose()
 
@@ -41,18 +42,11 @@ def _format_agent_line(run: AgentRun) -> str:
     )
 
 
-def format_review(pr: PRData, runs: list[AgentRun]) -> str:
-    out = [f"# Review: {pr.title}",
-           f"https://github.com/{pr.owner}/{pr.repo}/pull/{pr.number}", ""]
+def format_review(pr: PRData, result: Review) -> str:
+    out = [f"# Review: {pr.title}", result.pr_url, "", result.summary, ""]
 
-    findings = sorted(
-        (f for r in runs if r.status == "ok" for f in r.findings),
-        key=lambda f: (SEVERITY_ORDER.index(f.severity), -f.confidence),
-    )
-    if not findings:
-        out.append("No issues found.")
     for severity in SEVERITY_ORDER:
-        group = [f for f in findings if f.severity == severity]
+        group = [f for f in result.findings if f.severity == severity]
         if not group:
             continue
         out.append(f"## {severity.capitalize()}")
@@ -64,15 +58,11 @@ def format_review(pr: PRData, runs: list[AgentRun]) -> str:
         out.append("")
 
     out.append("## Agent runs")
-    out.extend(_format_agent_line(r) for r in runs)
-    total_in = sum(r.tokens_in for r in runs)
-    total_out = sum(r.tokens_out for r in runs)
-    total_cost = sum(r.cost_usd for r in runs)
-    wall = max((r.duration_s for r in runs), default=0.0)  # agents run in parallel
+    out.extend(_format_agent_line(r) for r in result.agent_runs)
     out.append("")
     out.append(
-        f"_total: {total_in} in / {total_out} out tokens · ${total_cost:.4f} · "
-        f"{wall:.1f}s wall_"
+        f"_total: {result.stats.total_tokens} tokens · ${result.stats.total_cost_usd:.4f} · "
+        f"{result.stats.duration_s:.1f}s_"
     )
     return "\n".join(out)
 
@@ -101,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        pr, runs = asyncio.run(review(args.pr_url))
+        pr, result = asyncio.run(review(args.pr_url))
     except (ValueError, PRTooLargeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -110,8 +100,10 @@ def main(argv: list[str] | None = None) -> int:
               "and the repo public?", file=sys.stderr)
         return 1
 
-    print(format_review(pr, runs))
-    executed = [r for r in runs if r.status != "skipped"]
+    print(format_review(pr, result))
+    executed = [
+        r for r in result.agent_runs if r.status != "skipped" and r.agent != "synthesizer"
+    ]
     # all-skipped (e.g. docs-only PR) is a successful no-op, not a failure
     return 0 if not executed or any(r.status == "ok" for r in executed) else 2
 
