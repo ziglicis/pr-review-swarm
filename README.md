@@ -1,4 +1,4 @@
-# pr-review-swarm
+# PR Review Swarm
 
 A multi-agent system that reviews GitHub pull requests the way an engineering team would: specialized reviewers (correctness, security, style, test coverage) examine the change in parallel, and a synthesizer merges their findings into one prioritized review.
 
