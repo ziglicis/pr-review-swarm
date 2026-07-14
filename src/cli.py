@@ -10,58 +10,69 @@ from pathlib import Path
 
 import httpx
 
-from src.agents import correctness
+from src import orchestrator
 from src.diff_parser import parse_diff
 from src.github_client import GitHubClient, PRData, PRTooLargeError
 from src.models import AgentRun
-from src.tools import ToolExecutor
 
 SEVERITY_ORDER = ("critical", "major", "minor", "nit")
 
 
-async def review(url: str) -> tuple[PRData, AgentRun]:
+async def review(url: str) -> tuple[PRData, list[AgentRun]]:
     gh = GitHubClient()
     try:
         pr = await gh.fetch_pr(url)
         files = parse_diff(pr.diff)
-        contents: dict[str, str] = {}
-        for fd in files:
-            if fd.is_binary or fd.status == "deleted" or not fd.hunks:
-                continue
-            try:
-                contents[fd.path] = await gh.get_file(pr.owner, pr.repo, fd.path, pr.head_sha)
-            except httpx.HTTPError:
-                pass  # context builder falls back to bare hunks for this file
-        run = await correctness.run(pr, files, contents, executor=ToolExecutor(gh, pr))
-        return pr, run
+        runs = await orchestrator.run_review(pr, files, gh)
+        return pr, runs
     finally:
         await gh.aclose()
 
 
-def format_review(pr: PRData, run: AgentRun) -> str:
-    out = [f"# Review: {pr.title}", f"{pr.diff.count(chr(10))} diff lines · "
-           f"https://github.com/{pr.owner}/{pr.repo}/pull/{pr.number}", ""]
+def _format_agent_line(run: AgentRun) -> str:
+    if run.status == "skipped":
+        return f"- {run.agent}: skipped — {run.skip_or_error_reason}"
     if run.status != "ok":
-        out.append(f"**Correctness review unavailable** ({run.status}): {run.skip_or_error_reason}")
-    elif not run.findings:
-        out.append("No correctness issues found.")
-    else:
-        for severity in SEVERITY_ORDER:
-            group = [f for f in run.findings if f.severity == severity]
-            if not group:
-                continue
-            out.append(f"## {severity.capitalize()}")
-            for f in group:
-                lo, hi = f.line_range
-                loc = f"{f.file}:{lo}" if lo == hi else f"{f.file}:{lo}-{hi}"
-                out.append(f"- **{loc}** — {f.title} _(confidence {f.confidence:.1f})_")
-                out.append(f"  {f.detail}")
-            out.append("")
-    out.append("---")
+        return f"- {run.agent}: {run.status} — {run.skip_or_error_reason}"
+    return (
+        f"- {run.agent}: {len(run.findings)} finding(s) · {run.tool_calls} tool call(s) · "
+        f"{run.tokens_in} in / {run.tokens_out} out · ${run.cost_usd:.4f} · "
+        f"{run.duration_s:.1f}s"
+    )
+
+
+def format_review(pr: PRData, runs: list[AgentRun]) -> str:
+    out = [f"# Review: {pr.title}",
+           f"https://github.com/{pr.owner}/{pr.repo}/pull/{pr.number}", ""]
+
+    findings = sorted(
+        (f for r in runs if r.status == "ok" for f in r.findings),
+        key=lambda f: (SEVERITY_ORDER.index(f.severity), -f.confidence),
+    )
+    if not findings:
+        out.append("No issues found.")
+    for severity in SEVERITY_ORDER:
+        group = [f for f in findings if f.severity == severity]
+        if not group:
+            continue
+        out.append(f"## {severity.capitalize()}")
+        for f in group:
+            lo, hi = f.line_range
+            loc = f"{f.file}:{lo}" if lo == hi else f"{f.file}:{lo}-{hi}"
+            out.append(f"- **{loc}** — {f.title} _({f.agent}, confidence {f.confidence:.1f})_")
+            out.append(f"  {f.detail}")
+        out.append("")
+
+    out.append("## Agent runs")
+    out.extend(_format_agent_line(r) for r in runs)
+    total_in = sum(r.tokens_in for r in runs)
+    total_out = sum(r.tokens_out for r in runs)
+    total_cost = sum(r.cost_usd for r in runs)
+    wall = max((r.duration_s for r in runs), default=0.0)  # agents run in parallel
+    out.append("")
     out.append(
-        f"_{run.agent}: {len(run.findings)} finding(s) · "
-        f"{run.tokens_in} in / {run.tokens_out} out tokens · "
-        f"${run.cost_usd:.4f} · {run.duration_s:.1f}s_"
+        f"_total: {total_in} in / {total_out} out tokens · ${total_cost:.4f} · "
+        f"{wall:.1f}s wall_"
     )
     return "\n".join(out)
 
@@ -90,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        pr, run = asyncio.run(review(args.pr_url))
+        pr, runs = asyncio.run(review(args.pr_url))
     except (ValueError, PRTooLargeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -99,8 +110,10 @@ def main(argv: list[str] | None = None) -> int:
               "and the repo public?", file=sys.stderr)
         return 1
 
-    print(format_review(pr, run))
-    return 0 if run.status == "ok" else 2
+    print(format_review(pr, runs))
+    executed = [r for r in runs if r.status != "skipped"]
+    # all-skipped (e.g. docs-only PR) is a successful no-op, not a failure
+    return 0 if not executed or any(r.status == "ok" for r in executed) else 2
 
 
 if __name__ == "__main__":
