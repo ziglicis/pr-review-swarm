@@ -11,6 +11,7 @@ from src.diff_parser import FileDiff
 from src.github_client import PRData
 from src.models import AgentRun
 from src.tools import READ_FILE_TOOL, ToolExecutor
+from src.trace import Tracer
 
 _DOC_EXTS = {".md", ".rst", ".txt"}
 
@@ -57,6 +58,7 @@ async def run(
     files: list[FileDiff],
     executor: ToolExecutor,
     client: AsyncAnthropic | None = None,
+    tracer: Tracer | None = None,
 ) -> AgentRun:
     return await run_with_tools(
         agent_name="security",
@@ -66,4 +68,5 @@ async def run(
         executor=executor,
         investigation_tools=[READ_FILE_TOOL],
         client=client,
+        tracer=tracer,
     )

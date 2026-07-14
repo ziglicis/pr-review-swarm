@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -14,18 +15,22 @@ from src import orchestrator, synthesizer
 from src.diff_parser import parse_diff
 from src.github_client import GitHubClient, PRData, PRTooLargeError
 from src.models import AgentRun, Review
+from src.trace import Tracer
 
 SEVERITY_ORDER = ("critical", "major", "minor", "nit")
 
 
-async def review(url: str) -> tuple[PRData, Review]:
+async def review(url: str) -> tuple[PRData, Review, Tracer]:
     gh = GitHubClient()
+    tracer = Tracer()
     try:
         pr = await gh.fetch_pr(url)
         files = parse_diff(pr.diff)
-        runs = await orchestrator.run_review(pr, files, gh)
-        result = await synthesizer.synthesize(pr, runs, {f.path for f in files})
-        return pr, result
+        runs = await orchestrator.run_review(pr, files, gh, tracer=tracer)
+        result = await synthesizer.synthesize(
+            pr, runs, {f.path for f in files}, tracer=tracer
+        )
+        return pr, result, tracer
     finally:
         await gh.aclose()
 
@@ -91,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        pr, result = asyncio.run(review(args.pr_url))
+        pr, result, tracer = asyncio.run(review(args.pr_url))
     except (ValueError, PRTooLargeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -101,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(format_review(pr, result))
+    trace_path = tracer.write(
+        Path("traces") / f"{pr.owner}_{pr.repo}_{pr.number}_{int(time.time())}.json"
+    )
+    print(f"trace: {trace_path}", file=sys.stderr)  # stderr keeps stdout pure markdown
     executed = [
         r for r in result.agent_runs if r.status != "skipped" and r.agent != "synthesizer"
     ]
