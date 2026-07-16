@@ -1,0 +1,39 @@
+url: https://github.com/psf/requests/pull/4718
+repo: psf/requests
+pr: 4718
+title: Strip Authorization header whenever root URL changes
+pre_merge_sha: 857e9b7ac20c3accf4cc328f594aecb8b6a644a6
+changed_lines: 55
+selected_because: >
+  Security fix (credential leak on https->http redirect) with a substantive
+  review debate about upgrade redirects and origin comparison edge cases.
+ground_truth:
+  - id: g1
+    issue: >
+      Comparing scheme+host alone would strip the Authorization header on
+      http->https upgrade redirects too; browsers keep credentials on secure
+      upgrades, so stripping there breaks a common legitimate pattern and the
+      logic must special-case the upgrade.
+    evidence: https://github.com/psf/requests/pull/4718#discussion_r199569417
+    category: security
+  - id: g2
+    issue: >
+      The origin comparison must normalize implicit vs explicit ports:
+      urlparse returns port None for implicit defaults, so
+      http://example.com:80 -> https://example.com must be treated the same
+      as http://example.com -> https://example.com.
+    evidence: https://github.com/psf/requests/pull/4718#discussion_r209665887
+    category: correctness
+  - id: g3
+    issue: >
+      The redirect-stripping logic grew complex enough that it should be
+      extracted into its own dedicated method rather than living inline.
+    evidence: https://github.com/psf/requests/pull/4718#discussion_r209668067
+    category: style
+  - id: g4
+    issue: >
+      Tests should explicitly assert the Authorization header is absent from
+      the redirected request (and verify it was not sent on the wire), not
+      just check a falsey value.
+    evidence: https://github.com/psf/requests/pull/4718#discussion_r198935315
+    category: test

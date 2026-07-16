@@ -1,0 +1,30 @@
+url: https://github.com/pallets/flask/pull/2570
+repo: pallets/flask
+pr: 2570
+title: Add Support for FLASK_ENV
+pre_merge_sha: b8f955dd58411836df32d1e1258f92f9ee8ffcc6
+changed_lines: 228
+selected_because: >
+  Mixed code+docs PR (tests the classifier) with maintainer disagreement on
+  style conventions and an accuracy issue in user-facing docs.
+ground_truth:
+  - id: g1
+    issue: >
+      The get_debug_flag/property pattern is debated: one maintainer asks for
+      the property decorator, the author explicitly prefers the older
+      pattern — genuine unresolved style disagreement.
+    evidence: https://github.com/pallets/flask/pull/2570#discussion_r159910418
+    category: style
+  - id: g2
+    issue: >
+      The claim that "the debugger will kick in" in development env is
+      inaccurate — it only activates when FLASK_DEBUG is set, and the
+      docs/docstrings as written would perpetuate a common confusion.
+    evidence: https://github.com/pallets/flask/pull/2570#discussion_r159910728
+    category: correctness
+  - id: g3
+    issue: >
+      Assorted polish: typo ("repopulate") and visually inconsistent
+      indentation style flagged in several places.
+    evidence: https://github.com/pallets/flask/pull/2570#discussion_r159911086
+    category: style

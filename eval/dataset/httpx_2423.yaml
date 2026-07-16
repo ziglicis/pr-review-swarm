@@ -1,0 +1,44 @@
+url: https://github.com/encode/httpx/pull/2423
+repo: encode/httpx
+pr: 2423
+title: Change LineDecoder to match stdlib splitlines
+pre_merge_sha: f6685bdd12fb0c7da517f78e0322b8cd1955ce73
+changed_lines: 124
+selected_because: >
+  Performance rewrite of incremental line splitting; review found behavior
+  changes, missed newline variants, an O(N^2) buffer, and a stateful flush bug.
+ground_truth:
+  - id: g1
+    issue: >
+      The rewrite silently changes user-visible behavior (whether line
+      endings are kept/normalized in yielded lines) — the changed test
+      expectations reveal it, and behavior must be preserved.
+    evidence: https://github.com/encode/httpx/pull/2423#discussion_r1014794251
+    category: correctness
+  - id: g2
+    issue: >
+      A trailing carriage return at the end of a decode() call must be
+      buffered — it may be the first half of a CRLF pair split across chunks,
+      and splitlines() alone treats it as a complete newline.
+    evidence: https://github.com/encode/httpx/pull/2423#discussion_r1045052360
+    category: correctness
+  - id: g3
+    issue: >
+      Checking that the text ends with a linefeed is insufficient, since
+      str.splitlines recognizes many more newline characters (vertical tab,
+      form feed, file/group/record separators, U+2028/U+2029), and the tests
+      don't cover them.
+    evidence: https://github.com/encode/httpx/pull/2423#discussion_r1045653671
+    category: correctness
+  - id: g4
+    issue: >
+      Building the buffer by string concatenation is quadratic across many
+      small decode() calls; a list buffer joined on demand is needed.
+    evidence: https://github.com/encode/httpx/pull/2423#discussion_r1066603902
+    category: correctness
+  - id: g5
+    issue: >
+      flush() returns the buffered line but doesn't reset the buffer and
+      trailing-CR state, so a second flush repeats output.
+    evidence: https://github.com/encode/httpx/pull/2423#discussion_r1067360513
+    category: correctness

@@ -1,0 +1,31 @@
+url: https://github.com/psf/requests/pull/2523
+repo: psf/requests
+pr: 2523
+title: HTTPDigestAuth - Making it thread-safe
+pre_merge_sha: 5a69137ac871c38f4597b574e93de07d9ff9655f
+changed_lines: 85
+selected_because: >
+  Thread-safety fix with review feedback on test determinism and API hygiene
+  for the new thread-local state.
+ground_truth:
+  - id: g1
+    issue: >
+      The brute-force test making 100 HTTP requests is aggressive and not
+      reliably failing; a deterministic test coordinating threads with
+      threading.Event and no network would be better.
+    evidence: https://github.com/psf/requests/pull/2523#discussion_r27737727
+    category: test
+  - id: g2
+    issue: >
+      The thread-local attribute should be private (underscore-prefixed) and
+      clearly named (e.g. _thread_local) so readers understand it without
+      reading the whole class.
+    evidence: https://github.com/psf/requests/pull/2523#discussion_r27754250
+    category: style
+  - id: g3
+    issue: >
+      The getattr fallback for num_401_calls is dead weight after the
+      refactor — the value is always assigned in __call__, so the default
+      branch can never trigger and should be removed.
+    evidence: https://github.com/psf/requests/pull/2523#discussion_r27659035
+    category: correctness

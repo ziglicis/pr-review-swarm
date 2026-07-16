@@ -1,0 +1,36 @@
+url: https://github.com/encode/httpx/pull/1197
+repo: encode/httpx
+pr: 1197
+title: Issue warning on unclosed AsyncClient
+pre_merge_sha: c01e78896c28c1a2302e9e5733ef0e54848ad3b1
+changed_lines: 143
+selected_because: >
+  Client lifecycle change with review feedback on API design, idempotency,
+  race-window ordering, and warning-type choice.
+ground_truth:
+  - id: g1
+    issue: >
+      The closed-check belongs as a plain inline guard at the top of send(),
+      not as a decorator on request() — simpler, better tracebacks, and the
+      right layer.
+    evidence: https://github.com/encode/httpx/pull/1197#discussion_r472950631
+    category: style
+  - id: g2
+    issue: >
+      close() should be idempotent: calling it on an already-closed client
+      should pass silently instead of erroring.
+    evidence: https://github.com/encode/httpx/pull/1197#discussion_r472952614
+    category: correctness
+  - id: g3
+    issue: >
+      _is_closed = True should be set as the first statement of close(), not
+      the last, to shrink the race window with concurrent sends.
+    evidence: https://github.com/encode/httpx/pull/1197#discussion_r472953172
+    category: correctness
+  - id: g4
+    issue: >
+      The warning class choice matters for visibility: UserWarning vs
+      ResourceWarning was debated (ResourceWarning is silenced by default;
+      UserWarning pollutes the user's namespace) — resolved to UserWarning.
+    evidence: https://github.com/encode/httpx/pull/1197#discussion_r474644263
+    category: style

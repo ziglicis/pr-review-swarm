@@ -1,0 +1,31 @@
+url: https://github.com/encode/httpx/pull/887
+repo: encode/httpx
+pr: 887
+title: Fix support for generator-based WSGI apps
+pre_merge_sha: 4a1cc2c090721ec8576aa466fe194ad5f1e85f03
+changed_lines: 52
+selected_because: >
+  Small WSGI spec-conformance fix; review focused on naming, a PEP 3333 edge
+  case, and reusing the existing test layout.
+ground_truth:
+  - id: g1
+    issue: >
+      The helper's "get chunk" naming misrepresents what it does — it returns
+      a modified body iterable that skips leading empty chunks, so it should
+      be named accordingly (e.g. _skip_leading_empty_chunks).
+    evidence: https://github.com/encode/httpx/pull/887#discussion_r399778004
+    category: style
+  - id: g2
+    issue: >
+      PEP 3333 permits sending headers early when Content-Length is 0 —
+      reviewers debated whether that exception needs explicit handling and
+      settled on pragmatically skipping it.
+    evidence: https://github.com/encode/httpx/pull/887#discussion_r399773077
+    category: correctness
+  - id: g3
+    issue: >
+      New tests duplicate what tests/test_wsgi.py already covers; the
+      existing echo_body_with_response_stream fixture should be refactored
+      into a true generator instead of adding parallel tests elsewhere.
+    evidence: https://github.com/encode/httpx/pull/887#discussion_r399710687
+    category: test

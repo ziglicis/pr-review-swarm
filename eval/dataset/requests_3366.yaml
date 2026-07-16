@@ -1,0 +1,37 @@
+url: https://github.com/psf/requests/pull/3366
+repo: psf/requests
+pr: 3366
+title: check for headers containing return characters
+pre_merge_sha: 2669ab797ce769ecedf5493b04cb976f33e37210
+changed_lines: 82
+selected_because: >
+  Header-injection validation (security-adjacent) whose review centered on
+  bytes-vs-str regex correctness across Python 2/3.
+ground_truth:
+  - id: g1
+    issue: >
+      Header validation must handle both unicode and byte-string headers:
+      matching a native-string regex against an opaque bytestring misbehaves
+      on Python 3, so separate byte and str regexes are required.
+    evidence: https://github.com/psf/requests/pull/3366#discussion_r69270130
+    category: correctness
+  - id: g2
+    issue: >
+      The compiled regexes are created inside the function, losing the benefit
+      of re.compile; they should be hoisted to module scope with
+      underscore-prefixed names.
+    evidence: https://github.com/psf/requests/pull/3366#discussion_r69313226
+    category: style
+  - id: g3
+    issue: >
+      Using the validity check as a filter() predicate misrepresents what it
+      does (nothing is filtered); rename to check_header_validity and call it
+      in the single loop that sets headers.
+    evidence: https://github.com/psf/requests/pull/3366#discussion_r69365861
+    category: style
+  - id: g4
+    issue: >
+      The byte-string regex is missing an escaped backslash: '\S' in a plain
+      (non-raw) byte string needs to be '\\S' to mean the regex class.
+    evidence: https://github.com/psf/requests/pull/3366#discussion_r69381140
+    category: correctness
