@@ -157,12 +157,28 @@ async def _batched(run_one, files, size_fn) -> AgentRun:
     return merge_runs([await run_one(batch) for batch in batches])
 
 
+async def fetch_file_contents(
+    gh: GitHubClient, pr: PRData, files: list[FileDiff]
+) -> dict[str, str]:
+    """Head-SHA contents for reviewable changed files; fetch failures are skipped."""
+    contents: dict[str, str] = {}
+    for fd in files:
+        if fd.is_binary or fd.status == "deleted" or not fd.hunks:
+            continue
+        try:
+            contents[fd.path] = await gh.get_file(pr.owner, pr.repo, fd.path, pr.head_sha)
+        except httpx.HTTPError:
+            pass  # context builders fall back to bare hunks
+    return contents
+
+
 async def run_review(
     pr: PRData,
     files: list[FileDiff],
     gh: GitHubClient,
     client: AsyncAnthropic | None = None,
     tracer: Tracer | None = None,
+    no_tools: bool = False,  # eval Ablation B: force all agents single-pass
 ) -> list[AgentRun]:
     """Select and run agents concurrently; returns one AgentRun per agent, in order."""
     tracer = tracer or Tracer()
@@ -174,28 +190,25 @@ async def run_review(
         classification=classify(files),
         files=[f.path for f in files],
         selection={k: v or "run" for k, v in selection.items()},
+        no_tools=no_tools,
     )
 
-    file_contents: dict[str, str] = {}
-    for fd in reviewable:
-        if fd.status == "deleted":
-            continue
-        try:
-            file_contents[fd.path] = await gh.get_file(pr.owner, pr.repo, fd.path, pr.head_sha)
-        except httpx.HTTPError:
-            pass  # context builders fall back to bare hunks
+    file_contents = await fetch_file_contents(gh, pr, files)
 
     async def correctness_task() -> AgentRun:
         return await _batched(
             lambda batch: correctness.run(
-                pr, batch, file_contents, executor, client=client, tracer=tracer
+                pr, batch, file_contents, executor,
+                client=client, tracer=tracer, use_tools=not no_tools,
             ),
             reviewable,
             lambda fd: len(correctness.build_context(pr, [fd], file_contents)),
         )
 
     async def security_task() -> AgentRun:
-        return await security.run(pr, files, executor, client=client, tracer=tracer)
+        return await security.run(
+            pr, files, executor, client=client, tracer=tracer, use_tools=not no_tools
+        )
 
     async def style_task() -> AgentRun:
         return await _batched(
