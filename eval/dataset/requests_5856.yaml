@@ -1,0 +1,37 @@
+url: https://github.com/psf/requests/pull/5856
+repo: psf/requests
+pr: 5856
+title: Fix inconsistent exception type in response.json() method
+pre_merge_sha: 8f0dcc4ecd71877389b0031af4d623a4a7350dee
+changed_lines: 65
+selected_because: >
+  New JSONDecodeError exception wrapper; long review with a real Python 2
+  breakage caught mid-review plus exception-hierarchy design feedback.
+ground_truth:
+  - id: g1
+    issue: >
+      The Python 2 json path is broken: json.JSONDecodeError doesn't exist on
+      Python 2, so the except-clause handling falls over with an AttributeError
+      (caught via failing CI during review).
+    evidence: https://github.com/psf/requests/pull/5856#discussion_r667104578
+    category: correctness
+  - id: g2
+    issue: >
+      The new JSONDecodeError must fit the exception hierarchy: subclass the
+      catch-all RequestException (so users can catch everything requests
+      throws) and preserve/proxy the original underlying exception's info.
+    evidence: https://github.com/psf/requests/pull/5856#discussion_r667095839
+    category: correctness
+  - id: g3
+    issue: >
+      Unrelated changes bundled into the PR (formatting/spacing tweaks, doc
+      edits) that reviewers repeatedly asked to revert as scope creep.
+    evidence: https://github.com/psf/requests/pull/5856#discussion_r667094313
+    category: style
+  - id: g4
+    issue: >
+      The simplejson/json resolution logic is duplicated across several files;
+      JSONDecodeError should be resolved once in compat.py and imported from
+      there.
+    evidence: https://github.com/psf/requests/pull/5856#discussion_r671444604
+    category: style

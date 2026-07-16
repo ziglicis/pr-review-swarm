@@ -1,0 +1,25 @@
+url: https://github.com/pallets/flask/pull/2031
+repo: pallets/flask
+pr: 2031
+title: make use of range requests if available in werkzeug
+pre_merge_sha: 9f77b8991655a552507a3c07ab6ebbba3f447ddf
+changed_lines: 102
+selected_because: >
+  send_file range support whose review is dominated by a genuine resource
+  management question (file close on error paths).
+ground_truth:
+  - id: g1
+    issue: >
+      File handles must be closed on the error/exception paths (e.g.
+      RequestedRangeNotSatisfiable) regardless of whether send_file opened
+      the file or received it — the initial patch leaked the handle in some
+      cases.
+    evidence: https://github.com/pallets/flask/pull/2031#discussion_r80032416
+    category: correctness
+  - id: g2
+    issue: >
+      Feature detection for werkzeug range support is too broad; it should be
+      a werkzeug version check or an existence check of the specific
+      function, not a blanket try/except.
+    evidence: https://github.com/pallets/flask/pull/2031#discussion_r80204974
+    category: style

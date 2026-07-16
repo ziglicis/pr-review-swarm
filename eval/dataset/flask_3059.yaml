@@ -1,0 +1,25 @@
+url: https://github.com/pallets/flask/pull/3059
+repo: pallets/flask
+pr: 3059
+title: Add support for PathLike objects in static file helpers
+pre_merge_sha: 25de45cbb6fc7304f67b685034151f9ac6ea0df5
+changed_lines: 67
+selected_because: >
+  Small feature with a focused compat-design review debate between three
+  maintainers.
+ground_truth:
+  - id: g1
+    issue: >
+      The full os.fspath backport is questioned: coercing with str() changes
+      the type, third-party libraries do implement __fspath__ on older
+      Pythons, and the review converges on the PEP 519 protocol-check
+      variant rather than either extreme.
+    evidence: https://github.com/pallets/flask/pull/3059#discussion_r245371019
+    category: correctness
+  - id: g2
+    issue: >
+      send_file arguments can be file-like objects, so they must not be
+      blindly passed through fspath(); an explicit __fspath__ hasattr check
+      is required on that path.
+    evidence: https://github.com/pallets/flask/pull/3059#discussion_r245182635
+    category: correctness

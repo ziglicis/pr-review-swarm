@@ -1,0 +1,30 @@
+url: https://github.com/encode/httpx/pull/3139
+repo: encode/httpx
+pr: 3139
+title: Add support for zstd decoding
+pre_merge_sha: 7a2f185334b599451961115cc4f69df336f26632
+changed_lines: 174
+selected_because: >
+  Dependency-adding feature (optional zstandard extra) with reviewer
+  discussion of defensive version guards and coverage gaps.
+ground_truth:
+  - id: g1
+    issue: >
+      Decompressed chunks should be assembled with io.BytesIO rather than
+      repeated bytes concatenation.
+    evidence: https://github.com/encode/httpx/pull/3139#discussion_r1518812137
+    category: style
+  - id: g2
+    issue: >
+      The runtime zstandard version guard in _compat.py is questioned as
+      overly defensive vs pinning >=0.18 in requirements; kept because the
+      extra is optional and an old zstandard may already be installed —
+      a genuine design disagreement documented in review.
+    evidence: https://github.com/encode/httpx/pull/3139#discussion_r1524997549
+    category: style
+  - id: g3
+    issue: >
+      Test coverage for the new decoder paths is incomplete and needs
+      addressing before merge.
+    evidence: https://github.com/encode/httpx/pull/3139#discussion_r1525274642
+    category: test

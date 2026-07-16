@@ -1,0 +1,32 @@
+url: https://github.com/encode/httpx/pull/2278
+repo: encode/httpx
+pr: 2278
+title: allow setting an explicit multipart boundary via headers
+pre_merge_sha: 74de49482f0fdf49fb112d118bf580d764d18ccd
+changed_lines: 82
+selected_because: >
+  Multipart boundary feature; review caught a spec-violating edge case and an
+  RFC parsing gap.
+ground_truth:
+  - id: g1
+    issue: >
+      When the user supplies a Content-Type header without a boundary,
+      setdefault won't overwrite it, and the request goes out with no
+      multipart boundary at all — violating the spec so no server can parse
+      it; the boundary must be injected into the existing header.
+    evidence: https://github.com/encode/httpx/pull/2278#discussion_r906733887
+    category: correctness
+  - id: g2
+    issue: >
+      RFC 2046 allows the boundary parameter to be quoted; the parser must
+      strip quotes (and handle mixed-case/whitespace) rather than only
+      accepting the bare token form.
+    evidence: https://github.com/encode/httpx/pull/2278#discussion_r945186942
+    category: correctness
+  - id: g3
+    issue: >
+      The boundary should be extracted from headers upstream in _models.py
+      and passed down, removing the content_type parameter from
+      encode_request/encode_multipart_data signatures entirely.
+    evidence: https://github.com/encode/httpx/pull/2278#discussion_r945184961
+    category: style
