@@ -68,6 +68,7 @@ async def run(
     executor: ToolExecutor,
     client: AsyncAnthropic | None = None,
     tracer: Tracer | None = None,
+    use_tools: bool = True,  # False = single-pass (eval Ablation B)
 ) -> AgentRun:
     return await run_with_tools(
         agent_name="correctness",
@@ -75,7 +76,7 @@ async def run(
         user_content=build_context(pr, files, file_contents),
         valid_files={f.path for f in files},
         executor=executor,
-        investigation_tools=[EXPAND_CONTEXT_TOOL, READ_FILE_TOOL],
+        investigation_tools=[EXPAND_CONTEXT_TOOL, READ_FILE_TOOL] if use_tools else [],
         client=client,
         tracer=tracer,
     )
