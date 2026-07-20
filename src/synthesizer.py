@@ -203,7 +203,11 @@ async def synthesize(
                 blocks=tracer.blocks(resp.content),
             )
             tool_use = next(b for b in resp.content if b.type == "tool_use")
-            errors = _validate(tool_use.input["findings"], len(source), valid_files)
+            if "findings" not in tool_use.input or "summary" not in tool_use.input:
+                errors = ["submit_review input incomplete (output truncated?) — "
+                          "call it again, completely"]
+            else:
+                errors = _validate(tool_use.input["findings"], len(source), valid_files)
             if not errors:
                 result = tool_use.input
                 break

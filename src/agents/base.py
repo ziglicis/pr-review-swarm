@@ -157,8 +157,12 @@ async def run_with_tools(
             report = next((b for b in tool_uses if b.name == "report_findings"), None)
 
             if report is not None:
-                raw = report.input["findings"]
-                errors = validate_findings(raw, valid_files)
+                raw = report.input.get("findings")
+                errors = (
+                    ["report_findings input is missing the 'findings' list "
+                     "(output truncated?) — call it again, completely"]
+                    if raw is None else validate_findings(raw, valid_files)
+                )
                 if not errors:
                     findings = _to_findings(agent_name, raw)
                     break

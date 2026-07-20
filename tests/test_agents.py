@@ -88,6 +88,30 @@ async def test_retry_exhausted_is_error_not_raise():
     assert len(client.calls) == 2  # initial + one corrective retry, then gave up
 
 
+async def test_truncated_tool_input_retries_not_crashes():
+    # input missing 'findings' entirely (e.g. output cut off mid-call)
+    client = StubClient([[GOOD]])
+    client._payloads = []  # bypass payload queue; craft raw responses instead
+
+    responses = [{}, {"findings": [GOOD]}]
+
+    async def create(**kwargs):
+        client.calls.append(kwargs)
+        block = SimpleNamespace(
+            type="tool_use", name="report_findings",
+            id=f"t{len(client.calls)}", input=responses.pop(0),
+        )
+        return SimpleNamespace(
+            content=[block], usage=SimpleNamespace(input_tokens=10, output_tokens=10)
+        )
+
+    client.messages = SimpleNamespace(create=create)
+    run = await run_single_pass("correctness", "sys", "ctx", VALID_FILES, client=client)
+    assert run.status == "ok"
+    assert len(client.calls) == 2
+    assert "truncated" in client.calls[1]["messages"][-1]["content"][0]["content"]
+
+
 async def test_api_exception_recorded_not_raised():
     class Boom:
         def __init__(self):
