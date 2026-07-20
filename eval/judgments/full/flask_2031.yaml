@@ -1,0 +1,86 @@
+case: flask_2031
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: File handles must be closed on the error/exception paths (e.g. RequestedRangeNotSatisfiable)
+    regardless of whether send_file opened the file or received it — the initial patch leaked the
+    handle in some cases.
+  matched_finding: 8
+  note: reviewer's close-on-error-paths concern; the reviewed head closes on 416 but any other exception
+    from make_conditional still leaks — finding 8 flags exactly that residual; finding 0 flags the
+    crash bug in the handler itself
+  matchable: true
+- ground_truth: g2
+  issue: Feature detection for werkzeug range support is too broad; it should be a werkzeug version
+    check or an existence check of the specific function, not a blanket try/except.
+  matched_finding: null
+  note: fixed during review — the reviewed head already uses the existence check the reviewer asked
+    for (discussion_r80204974)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Unsafe file.close() in 416 handler — double-close or AttributeError on None
+  valid: true
+  note: x-sendfile + filename-string path leaves file=None (line 513); a 416 then raises AttributeError
+    in the except handler; confirmed from the diff
+- finding: 1
+  title: fsize is None when a file-object is passed, breaking range-request Content-Range headers
+  valid: true
+  note: 'confirmed against werkzeug 0.12 source: complete_length=None makes _process_range_request
+    silently skip ranges while still advertising Accept-Ranges — file-object callers can never serve
+    ranges'
+- finding: 2
+  title: 'Old-werkzeug fallback branch (else: rv.make_conditional(request)) has no test coverage'
+  valid: true
+  note: conditional=True appears only inside the skipif-guarded range test, so the old-werkzeug fallback
+    branch is exercised by no test in any environment
+- finding: 3
+  title: File-close-on-416 path is not covered by any test
+  valid: true
+  note: the new bytes=1000- test executes the close path but nothing asserts the file was actually
+    closed
+- finding: 4
+  title: x-sendfile + range request interaction is untested
+  valid: true
+  note: no test combines use_x_sendfile with a Range header
+- finding: 5
+  title: No test verifies that range headers are ignored when conditional=False
+  valid: true
+  note: no test sends a Range header with conditional=False
+- finding: 6
+  title: 304 + x-sendfile header removal not tested after block restructuring
+  valid: true
+  note: no test at the reviewed head triggers a 304 at all (no 304/If-Modified-Since anywhere in
+    test_helpers.py)
+- finding: 7
+  title: Version-guard comment is redundant and inconsistent with surrounding style
+  valid: false
+  note: the comment maps an opaque duck-typing check to the feature it detects — informative, not
+    redundant
+- finding: 8
+  title: File handle leaked if make_conditional raises an unexpected exception
+  valid: true
+  note: only RequestedRangeNotSatisfiable is caught; any other exception leaks the handle — this
+    is the residual form of g1
+- finding: 9
+  title: Range-request make_conditional called even on x-sendfile path, may produce misleading 206
+    response
+  valid: true
+  note: 'real gap: 206 with empty body plus X-Sendfile header is front-server-dependent and unhandled;
+    also untested (finding 4)'
+- finding: 10
+  title: 'Typo in skip reason string: "not implement" should be "not implemented"'
+  valid: true
+  note: typo confirmed
+- finding: 11
+  title: Hard-to-parse chained method call; consider splitting into two statements
+  valid: true
+  note: the fromtimestamp(...).replace() chain split across three lines is genuinely hard to parse
+- finding: 12
+  title: Abbreviation `fsize` is inconsistent with the variable naming style in this function
+  valid: false
+  note: '`mtime` two lines up uses the identical abbreviation style; the claim defeats itself'
+- finding: 13
+  title: Backslash line continuation in import could use parentheses instead
+  valid: true
+  note: PEP 8 prefers parentheses; minor but defensible

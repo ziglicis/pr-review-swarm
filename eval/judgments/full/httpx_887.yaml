@@ -1,0 +1,69 @@
+case: httpx_887
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: The helper's "get chunk" naming misrepresents what it does — it returns a modified body
+    iterable that skips leading empty chunks, so it should be named accordingly (e.g. _skip_leading_empty_chunks).
+  matched_finding: null
+  note: fixed during review — the helper is already named _skip_leading_empty_chunks at the reviewed
+    head (discussion_r399778004)
+  matchable: false
+- ground_truth: g2
+  issue: PEP 3333 permits sending headers early when Content-Length is 0 — reviewers debated whether
+    that exception needs explicit handling and settled on pragmatically skipping it.
+  matched_finding: null
+  note: review settled on pragmatically skipping the Content-Length:0 early-header exception; no
+    finding raises it either (discussion_r399773077)
+  matchable: true
+- ground_truth: g3
+  issue: New tests duplicate what tests/test_wsgi.py already covers; the existing echo_body_with_response_stream
+    fixture should be refactored into a true generator instead of adding parallel tests elsewhere.
+  matched_finding: null
+  note: largely addressed during review — the tests were folded into tests/test_wsgi.py; the remaining
+    ask (make echo_body_with_response_stream a true generator) is not raised by any finding
+  matchable: false
+finding_validity:
+- finding: 0
+  title: WSGI iterator `close()` method silently dropped, violating PEP 3333
+  valid: true
+  note: 'accurate: neither itertools.chain nor the [] branch exposes close(), and IteratorStream
+    gets no close_func; PEP 3333 close requirement genuinely unmet'
+- finding: 1
+  title: Unsanitised HTTP header names written into WSGI environ without collision or character validation
+  valid: false
+  note: pre-existing environ-construction code untouched by this PR, and the threat model (attacker-controlled
+    headers into a local test transport) does not apply
+- finding: 2
+  title: Return type annotation on `_skip_leading_empty_chunks` missing type parameter
+  valid: true
+  note: bare typing.Iterable confirmed in diff; parameterised annotations are the file's style
+- finding: 3
+  title: '`application_factory` reduces test readability; named app aliases recommended'
+  valid: uncertain
+  note: defensible readability opinion, but the factory layout is what review converged on
+- finding: 4
+  title: 'Fragile ordering dependency: `start_response` side-effects relied upon as a by-product
+    of `_skip_leading_empty_chunks` iteration'
+  valid: uncertain
+  note: mechanism accurately described, but it is the intended design and documented in the code
+    comment; failure mode is a loud assert
+- finding: 5
+  title: Several `_skip_leading_empty_chunks` paths lack dedicated test coverage
+  valid: true
+  note: 'factual: no plain-list app with leading empty chunks is tested (echo_body has no leading
+    empties)'
+- finding: 6
+  title: Unbounded iteration over empty chunks in `_skip_leading_empty_chunks` creates potential
+    DoS vector
+  valid: false
+  note: an infinite all-empty body hangs the client with or without this helper; no new risk in a
+    test transport
+- finding: 7
+  title: Inconsistent `Content-Type` header capitalisation in `application_factory`
+  valid: false
+  note: echo_body and raise_exc also use lowercase 'Content-type' — the new code matches 2 of 3 existing
+    fixtures; the inconsistency pre-exists
+- finding: 8
+  title: Inline comment is slightly verbose compared to surrounding terse style
+  valid: false
+  note: two-line why-comment is fine; no terseness convention is violated

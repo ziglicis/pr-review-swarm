@@ -1,0 +1,68 @@
+case: httpx_2278
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: When the user supplies a Content-Type header without a boundary, setdefault won't overwrite
+    it, and the request goes out with no multipart boundary at all — violating the spec so no server
+    can parse it; the boundary must be injected into the existing header.
+  matched_finding: null
+  note: 'MISSED though live at the reviewed head: with a user Content-Type lacking a boundary, setdefault
+    keeps the user header while the body uses a random boundary — unparseable request. The system
+    analyzed the exact mechanism and concluded ''correct'' instead of flagging it; finding 8 flags
+    the missing body assertion that would have caught it'
+  matchable: true
+- ground_truth: g2
+  issue: RFC 2046 allows the boundary parameter to be quoted; the parser must strip quotes (and handle
+    mixed-case/whitespace) rather than only accepting the bare token form.
+  matched_finding: null
+  note: fixed during review — strip(b'"') and the quoted-boundary parametrized tests are present
+    at the reviewed head (discussion_r945186942)
+  matchable: false
+- ground_truth: g3
+  issue: The boundary should be extracted from headers upstream in _models.py and passed down, removing
+    the content_type parameter from encode_request/encode_multipart_data signatures entirely.
+  matched_finding: null
+  note: implemented during review — extraction lives in _models.py and encode_request/encode_multipart_data
+    take boundary, not content_type (discussion_r945184961)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: User-controlled boundary accepted without RFC 2046 validation — CRLF/header-injection risk
+  valid: uncertain
+  note: 'same as the full run: caller-controlled value, no trust boundary crossed; validation is
+    a defensible robustness ask'
+- finding: 1
+  title: Trailing whitespace not stripped from extracted boundary value
+  valid: false
+  note: its 'boundary="abc" ' example is wrong — section.strip() removes that space before slicing;
+    only malformed 'boundary= x' input keeps a leading space
+- finding: 2
+  title: Using `self.headers.encoding` to encode the Content-Type value may produce incorrect bytes
+  valid: false
+  note: 'non-issue: encoding an ASCII content-type with the inferred header encoding (ascii or latin-1)
+    yields identical bytes'
+- finding: 3
+  title: Multiple untested branches in `get_multipart_boundary_from_content_type`
+  valid: true
+  note: 'factual: no direct unit tests for the helper''s branches'
+- finding: 4
+  title: '`encode_multipart_data` `boundary` parameter now lacks a default — may break existing callers'
+  valid: false
+  note: private module function with one call site that always passes the argument; the removed default
+    is plainly deliberate; 'may break' is speculative
+- finding: 5
+  title: Inline comment lacks capitalisation and punctuation
+  valid: true
+  note: trivial but factual against the file's comment style
+- finding: 6
+  title: Magic literal `b"boundary="` repeated — extract to a named constant
+  valid: uncertain
+  note: two occurrences hardly warrant a constant; subjective
+- finding: 7
+  title: Parametrize decorator key style inconsistent with surrounding tests
+  valid: false
+  note: ('key') is a parenthesized string, semantically identical; pure noise
+- finding: 8
+  title: '`test_multipart_header_without_boundary` does not assert body validity'
+  valid: true
+  note: factual; the missing body assertion is exactly what would have exposed the g1 mismatch

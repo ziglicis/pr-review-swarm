@@ -1,0 +1,83 @@
+case: requests_2523
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: The brute-force test making 100 HTTP requests is aggressive and not reliably failing; a
+    deterministic test coordinating threads with threading.Event and no network would be better.
+  matched_finding: 4
+  note: the brute-force test is still at the reviewed head; finding 4 captures its unreliability
+    ('a race condition could still go undetected') — the reviewer's determinism concern (discussion_r27737727)
+  matchable: true
+- ground_truth: g2
+  issue: The thread-local attribute should be private (underscore-prefixed) and clearly named (e.g.
+    _thread_local) so readers understand it without reading the whole class.
+  matched_finding: null
+  note: fixed during review — the attribute is private and named _thread_local at the reviewed head
+    (discussion_r27754250)
+  matchable: false
+- ground_truth: g3
+  issue: The getattr fallback for num_401_calls is dead weight after the refactor — the value is
+    always assigned in __call__, so the default branch can never trigger and should be removed.
+  matched_finding: null
+  note: fixed during review — the getattr fallback is gone; handle_401 reads the thread-local directly
+    (discussion_r27659035)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: ThreadPool guard silently skips test body instead of marking the test as skipped
+  valid: true
+  note: 'factual: vacuous pass when ThreadPool is None; skipif is the suite''s pattern'
+- finding: 1
+  title: handle_redirect's thread-local counter reset is untested
+  valid: true
+  note: 'factual: no digest-auth redirect test exists'
+- finding: 2
+  title: num_401_calls initialized to None instead of 1 — AttributeError / TypeError risk in handle_401
+  valid: false
+  note: 'unreachable in requests'' synchronous model: hooks are registered inside __call__ (which
+    sets num_401_calls=1 before the request is sent) and fire on the same thread post-send; requests
+    keeps the None initialization to this day without incident'
+- finding: 3
+  title: init_per_thread_state not tested in isolation — guard semantics unverified
+  valid: true
+  note: 'factual: guard semantics only exercised via live httpbin integration'
+- finding: 4
+  title: test_DIGESTAUTH_THREADED does not assert per-thread counter independence
+  valid: true
+  note: 'factual and matches the reviewer''s core concern: races can pass undetected'
+- finding: 5
+  title: No test for __call__ with a file-like body (thread-local pos branch uncovered)
+  valid: true
+  note: 'verified: test_DIGEST_STREAM uses stream=True GETs with no file-like body; the pos branch
+    is uncovered'
+- finding: 6
+  title: Thread-local state is never re-initialized after first use — stale nonce/chal may persist
+    across unrelated servers
+  valid: uncertain
+  note: real design property but pre-existing semantics preserved (instance attrs persisted identically
+    before the PR); the finding itself calls it largely intentional
+- finding: 7
+  title: Threaded test issues real external HTTP requests with credentials in CI
+  valid: false
+  note: the whole suite hits httpbin with dummy credentials by established practice; no marginal
+    risk
+- finding: 8
+  title: WWW-Authenticate header passed to parse_dict_header without length or sanity check
+  valid: false
+  note: pre-existing code outside the PR's change, self-acknowledged; resource concern speculative
+- finding: 9
+  title: Missing spaces around = in keyword argument (PEP 8)
+  valid: true
+  note: PEP 8 violation confirmed in diff
+- finding: 10
+  title: Unused return value 1 in do_request helper
+  valid: true
+  note: 'factual: pool.map result discarded; trivial'
+- finding: 11
+  title: Sentinel attribute name 'init' is ambiguous
+  valid: uncertain
+  note: defensible naming nit, but requests keeps the 'init' sentinel to this day
+- finding: 12
+  title: init_per_thread_state uses an inline comment instead of a docstring
+  valid: uncertain
+  note: subjective docstring-vs-comment nit; maintainers kept it as-is

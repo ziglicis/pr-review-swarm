@@ -1,0 +1,107 @@
+case: flask_2570
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The get_debug_flag/property pattern is debated: one maintainer asks for the property decorator,
+    the author explicitly prefers the older pattern — genuine unresolved style disagreement.'
+  matched_finding: null
+  note: no finding touches the property-decorator debate (discussion_r159910418)
+  matchable: true
+- ground_truth: g2
+  issue: The claim that "the debugger will kick in" in development env is inaccurate — it only activates
+    when FLASK_DEBUG is set, and the docs/docstrings as written would perpetuate a common confusion.
+  matched_finding: null
+  note: the app.py 'debugger will kick in' docblock is not flagged; finding 1 flags a different doc
+    inaccuracy (quickstart parenthetical, davidism's comment 160035766, not in GT)
+  matchable: true
+- ground_truth: g3
+  issue: 'Assorted polish: typo ("repopulate") and visually inconsistent indentation style flagged
+    in several places.'
+  matched_finding: null
+  note: neither the 'repopulate' typo nor the continuation-indentation style was flagged; finding
+    16 touches the adjacent blank-line convention only
+  matchable: true
+finding_validity:
+- finding: 0
+  title: '`make_config` calls `get_debug_flag()` unconditionally at construction time, bypassing
+    dotenv and storing `None` as DEBUG'
+  valid: false
+  note: 'premise wrong at the reviewed head: get_debug_flag() always returns a bool, so DEBUG is
+    never stored as None; the pre-dotenv angle is speculative'
+- finding: 1
+  title: Documentation incorrectly states that `FLASK_ENV=development` 'disables debug mode'
+  valid: true
+  note: davidism raised exactly this in review (comment 160035766)
+- finding: 2
+  title: Production-mode warning printed outside the reloader child-process guard — shown repeatedly
+    on every reload
+  valid: true
+  note: 'verified at the SHA: the warning is printed above the WERKZEUG_RUN_MAIN guard, so the reloader
+    child prints it again'
+- finding: 3
+  title: No tests for `make_config()` ENV/DEBUG population or the new `env`/`debug` public API on
+    Flask app
+  valid: true
+  note: only helpers-level tests were added
+- finding: 4
+  title: Production environment warning and new `* Env` startup line in `run_command` are untested
+  valid: true
+  note: no CLI tests added
+- finding: 5
+  title: Dead code in `test_get_debug_flag` and missing coverage of truly-absent `FLASK_DEBUG` case
+  valid: true
+  note: 'both halves verified: the None branch is dead and the unset-fallback row was replaced rather
+    than kept'
+- finding: 6
+  title: '`get_env` and `get_debug_flag` use `if not val` which conflates unset and set-to-empty
+    env vars, causing silent behavioral change for `FLASK_DEBUG=`'
+  valid: uncertain
+  note: factually right, but empty-as-unset is a deliberate idiom predating this PR
+- finding: 7
+  title: Auto-enabling debug mode (and the Werkzeug interactive debugger) based solely on `FLASK_ENV=development`
+  valid: uncertain
+  note: real design property maintainers later regretted, but marginal risk over direct FLASK_DEBUG
+    injection is small
+- finding: 8
+  title: Code block lines not indented — likely to render as plain paragraph text instead of a code
+    block
+  valid: true
+  note: 'confirmed in the diff: lines at column 0, will not render as a literal block'
+- finding: 9
+  title: No test for `jinja_env.auto_reload` side-effect when `debug` is set via property
+  valid: false
+  note: test_templates_auto_reload_debug_run at the SHA exercises app.run(debug=True) through the
+    new property setter and asserts jinja_env.auto_reload flips
+- finding: 10
+  title: Changed shell banner format (now shows `app.env`) is not tested
+  valid: true
+  note: no test covers the new shell banner format
+- finding: 11
+  title: New startup message `* Env %s` has inconsistent capitalisation and missing separator vs.
+    adjacent lines
+  valid: false
+  note: sibling startup lines use the same bare no-colon style; the claim of inconsistency is backwards
+- finding: 12
+  title: '`default_config` sets `''DEBUG'': None`, breaking strict boolean comparisons on `app.debug`'
+  valid: false
+  note: make_config always overwrites ENV and DEBUG before the config object exists; the None defaults
+    never surface on an instance
+- finding: 13
+  title: '`get_env()` not tested when `FLASK_ENV` is entirely absent from the environment'
+  valid: false
+  note: ''''' and absent take the identical `if not val` branch; the claim that these are distinct
+    code paths is wrong'
+- finding: 14
+  title: '`reload` and `debugger` default to `bool(None)==False` when `get_debug_flag()` returns
+    `None` — implicit coercion is fragile'
+  valid: false
+  note: 'premise wrong: at the reviewed head get_debug_flag() never returns None'
+- finding: 15
+  title: Setting `debug` via property prematurely initializes `jinja_env` (locked_cached_property)
+    as a side-effect
+  valid: uncertain
+  note: mechanism real but the finding itself concedes it is not a regression from this PR
+- finding: 16
+  title: Missing blank line between `_get_debug` and `_set_debug` method definitions
+  valid: true
+  note: confirmed in diff; surrounding code separates defs with blank lines

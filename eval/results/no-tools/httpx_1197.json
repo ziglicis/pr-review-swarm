@@ -1,0 +1,653 @@
+{
+  "case": "httpx_1197",
+  "experiment": "no-tools",
+  "pr_url": "https://github.com/encode/httpx/pull/1197",
+  "head_sha": "c01e78896c28c1a2302e9e5733ef0e54848ad3b1",
+  "sha_matches_dataset": true,
+  "timestamp": 1784181466,
+  "summary": "This PR adds a warning when an `AsyncClient` is garbage-collected without being closed, and introduces `_is_closed` state tracking to both `Client` and `AsyncClient`. While the intent is sound, the core implementation is inverted: `send()` unconditionally resets `_is_closed = False` rather than checking the flag first, which defeats the entire close-guard purpose. Several resource-cleanup, consistency, and test-coverage issues also accompany the change.",
+  "findings": [
+    {
+      "agent": "correctness, security",
+      "file": "httpx/_client.py",
+      "line_start": 708,
+      "line_end": 708,
+      "severity": "critical",
+      "title": "`send()` / `AsyncClient.send()` resets `_is_closed = False`, silently re-opening a closed client",
+      "detail": "Both `Client.send()` (line 708) and `AsyncClient.send()` (line 1329) unconditionally set `self._is_closed = False` at method entry. This completely defeats the close-guard that the PR intends to introduce: after `close()`/`aclose()` sets `_is_closed = True`, any subsequent call to `send()` (or the high-level helpers that delegate to it) silently resets the flag to `False` and proceeds to use the already-closed transport. The transport-level error that follows will be opaque and confusing. The flag should be *checked before* being set \u2014 if `_is_closed` is already `True` when `send()` is entered, a clear `RuntimeError` (or at minimum a warning) should be raised. From a security/correctness standpoint, a caller holding a stale reference to a closed client can keep making requests with no indication that anything is wrong.",
+      "confidence": 0.97
+    },
+    {
+      "agent": "correctness, security",
+      "file": "httpx/_client.py",
+      "line_start": 1695,
+      "line_end": 1701,
+      "severity": "major",
+      "title": "`AsyncClient.__del__` warns but cannot close the async transport \u2014 connections are leaked",
+      "detail": "`AsyncClient.__del__` correctly issues a warning when the client is collected without being closed, but it cannot `await self.aclose()` because `__del__` is synchronous. As a result, all open connections/sockets held by the async transport pool are silently leaked until the OS reclaims them. This is a known Python limitation for async resources, but it should be explicitly documented. If a synchronous cleanup path is available on the underlying transport, it should be called here as a best-effort fallback.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "security, test_coverage",
+      "file": "httpx/_client.py",
+      "line_start": 1073,
+      "line_end": 1074,
+      "severity": "major",
+      "title": "`Client.__del__` closes silently with no warning, and is inconsistent with `AsyncClient.__del__`; path is untested",
+      "detail": "`Client.__del__` calls `self.close()` without emitting any warning when the client is garbage-collected without an explicit `close()`. `AsyncClient.__del__` (line 1695) does emit a warning for the equivalent situation. This inconsistency means sync clients can be silently leaked without any developer-visible feedback. Additionally, `__del__` calling `close()` can raise exceptions during interpreter shutdown (when modules may be partially unloaded); these exceptions are silently swallowed by the GC machinery. The sync `__del__` should mirror the async side and emit a `ResourceWarning`-category warning when `not self.is_closed`. No test covers the `Client.__del__` path at all (the async side has `test_that_async_client_caused_warning_when_being_deleted`).",
+      "confidence": 0.88
+    },
+    {
+      "agent": "correctness",
+      "file": "httpx/_client.py",
+      "line_start": 1043,
+      "line_end": 1049,
+      "severity": "major",
+      "title": "`_is_closed` initialized to `True` causes `close()` / `__del__` to skip transport teardown for never-used clients",
+      "detail": "`BaseClient.__init__` sets `_is_closed = True`. `Client.close()` (and `AsyncClient.aclose()`) are guarded by `if not self.is_closed`, so they become no-ops when `_is_closed` is `True`. For a client that is constructed but never sends a request, `_is_closed` remains `True`, so both an explicit `close()` call and `__del__` \u2192 `close()` will skip closing the transport entirely. If `httpcore`'s transport initializes resources in its own `__init__`, those resources will be leaked \u2014 a regression from the pre-PR code which called `self._transport.close()` unconditionally. The semantics of the flag are inverted relative to the transport's actual lifecycle: the transport starts open, but the flag says it is closed. Consider initializing `_is_closed = False` and restructuring so that the transport is only opened on first use.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "security, style",
+      "file": "httpx/_client.py",
+      "line_start": 1695,
+      "line_end": 1701,
+      "severity": "minor",
+      "title": "`warnings.warn` in `AsyncClient.__del__` uses wrong category, missing `stacklevel`, and fragile `repr(self)`",
+      "detail": "Three sub-issues with the `warnings.warn` call: (1) The standard Python category for unclosed resources is `ResourceWarning`, not the default `UserWarning`. The test asserts `UserWarning`, which will need updating too. (2) No `stacklevel` is passed; for `__del__`-issued warnings `stacklevel=2` (or similar) is conventional. (3) The format string uses `{self!r}`, which invokes `__repr__`. If `__repr__` raises during GC or interpreter teardown the entire warning is silently swallowed. Prefer a simpler string such as `f'Unclosed AsyncClient (id={id(self)})'`.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "test_coverage",
+      "file": "httpx/_client.py",
+      "line_start": 1043,
+      "line_end": 1072,
+      "severity": "minor",
+      "title": "Idempotency guards in `close()`, `aclose()`, `__exit__`, and `__aexit__` are untested",
+      "detail": "The new `if not self.is_closed` guards in `Client.close()`, `AsyncClient.aclose()`, `Client.__exit__`, and `AsyncClient.__aexit__` represent new branches that protect against double-close. None of these branches have corresponding tests (e.g., calling `close()` twice, or using a client as a context manager after it has already been closed). Without tests, regressions to this guard logic will go undetected.",
+      "confidence": 0.82
+    },
+    {
+      "agent": "test_coverage",
+      "file": "tests/client/test_async_client.py",
+      "line_start": 245,
+      "line_end": 245,
+      "severity": "minor",
+      "title": "`test_that_async_client_caused_warning_when_being_deleted` does not assert warning content or the no-warning path",
+      "detail": "The test only checks that a `UserWarning` is issued; it does not assert anything about the warning message (URL, client repr, etc.), so a regression in the message text would go undetected. Additionally, there is no complementary test confirming that deleting an *already-closed* `AsyncClient` does **not** emit a warning.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "correctness",
+      "file": "tests/client/test_proxies.py",
+      "line_start": 123,
+      "line_end": 129,
+      "severity": "minor",
+      "title": "Proxy close tests no longer exercise the proxy transport path they were written to test",
+      "detail": "The `test_async_proxy_close` and `test_sync_proxy_close` tests were changed to use `proxies={\"https://\": PROXY_URL}` while sending an HTTP (non-TLS) request to `http://example.com`. An `https://` proxy selector does not match plain `http://` requests, so the proxy transport is created but never exercised by the test request. The tests still pass (no exception on `aclose()`/`close()`), but they no longer validate that the proxy transport itself is properly torn down after a real proxied request. The change appears to have been made to avoid a transport error triggered by the `send()` + `_is_closed` bug; fixing that root cause should allow the original proxy scheme to be restored.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "test_coverage",
+      "file": "tests/client/test_client.py",
+      "line_start": 258,
+      "line_end": 263,
+      "severity": "minor",
+      "title": "`test_that_send_cause_client_to_be_not_closed` does not call `close()` and omits important scenarios",
+      "detail": "The synchronous test never calls `client.close()` after `client.get()`, leaving the transport unclosed (a resource leak in the test suite itself). The test also does not verify: (a) that a second `send()` on an already-open client leaves it open, or (b) that calling `send()` on a client that was explicitly closed raises an error (or behaves as intended). The async counterpart does call `aclose()` and is therefore slightly better.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_client.py",
+      "line_start": 87,
+      "line_end": 89,
+      "severity": "nit",
+      "title": "Docstring grammar: 'Check if the client being closed'",
+      "detail": "The `is_closed` property docstring reads 'Check if the client being closed' \u2014 it is missing the word 'is'. Should read 'Check if the client is closed.'",
+      "confidence": 0.95
+    },
+    {
+      "agent": "style",
+      "file": "tests/client/test_async_client.py",
+      "line_start": 219,
+      "line_end": 219,
+      "severity": "nit",
+      "title": "Test function names use 'cause' instead of 'causes' (both sync and async)",
+      "detail": "`test_that_send_cause_async_client_to_be_not_closed` (async, line 219) and `test_that_send_cause_client_to_be_not_closed` (sync, test_client.py line 258) both have a subject-verb agreement error. The verb should be 'causes'.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "style",
+      "file": "tests/client/test_async_client.py",
+      "line_start": 245,
+      "line_end": 245,
+      "severity": "nit",
+      "title": "Variable named `async_client` instead of `client` \u2014 inconsistent naming convention",
+      "detail": "The warning test uses the local variable name `async_client` for an `httpx.AsyncClient` instance, while every other test in the file (including the new ones added in this PR) uses `client`. This inconsistency makes the test harder to read.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_client.py",
+      "line_start": 1688,
+      "line_end": 1693,
+      "severity": "nit",
+      "title": "Missing blank line in `AsyncClient.__aexit__` \u2014 inconsistent with sync `__exit__`",
+      "detail": "The synchronous `__exit__` has a blank line between `self._is_closed = True` and the subsequent transport/proxy teardown calls. `AsyncClient.__aexit__` omits this blank line, making the two parallel blocks visually inconsistent.",
+      "confidence": 0.85
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            708,
+            708
+          ],
+          "severity": "critical",
+          "title": "send() sets `_is_closed = False`, allowing use-after-close without detection",
+          "detail": "In `Client.send()` and `AsyncClient.send()`, `_is_closed` is unconditionally set to `False` at the start of the method (lines 708 and 1329). This means that if a caller uses a client after it has been explicitly closed (e.g. after `close()` or `aclose()` or exiting the context manager), the flag is reset to `False` and the close guard is defeated. The intent of the PR (issue #871) is to *prevent* requests from being sent on a closed client, or at least to warn. Instead, this code silently re-opens a logically closed client. A closed client's transport is already closed, so the subsequent request will likely fail with an opaque transport-level error rather than a clear \"client is closed\" error. The flag should be checked *before* sending and raise/warn if the client is already closed, not reset the flag.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1043,
+            1049
+          ],
+          "severity": "major",
+          "title": "`Client.close()` is a no-op when called on a client that was never opened via context manager",
+          "detail": "The `_is_closed` flag is initialized to `True` in `BaseClient.__init__`. `Client.close()` (and `AsyncClient.aclose()`) only actually close the transport when `not self.is_closed`. If the client is used without a context manager (e.g., the default/common usage pattern `client = httpx.Client(); client.get(...)`), after `send()` sets `_is_closed = False`, calling `close()` will work. However, if `close()` is called on a brand-new client that has never sent a request, the transport is never closed \u2014 this is probably fine, but the `__del__` calling `close()` on an already-`_is_closed = True` object means the transport's `close()` is never called via `__del__` for a plain `Client()` that was garbage collected without ever sending a request. The real problem is that `_is_closed = True` by default implies the transport is already closed, but the transport starts open. The semantics of the flag are inverted relative to the transport's actual state.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1073,
+            1074
+          ],
+          "severity": "major",
+          "title": "`Client.__del__` calls `self.close()` but `close()` is guarded by `is_closed` \u2014 transport may never be cleaned up",
+          "detail": "A `Client` used without a context manager sets `_is_closed = False` after the first `send()` call. If the user never calls `client.close()` explicitly, `__del__` calls `self.close()`. This path works correctly. However, a `Client` created but never used (never sent a request) has `_is_closed = True`, so `__del__` \u2192 `close()` will skip closing the transport entirely because of the `if not self.is_closed` guard. The underlying transport (`httpcore`) may have resources initialized during its own `__init__` that need to be released. This regression compared to the original code (which called `self._transport.close()` unconditionally) could leak resources.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "major",
+          "title": "`AsyncClient.__del__` issues a warning but cannot await `aclose()` \u2014 transport resources are not cleaned up",
+          "detail": "In `AsyncClient.__del__`, the code only issues a `warnings.warn()` when the client is not closed. The underlying async transport is never actually closed in this path \u2014 you cannot `await self.aclose()` inside `__del__`. This means that when an `AsyncClient` is garbage collected without being properly closed, the connections in the transport pool are silently leaked. The warning text correctly links to the documentation, but the leak is still real. A note or comment should at minimum document that the transport is leaked, and ideally the code should also try a synchronous-compatible cleanup if available.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1329,
+            1329
+          ],
+          "severity": "critical",
+          "title": "`AsyncClient.send()` sets `_is_closed = False`, defeating the close guard",
+          "detail": "Same issue as `Client.send()` at line 708. Setting `self._is_closed = False` at the start of `AsyncClient.send()` allows sending requests through an already-closed transport. After `aclose()` sets `_is_closed = True`, any subsequent `await client.get(...)` will flip the flag back to `False` and proceed to use the closed transport, likely causing an error in the transport layer rather than a clear 'client is closed' exception.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/client/test_proxies.py",
+          "line_range": [
+            123,
+            129
+          ],
+          "severity": "minor",
+          "title": "Changed proxy tests may not actually test proxy cleanup behaviour",
+          "detail": "The `test_async_proxy_close` and `test_sync_proxy_close` tests were changed to use `https://` as the proxy scheme and to send an HTTP (not HTTPS) request to `http://example.com`. With `proxies={\"https://\": PROXY_URL}`, the HTTP request won't be routed through the proxy at all. The original intent was to test that the proxy transport is properly closed. With this change, the proxy transport for `https://` is created but the HTTP request bypasses it. The test may pass (no exception on `aclose()`/`close()`) but no longer validates that the proxy transport itself is properly closed/cleaned up. This was changed to avoid an error triggered by the `send()` call, but it may be testing a different scenario than intended. The proxy cleanup path for the `https://` key is exercised on close, but it's worth verifying this matches the original intent.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 10477,
+      "tokens_out": 1534,
+      "cost_usd": 0.054441,
+      "duration_s": 29.630200291983783,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            708,
+            708
+          ],
+          "severity": "major",
+          "title": "State mutation inside `send()` silently re-opens a closed client",
+          "detail": "Setting `self._is_closed = False` at the top of `Client.send()` (and likewise in `AsyncClient.send()` at line 1329) means that calling `send()` on an already-closed client will reset the closed flag and proceed normally instead of raising an error or warning. The PR description says the goal is to *prevent* requests from being sent after the client is closed, but the implementation does the opposite: it allows \u2013 and silently hides \u2013 requests made to a closed client. An attacker or a buggy caller that holds a reference to a closed client can keep making requests indefinitely with no indication that anything is wrong. The flag should be checked *before* resetting, and an error/warning should be emitted if `_is_closed` is already `True` when `send()` is entered.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1073,
+            1074
+          ],
+          "severity": "major",
+          "title": "`Client.__del__` silently suppresses double-close / resource-cleanup errors",
+          "detail": "`Client.__del__` unconditionally calls `self.close()`. Because `close()` is now guarded by `if not self.is_closed`, this is safe at first glance, but `_is_closed` starts as `True` (line 83), so for a client that was *never* used, `__del__` calls `close()` which is a no-op \u2014 fine. However, for a client that *was* used and is now being garbage-collected without an explicit close, `__del__` will call `close()` (which closes the transport) without any warning to the user. This is inconsistent with `AsyncClient.__del__`, which *does* emit a warning. More importantly, `__del__` calling `close()` can trigger exceptions during interpreter shutdown (when modules may already be unloaded), and such exceptions are silently swallowed, potentially leaving resources in an inconsistent state. The async `__del__` does not actually await `aclose()` (it can't), so the warning is correct but the async transport is never actually closed from `__del__`, which is an expected limitation \u2014 but it should be documented.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "minor",
+          "title": "`AsyncClient.__del__` warning uses `self!r` \u2014 potential exception during GC",
+          "detail": "Calling `repr(self)` inside `__del__` can trigger additional Python code (the `__repr__` method), which may itself fail during garbage collection or interpreter teardown. If `__repr__` raises, the exception is silently swallowed by the GC but the warning is never issued, making the failure invisible. Consider using a simpler string that does not depend on object state, e.g. `f'Unclosed AsyncClient (id={id(self)})'`.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "minor",
+          "title": "`AsyncClient.__del__` cannot close async transport \u2014 resource leak",
+          "detail": "The `__del__` method on `AsyncClient` only emits a warning but does not close the underlying transport or proxies, since `aclose()` is a coroutine and cannot be awaited in `__del__`. While the warning is useful, any open sockets/connections held by the transport will be leaked until the OS reclaims them. This is a known Python limitation, but it is worth documenting explicitly and possibly calling the synchronous cleanup path if one exists.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 4159,
+      "tokens_out": 954,
+      "cost_usd": 0.026787,
+      "duration_s": 19.282450041966513,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            87,
+            89
+          ],
+          "severity": "nit",
+          "title": "Docstring grammar: 'Check if the client being closed'",
+          "detail": "The docstring reads 'Check if the client being closed' \u2014 missing 'is'. Should be 'Check if the client is closed.' to match the style of surrounding docstrings.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1688,
+            1693
+          ],
+          "severity": "nit",
+          "title": "Missing blank line after `self._is_closed = True` in `__aexit__` (inconsistent with sync counterpart)",
+          "detail": "In the synchronous `__exit__` (lines 1065-1071) there is a blank line between `self._is_closed = True` and the transport/proxy calls. The async `__aexit__` omits that blank line, making the two parallel blocks visually inconsistent.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            219,
+            219
+          ],
+          "severity": "nit",
+          "title": "Test function name uses 'cause' instead of 'causes'",
+          "detail": "`test_that_send_cause_async_client_to_be_not_closed` should be `test_that_send_causes_async_client_to_be_not_closed` to match English grammar. The sync counterpart in test_client.py (line 258) has the same issue: `test_that_send_cause_client_to_be_not_closed`.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "tests/client/test_client.py",
+          "line_range": [
+            258,
+            258
+          ],
+          "severity": "nit",
+          "title": "Test function name uses 'cause' instead of 'causes'",
+          "detail": "`test_that_send_cause_client_to_be_not_closed` \u2014 verb should be 'causes'. Mirror issue of the async test.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            245,
+            245
+          ],
+          "severity": "nit",
+          "title": "Local variable named `async_client` where plain `client` is used everywhere else",
+          "detail": "All other tests in this file (and the added tests above) use the variable name `client` for `httpx.AsyncClient` instances. The warning test uses `async_client`, which is inconsistent with the established naming convention in the file.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "minor",
+          "title": "`warnings.warn` missing explicit `stacklevel` and `category` arguments",
+          "detail": "The codebase uses `warn_deprecated` (imported from `._utils`) for warnings, which likely already sets appropriate defaults. If `warnings.warn` is used directly, the existing Python convention is to pass `stacklevel=2` and an explicit `category=ResourceWarning` (the standard category for unclosed resources in Python). Without these, the warning points to the wrong call site and uses `UserWarning` instead of the more semantically correct `ResourceWarning`.",
+          "confidence": 0.8
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 8056,
+      "tokens_out": 864,
+      "cost_usd": 0.037128,
+      "duration_s": 15.42820308310911,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1073,
+            1074
+          ],
+          "severity": "major",
+          "title": "Client.__del__ triggers close() but no test covers this path",
+          "detail": "The synchronous Client gains a __del__ method that calls self.close(), but there is no test that verifies a Client instance that has been used (is_closed=False) emits any behaviour (or silently closes) when garbage-collected. The async side has test_that_async_client_caused_warning_when_being_deleted, but the sync side has no equivalent. There is also no test verifying that __del__ on an already-closed Client is a no-op (the guard 'if not self.is_closed' is absent from the sync __del__, so it always calls close(), which itself has the guard \u2014 but this path is still untested).",
+          "confidence": 0.9
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1043,
+            1049
+          ],
+          "severity": "minor",
+          "title": "Client.close() idempotency (already-closed branch) is not tested",
+          "detail": "The new guard 'if not self.is_closed' in Client.close() means calling close() on an already-closed client is a no-op. No test verifies that calling close() twice does not raise or produce unexpected side-effects. The async counterpart (aclose()) has the same gap.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1663,
+            1672
+          ],
+          "severity": "minor",
+          "title": "AsyncClient.aclose() idempotency (already-closed branch) is not tested",
+          "detail": "Same as the sync case: the guard 'if not self.is_closed' in aclose() is new behaviour, but no test calls aclose() twice to confirm the second call is a safe no-op.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1065,
+            1071
+          ],
+          "severity": "minor",
+          "title": "Client.__exit__ idempotency guard is untested",
+          "detail": "The new 'if not self.is_closed' guard inside Client.__exit__ (and the symmetric AsyncClient.__aexit__ guard) means that exiting a context that is somehow already marked closed skips transport teardown. No test exercises this branch.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1688,
+            1693
+          ],
+          "severity": "minor",
+          "title": "AsyncClient.__aexit__ idempotency guard is untested",
+          "detail": "The 'if not self.is_closed' guard inside AsyncClient.__aexit__ is new but has no test that enters the already-closed branch.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "major",
+          "title": "AsyncClient.__del__ warning is only tested for UserWarning category \u2014 warning message content is not asserted",
+          "detail": "test_that_async_client_caused_warning_when_being_deleted only checks that a UserWarning is issued via pytest.warns(UserWarning), but does not assert on the warning message text (URL, repr of client, etc.). If the message regresses the test would still pass. Also, the no-warning path (deleting an already-closed AsyncClient) is not covered \u2014 del on a closed client should not warn, but there is no test for that.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            708,
+            708
+          ],
+          "severity": "minor",
+          "title": "Client.send() setting _is_closed=False after being already open is untested as a distinct state transition",
+          "detail": "The line 'self._is_closed = False' in Client.send() is exercised by test_that_send_cause_client_to_be_not_closed, but the test does not also verify that a second send() on the same (already open) client leaves it still open, nor that send() on an already-closed client (closed via close()) reopens it \u2014 which may or may not be intentional design.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/client/test_client.py",
+          "line_range": [
+            258,
+            263
+          ],
+          "severity": "minor",
+          "title": "test_that_send_cause_client_to_be_not_closed does not call close() after \u2014 resource leak in test",
+          "detail": "The synchronous test opens a real connection via client.get() but never calls client.close(), leaving the underlying transport unclosed. Apart from the resource concern, it also means the 'close after use' path is not tested for the sync client (unlike the async test which does call aclose()).",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 12295,
+      "tokens_out": 1204,
+      "cost_usd": 0.054945,
+      "duration_s": 22.90621683304198,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness, security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            708,
+            708
+          ],
+          "severity": "critical",
+          "title": "`send()` / `AsyncClient.send()` resets `_is_closed = False`, silently re-opening a closed client",
+          "detail": "Both `Client.send()` (line 708) and `AsyncClient.send()` (line 1329) unconditionally set `self._is_closed = False` at method entry. This completely defeats the close-guard that the PR intends to introduce: after `close()`/`aclose()` sets `_is_closed = True`, any subsequent call to `send()` (or the high-level helpers that delegate to it) silently resets the flag to `False` and proceeds to use the already-closed transport. The transport-level error that follows will be opaque and confusing. The flag should be *checked before* being set \u2014 if `_is_closed` is already `True` when `send()` is entered, a clear `RuntimeError` (or at minimum a warning) should be raised. From a security/correctness standpoint, a caller holding a stale reference to a closed client can keep making requests with no indication that anything is wrong.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "correctness, security",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "major",
+          "title": "`AsyncClient.__del__` warns but cannot close the async transport \u2014 connections are leaked",
+          "detail": "`AsyncClient.__del__` correctly issues a warning when the client is collected without being closed, but it cannot `await self.aclose()` because `__del__` is synchronous. As a result, all open connections/sockets held by the async transport pool are silently leaked until the OS reclaims them. This is a known Python limitation for async resources, but it should be explicitly documented. If a synchronous cleanup path is available on the underlying transport, it should be called here as a best-effort fallback.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "security, test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1073,
+            1074
+          ],
+          "severity": "major",
+          "title": "`Client.__del__` closes silently with no warning, and is inconsistent with `AsyncClient.__del__`; path is untested",
+          "detail": "`Client.__del__` calls `self.close()` without emitting any warning when the client is garbage-collected without an explicit `close()`. `AsyncClient.__del__` (line 1695) does emit a warning for the equivalent situation. This inconsistency means sync clients can be silently leaked without any developer-visible feedback. Additionally, `__del__` calling `close()` can raise exceptions during interpreter shutdown (when modules may be partially unloaded); these exceptions are silently swallowed by the GC machinery. The sync `__del__` should mirror the async side and emit a `ResourceWarning`-category warning when `not self.is_closed`. No test covers the `Client.__del__` path at all (the async side has `test_that_async_client_caused_warning_when_being_deleted`).",
+          "confidence": 0.88
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1043,
+            1049
+          ],
+          "severity": "major",
+          "title": "`_is_closed` initialized to `True` causes `close()` / `__del__` to skip transport teardown for never-used clients",
+          "detail": "`BaseClient.__init__` sets `_is_closed = True`. `Client.close()` (and `AsyncClient.aclose()`) are guarded by `if not self.is_closed`, so they become no-ops when `_is_closed` is `True`. For a client that is constructed but never sends a request, `_is_closed` remains `True`, so both an explicit `close()` call and `__del__` \u2192 `close()` will skip closing the transport entirely. If `httpcore`'s transport initializes resources in its own `__init__`, those resources will be leaked \u2014 a regression from the pre-PR code which called `self._transport.close()` unconditionally. The semantics of the flag are inverted relative to the transport's actual lifecycle: the transport starts open, but the flag says it is closed. Consider initializing `_is_closed = False` and restructuring so that the transport is only opened on first use.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "security, style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "minor",
+          "title": "`warnings.warn` in `AsyncClient.__del__` uses wrong category, missing `stacklevel`, and fragile `repr(self)`",
+          "detail": "Three sub-issues with the `warnings.warn` call: (1) The standard Python category for unclosed resources is `ResourceWarning`, not the default `UserWarning`. The test asserts `UserWarning`, which will need updating too. (2) No `stacklevel` is passed; for `__del__`-issued warnings `stacklevel=2` (or similar) is conventional. (3) The format string uses `{self!r}`, which invokes `__repr__`. If `__repr__` raises during GC or interpreter teardown the entire warning is silently swallowed. Prefer a simpler string such as `f'Unclosed AsyncClient (id={id(self)})'`.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1043,
+            1072
+          ],
+          "severity": "minor",
+          "title": "Idempotency guards in `close()`, `aclose()`, `__exit__`, and `__aexit__` are untested",
+          "detail": "The new `if not self.is_closed` guards in `Client.close()`, `AsyncClient.aclose()`, `Client.__exit__`, and `AsyncClient.__aexit__` represent new branches that protect against double-close. None of these branches have corresponding tests (e.g., calling `close()` twice, or using a client as a context manager after it has already been closed). Without tests, regressions to this guard logic will go undetected.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            245,
+            245
+          ],
+          "severity": "minor",
+          "title": "`test_that_async_client_caused_warning_when_being_deleted` does not assert warning content or the no-warning path",
+          "detail": "The test only checks that a `UserWarning` is issued; it does not assert anything about the warning message (URL, client repr, etc.), so a regression in the message text would go undetected. Additionally, there is no complementary test confirming that deleting an *already-closed* `AsyncClient` does **not** emit a warning.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/client/test_proxies.py",
+          "line_range": [
+            123,
+            129
+          ],
+          "severity": "minor",
+          "title": "Proxy close tests no longer exercise the proxy transport path they were written to test",
+          "detail": "The `test_async_proxy_close` and `test_sync_proxy_close` tests were changed to use `proxies={\"https://\": PROXY_URL}` while sending an HTTP (non-TLS) request to `http://example.com`. An `https://` proxy selector does not match plain `http://` requests, so the proxy transport is created but never exercised by the test request. The tests still pass (no exception on `aclose()`/`close()`), but they no longer validate that the proxy transport itself is properly torn down after a real proxied request. The change appears to have been made to avoid a transport error triggered by the `send()` + `_is_closed` bug; fixing that root cause should allow the original proxy scheme to be restored.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/client/test_client.py",
+          "line_range": [
+            258,
+            263
+          ],
+          "severity": "minor",
+          "title": "`test_that_send_cause_client_to_be_not_closed` does not call `close()` and omits important scenarios",
+          "detail": "The synchronous test never calls `client.close()` after `client.get()`, leaving the transport unclosed (a resource leak in the test suite itself). The test also does not verify: (a) that a second `send()` on an already-open client leaves it open, or (b) that calling `send()` on a client that was explicitly closed raises an error (or behaves as intended). The async counterpart does call `aclose()` and is therefore slightly better.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            87,
+            89
+          ],
+          "severity": "nit",
+          "title": "Docstring grammar: 'Check if the client being closed'",
+          "detail": "The `is_closed` property docstring reads 'Check if the client being closed' \u2014 it is missing the word 'is'. Should read 'Check if the client is closed.'",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            219,
+            219
+          ],
+          "severity": "nit",
+          "title": "Test function names use 'cause' instead of 'causes' (both sync and async)",
+          "detail": "`test_that_send_cause_async_client_to_be_not_closed` (async, line 219) and `test_that_send_cause_client_to_be_not_closed` (sync, test_client.py line 258) both have a subject-verb agreement error. The verb should be 'causes'.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            245,
+            245
+          ],
+          "severity": "nit",
+          "title": "Variable named `async_client` instead of `client` \u2014 inconsistent naming convention",
+          "detail": "The warning test uses the local variable name `async_client` for an `httpx.AsyncClient` instance, while every other test in the file (including the new ones added in this PR) uses `client`. This inconsistency makes the test harder to read.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1688,
+            1693
+          ],
+          "severity": "nit",
+          "title": "Missing blank line in `AsyncClient.__aexit__` \u2014 inconsistent with sync `__exit__`",
+          "detail": "The synchronous `__exit__` has a blank line between `self._is_closed = True` and the subsequent transport/proxy teardown calls. `AsyncClient.__aexit__` omits this blank line, making the two parallel blocks visually inconsistent.",
+          "confidence": 0.85
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 13453,
+      "tokens_out": 5836,
+      "cost_usd": 0.127899,
+      "duration_s": 103.21966404188424,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 48440,
+    "tokens_out": 10392,
+    "cost_usd": 0.3012,
+    "duration_s": 190.5
+  }
+}

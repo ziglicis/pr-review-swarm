@@ -1,0 +1,99 @@
+case: requests_5856
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The Python 2 json path is broken: json.JSONDecodeError doesn''t exist on Python 2, so the
+    except-clause handling falls over with an AttributeError (caught via failing CI during review).'
+  matched_finding: null
+  note: fixed during review — compat.py sets JSONDecodeError = ValueError on py2 and models handles
+    both branches (discussion_r667104578)
+  matchable: false
+- ground_truth: g2
+  issue: 'The new JSONDecodeError must fit the exception hierarchy: subclass the catch-all RequestException
+    (so users can catch everything requests throws) and preserve/proxy the original underlying exception''s
+    info.'
+  matched_finding: null
+  note: subclassing landed; finding 5 speculates a py2 MRO TypeError that does not occur — the real
+    residual (py3 init gap) was only caught by the full run
+  matchable: true
+- ground_truth: g3
+  issue: Unrelated changes bundled into the PR (formatting/spacing tweaks, doc edits) that reviewers
+    repeatedly asked to revert as scope creep.
+  matched_finding: 13
+  note: finding 13 flags one concrete instance of the bundled unrelated formatting (the removed compat.py
+    blank line) — the reviewers' scope-creep complaint (discussion_r667094313)
+  matchable: true
+- ground_truth: g4
+  issue: The simplejson/json resolution logic is duplicated across several files; JSONDecodeError
+    should be resolved once in compat.py and imported from there.
+  matched_finding: null
+  note: fixed during review — JSONDecodeError resolved once in compat.py (discussion_r671444604)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: JSONDecodeError from guess_json_utf early-return path propagates unwrapped
+  valid: true
+  note: 'verified against the head: the guess_json_utf fast path only catches UnicodeDecodeError,
+    so raw json/simplejson JSONDecodeError escapes unwrapped — vindicated by the requests 2.27.0
+    changelog entry fixing exactly this'
+- finding: 1
+  title: No tests verify JSONDecodeError inheritance/aliasing guarantees
+  valid: true
+  note: 'factual: no inheritance assertions'
+- finding: 2
+  title: requests.exceptions.JSONDecodeError does not subclass both json.JSONDecodeError and simplejson.JSONDecodeError;
+    simplejson branch untested
+  valid: true
+  note: 'real subtlety: with simplejson installed, except json.JSONDecodeError no longer catches
+    requests'' exception'
+- finding: 3
+  title: Python 2 branch untested and uses deprecated `.message` attribute
+  valid: uncertain
+  note: '''removed from BaseException in 2.6+'' is wrong (deprecated, present in 2.7); the fragility
+    is real, the mechanism stated is not'
+- finding: 4
+  title: 'Test coverage gaps: only one trigger path tested; None-content and invalid-JSON-text paths
+    missing'
+  valid: true
+  note: factual, including the observation that bytes/20 may fail at charset detection instead of
+    JSON parsing
+- finding: 5
+  title: Potential MRO conflict when CompatJSONDecodeError is ValueError on Python 2
+  valid: false
+  note: 'no MRO conflict exists: IOError and ValueError share the py2 StandardError hierarchy and
+    linearize fine'
+- finding: 6
+  title: Exception chaining suppressed — original exception context lost
+  valid: false
+  note: raise ... from is a SyntaxError on Python 2, which this codebase still supported; implicit
+    __context__ survives on py3 anyway
+- finding: 7
+  title: Import-time simplejson inconsistency possible in mocked test environments
+  valid: false
+  note: contrived sys.modules mid-import mocking race
+- finding: 8
+  title: 'Docstring style inconsistency: lowercase ''json'' and missing trailing period'
+  valid: true
+  note: confirmed
+- finding: 9
+  title: '"python" should be capitalised to "Python" in documentation'
+  valid: true
+  note: trivial factual
+- finding: 10
+  title: Missing newline at end of file
+  valid: true
+  note: confirmed missing EOF newline (though the claim that the prior version had one is wrong —
+    it was missing before too)
+- finding: 11
+  title: New import should be merged into the existing grouped import block
+  valid: uncertain
+  note: aliased import could be folded in; separate line arguably clearer
+- finding: 12
+  title: Missing second space before inline comment (PEP 8)
+  valid: true
+  note: confirmed
+- finding: 13
+  title: Blank line removed between import block and surrounding code
+  valid: true
+  note: 'confirmed: unrelated blank-line removal — the one finding touching the reviewers'' scope-creep
+    complaint'

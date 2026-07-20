@@ -1,0 +1,76 @@
+case: requests_2523
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: The brute-force test making 100 HTTP requests is aggressive and not reliably failing; a
+    deterministic test coordinating threads with threading.Event and no network would be better.
+  matched_finding: null
+  note: no finding raises the determinism/no-network redesign the reviewer asked for; finding 1 flags
+    only the vacuous skip and weak assertions of the same test
+  matchable: true
+- ground_truth: g2
+  issue: The thread-local attribute should be private (underscore-prefixed) and clearly named (e.g.
+    _thread_local) so readers understand it without reading the whole class.
+  matched_finding: null
+  note: fixed during review — the attribute is private and named _thread_local at the reviewed head
+    (discussion_r27754250)
+  matchable: false
+- ground_truth: g3
+  issue: The getattr fallback for num_401_calls is dead weight after the refactor — the value is
+    always assigned in __call__, so the default branch can never trigger and should be removed.
+  matched_finding: null
+  note: fixed during review — the getattr fallback is gone; handle_401 reads the thread-local directly
+    (discussion_r27659035)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: num_401_calls initialized to None — causes TypeError in handle_401 and bypasses 401-loop
+    guard
+  valid: false
+  note: 'unreachable in requests'' synchronous model: hooks are registered inside __call__ (which
+    sets num_401_calls=1 before the request is sent) and fire on the same thread post-send; requests
+    keeps the None initialization to this day without incident; the Python 2 ''silent bypass'' claim
+    is also wrong — `None += 1` raises TypeError there too'
+- finding: 1
+  title: Threaded test silently skipped when ThreadPool unavailable, no status-code assertion, and
+    no isolation of per-thread state verified
+  valid: true
+  note: 'factual: vacuous skip plus missing status/isolation assertions'
+- finding: 2
+  title: Per-thread state initialized only once per thread — stale credentials/nonce may persist
+    across requests in thread-pool scenarios
+  valid: uncertain
+  note: real design property but pre-existing persistence semantics preserved; presented as reviewer
+    disagreement
+- finding: 3
+  title: handle_redirect writes num_401_calls without calling init_per_thread_state — other thread-local
+    fields may be uninitialized
+  valid: false
+  note: requests never dispatches hooks across threads; the premise requires API misuse
+- finding: 4
+  title: Sentinel attribute 'init' is too generic — prefer a more descriptive name
+  valid: uncertain
+  note: defensible naming nit; requests keeps 'init' to this day
+- finding: 5
+  title: Threaded test missing coverage for file-body (pos) isolation and num_401_calls >= 2 branch
+    in concurrent scenarios
+  valid: true
+  note: 'factual: no concurrent file-body test and the 401-limit branch is untested'
+- finding: 6
+  title: Missing spaces around `=` in keyword argument
+  valid: true
+  note: PEP 8 violation confirmed
+- finding: 7
+  title: '`do_request` returns literal `1` that is never used'
+  valid: true
+  note: 'factual: dead return value'
+- finding: 8
+  title: 'Test method style: missing blank line after `def`, and skip-guard should use a decorator
+    rather than an inline conditional'
+  valid: false
+  note: 'backwards: the new test HAS a blank line after def while its siblings do not; the skipif
+    half duplicates finding 1'
+- finding: 9
+  title: Comment phrasing differs from surrounding descriptive style
+  valid: false
+  note: imperative comments are pervasive in this codebase; phrasing noise

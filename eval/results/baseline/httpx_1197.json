@@ -1,0 +1,251 @@
+{
+  "case": "httpx_1197",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/encode/httpx/pull/1197",
+  "head_sha": "c01e78896c28c1a2302e9e5733ef0e54848ad3b1",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180416,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 708,
+      "line_end": 708,
+      "severity": "critical",
+      "title": "`Client.send()` re-opens a closed client by resetting `_is_closed = False`",
+      "detail": "Setting `self._is_closed = False` at the start of `send()` (and identically in `AsyncClient.send()` at line 1329) means that any attempt to use a client after it has been explicitly closed will silently re-mark it as open. This completely defeats the purpose described in issue #871 \u2014 preventing requests from being sent after the client is closed. The transport was already shut down, but the flag is flipped back, so `is_closed` will return `False` even though the underlying transport is closed. The fix should be to raise a `RuntimeError` (or similar) when `_is_closed` is `True` at the point `send()` is called, rather than clearing the flag. The flag itself should only be cleared when the client is truly opened (via `__enter__`/`__aenter__`).",
+      "confidence": 0.98
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 1329,
+      "line_end": 1329,
+      "severity": "critical",
+      "title": "`AsyncClient.send()` re-opens a closed client by resetting `_is_closed = False`",
+      "detail": "Same issue as `Client.send()`. Setting `self._is_closed = False` in `AsyncClient.send()` means that calling `.send()` (or any HTTP method) on an already-closed `AsyncClient` silently re-marks it as open instead of raising an error. The transport is already shut down at this point, so the request will likely fail anyway, but the `is_closed` flag will now incorrectly report `False`, and more importantly a new `__del__` warning will fire on the next GC cycle for a client that was already properly closed.",
+      "confidence": 0.98
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 1695,
+      "line_end": 1701,
+      "severity": "major",
+      "title": "`AsyncClient.__del__` warning may cause exceptions during interpreter shutdown",
+      "detail": "Calling `warnings.warn(f\"Unclosed {self!r}. ...\")` inside `__del__` can raise exceptions if the interpreter is shutting down (e.g., `self.__repr__` calls into partially-collected objects, or the `warnings` module itself is being torn down). The standard pattern used by asyncio and aiohttp is to use `warnings.warn(..., ResourceWarning, source=self)` and also guard with `sys.is_finalizing()`. Additionally, using `ResourceWarning` (rather than the default `UserWarning`) is the conventional category for unclosed resource warnings in Python \u2014 it matches the pattern of built-in socket/file warnings and is separately filterable.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 83,
+      "line_end": 83,
+      "severity": "major",
+      "title": "Initial state `_is_closed = True` is semantically wrong for a brand-new client",
+      "detail": "A freshly constructed `Client` or `AsyncClient` has never been opened, so it is not truly \"closed\" \u2014 it is \"not yet opened\". Starting `_is_closed = True` causes: (1) `Client.close()` (and `AsyncClient.aclose()`) to be no-ops on a fresh client since the guard `if not self.is_closed` is `False`, meaning the transport's `close`/`aclose` is never called. This may be intentional if the transport is also lazily initialised, but it is fragile. (2) The `__del__` warning on `AsyncClient` will correctly not fire for a client that was never used \u2014 but only by accident. If the developer's intent is to distinguish \"never opened\" from \"opened and not closed\", a third state (e.g. `_is_closed: Optional[bool] = None`) would be cleaner. Consider documenting the semantic choice explicitly.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 1073,
+      "line_end": 1074,
+      "severity": "major",
+      "title": "`Client.__del__` calls `self.close()` which silently does nothing for an unclosed client",
+      "detail": "`Client.__del__` calls `self.close()`, but `close()` guards with `if not self.is_closed`. For a client that was never explicitly closed (e.g. used via `.get()` which sets `_is_closed = False`), this means `close()` *will* be called and transports will be closed. However, unlike `AsyncClient.__del__`, there is no warning emitted. The asymmetry between sync `Client` (no warning on unclosed) and `AsyncClient` (warning on unclosed) seems intentional for sync usage, but users of `Client` who forget to close it also leak resources with no feedback. If a warning is desired for consistency, it should also be added here.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/client/test_async_client.py",
+      "line_start": 244,
+      "line_end": 250,
+      "severity": "minor",
+      "title": "Warning test relies on `del` triggering `__del__` immediately, which is CPython-specific",
+      "detail": "The test `test_that_async_client_caused_warning_when_being_deleted` uses `del async_client` expecting `__del__` to be called immediately and emit a warning. This is only guaranteed in CPython (reference counting). On PyPy or other implementations, `__del__` may not be called until a GC cycle, so `pytest.warns` may not catch it. The test should be made GC-safe (e.g., force a GC cycle or mock `__del__` directly).",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/client/test_proxies.py",
+      "line_start": 123,
+      "line_end": 137,
+      "severity": "minor",
+      "title": "Proxy close tests now require network-like activity to arm the close guard",
+      "detail": "The proxy close tests (`test_async_proxy_close`, `test_sync_proxy_close`) were changed to add a `.get()` call and change the proxy scheme from `all://` to `https://` so that requests go out unproxied. This makes the test name misleading \u2014 they are no longer purely testing that the proxy client closes without error; they now also send a real HTTP request (to `http://example.com`). More importantly, the original tests verified that calling `aclose()`/`close()` without ever making a request works correctly. That case is now untested.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 1065,
+      "line_end": 1071,
+      "severity": "minor",
+      "title": "`Client.__exit__` guard `if not self.is_closed` skips transport exit if already closed",
+      "detail": "If somehow `close()` is called before `__exit__` runs (e.g., the user explicitly called `.close()` inside the `with` block), then `__exit__` will skip calling `self._transport.__exit__()`. This might cause the transport to not get a chance to do its cleanup via the context-manager protocol, since `close()` calls `.close()` not `.__exit__()`. This was also a pre-existing potential issue, but the new guard makes it more likely to be triggered silently.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/client/test_client.py",
+      "line_start": 258,
+      "line_end": 263,
+      "severity": "minor",
+      "title": "`test_that_send_cause_client_to_be_not_closed` makes a real HTTP request without a mock transport",
+      "detail": "`client.get(\"http://example.com\")` in the sync test will attempt a real network connection unless there's a default mock transport in the test environment. The async version has the same issue. If tests run in a no-network environment (CI), these tests will fail with a connection error rather than asserting the `is_closed` state. The test should use a mock transport or the `HTTPX_TEST_TRANSPORT` fixture if available.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_client.py",
+      "line_start": 87,
+      "line_end": 89,
+      "severity": "nit",
+      "title": "Docstring grammar: \"Check if the client being closed\"",
+      "detail": "The docstring says \"Check if the client being closed\" \u2014 it should read \"Check if the client is closed\" or \"Whether the client has been closed\".",
+      "confidence": 1.0
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            708,
+            708
+          ],
+          "severity": "critical",
+          "title": "`Client.send()` re-opens a closed client by resetting `_is_closed = False`",
+          "detail": "Setting `self._is_closed = False` at the start of `send()` (and identically in `AsyncClient.send()` at line 1329) means that any attempt to use a client after it has been explicitly closed will silently re-mark it as open. This completely defeats the purpose described in issue #871 \u2014 preventing requests from being sent after the client is closed. The transport was already shut down, but the flag is flipped back, so `is_closed` will return `False` even though the underlying transport is closed. The fix should be to raise a `RuntimeError` (or similar) when `_is_closed` is `True` at the point `send()` is called, rather than clearing the flag. The flag itself should only be cleared when the client is truly opened (via `__enter__`/`__aenter__`).",
+          "confidence": 0.98
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1329,
+            1329
+          ],
+          "severity": "critical",
+          "title": "`AsyncClient.send()` re-opens a closed client by resetting `_is_closed = False`",
+          "detail": "Same issue as `Client.send()`. Setting `self._is_closed = False` in `AsyncClient.send()` means that calling `.send()` (or any HTTP method) on an already-closed `AsyncClient` silently re-marks it as open instead of raising an error. The transport is already shut down at this point, so the request will likely fail anyway, but the `is_closed` flag will now incorrectly report `False`, and more importantly a new `__del__` warning will fire on the next GC cycle for a client that was already properly closed.",
+          "confidence": 0.98
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1695,
+            1701
+          ],
+          "severity": "major",
+          "title": "`AsyncClient.__del__` warning may cause exceptions during interpreter shutdown",
+          "detail": "Calling `warnings.warn(f\"Unclosed {self!r}. ...\")` inside `__del__` can raise exceptions if the interpreter is shutting down (e.g., `self.__repr__` calls into partially-collected objects, or the `warnings` module itself is being torn down). The standard pattern used by asyncio and aiohttp is to use `warnings.warn(..., ResourceWarning, source=self)` and also guard with `sys.is_finalizing()`. Additionally, using `ResourceWarning` (rather than the default `UserWarning`) is the conventional category for unclosed resource warnings in Python \u2014 it matches the pattern of built-in socket/file warnings and is separately filterable.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            83,
+            83
+          ],
+          "severity": "major",
+          "title": "Initial state `_is_closed = True` is semantically wrong for a brand-new client",
+          "detail": "A freshly constructed `Client` or `AsyncClient` has never been opened, so it is not truly \"closed\" \u2014 it is \"not yet opened\". Starting `_is_closed = True` causes: (1) `Client.close()` (and `AsyncClient.aclose()`) to be no-ops on a fresh client since the guard `if not self.is_closed` is `False`, meaning the transport's `close`/`aclose` is never called. This may be intentional if the transport is also lazily initialised, but it is fragile. (2) The `__del__` warning on `AsyncClient` will correctly not fire for a client that was never used \u2014 but only by accident. If the developer's intent is to distinguish \"never opened\" from \"opened and not closed\", a third state (e.g. `_is_closed: Optional[bool] = None`) would be cleaner. Consider documenting the semantic choice explicitly.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1073,
+            1074
+          ],
+          "severity": "major",
+          "title": "`Client.__del__` calls `self.close()` which silently does nothing for an unclosed client",
+          "detail": "`Client.__del__` calls `self.close()`, but `close()` guards with `if not self.is_closed`. For a client that was never explicitly closed (e.g. used via `.get()` which sets `_is_closed = False`), this means `close()` *will* be called and transports will be closed. However, unlike `AsyncClient.__del__`, there is no warning emitted. The asymmetry between sync `Client` (no warning on unclosed) and `AsyncClient` (warning on unclosed) seems intentional for sync usage, but users of `Client` who forget to close it also leak resources with no feedback. If a warning is desired for consistency, it should also be added here.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/client/test_async_client.py",
+          "line_range": [
+            244,
+            250
+          ],
+          "severity": "minor",
+          "title": "Warning test relies on `del` triggering `__del__` immediately, which is CPython-specific",
+          "detail": "The test `test_that_async_client_caused_warning_when_being_deleted` uses `del async_client` expecting `__del__` to be called immediately and emit a warning. This is only guaranteed in CPython (reference counting). On PyPy or other implementations, `__del__` may not be called until a GC cycle, so `pytest.warns` may not catch it. The test should be made GC-safe (e.g., force a GC cycle or mock `__del__` directly).",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/client/test_proxies.py",
+          "line_range": [
+            123,
+            137
+          ],
+          "severity": "minor",
+          "title": "Proxy close tests now require network-like activity to arm the close guard",
+          "detail": "The proxy close tests (`test_async_proxy_close`, `test_sync_proxy_close`) were changed to add a `.get()` call and change the proxy scheme from `all://` to `https://` so that requests go out unproxied. This makes the test name misleading \u2014 they are no longer purely testing that the proxy client closes without error; they now also send a real HTTP request (to `http://example.com`). More importantly, the original tests verified that calling `aclose()`/`close()` without ever making a request works correctly. That case is now untested.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            1065,
+            1071
+          ],
+          "severity": "minor",
+          "title": "`Client.__exit__` guard `if not self.is_closed` skips transport exit if already closed",
+          "detail": "If somehow `close()` is called before `__exit__` runs (e.g., the user explicitly called `.close()` inside the `with` block), then `__exit__` will skip calling `self._transport.__exit__()`. This might cause the transport to not get a chance to do its cleanup via the context-manager protocol, since `close()` calls `.close()` not `.__exit__()`. This was also a pre-existing potential issue, but the new guard makes it more likely to be triggered silently.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/client/test_client.py",
+          "line_range": [
+            258,
+            263
+          ],
+          "severity": "minor",
+          "title": "`test_that_send_cause_client_to_be_not_closed` makes a real HTTP request without a mock transport",
+          "detail": "`client.get(\"http://example.com\")` in the sync test will attempt a real network connection unless there's a default mock transport in the test environment. The async version has the same issue. If tests run in a no-network environment (CI), these tests will fail with a connection error rather than asserting the `is_closed` state. The test should use a mock transport or the `HTTPX_TEST_TRANSPORT` fixture if available.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_client.py",
+          "line_range": [
+            87,
+            89
+          ],
+          "severity": "nit",
+          "title": "Docstring grammar: \"Check if the client being closed\"",
+          "detail": "The docstring says \"Check if the client being closed\" \u2014 it should read \"Check if the client is closed\" or \"Whether the client has been closed\".",
+          "confidence": 1.0
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 37330,
+      "tokens_out": 2477,
+      "cost_usd": 0.149145,
+      "duration_s": 47.42045675008558,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 37330,
+    "tokens_out": 2477,
+    "cost_usd": 0.149145,
+    "duration_s": 47.4
+  }
+}

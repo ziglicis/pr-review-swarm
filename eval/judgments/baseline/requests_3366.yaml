@@ -1,0 +1,78 @@
+case: requests_3366
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'Header validation must handle both unicode and byte-string headers: matching a native-string
+    regex against an opaque bytestring misbehaves on Python 3, so separate byte and str regexes are
+    required.'
+  matched_finding: null
+  note: fixed during review — separate _CLEAN_HEADER_REGEX_BYTE/_STR exist at the reviewed head (discussion_r69270130)
+  matchable: false
+- ground_truth: g2
+  issue: The compiled regexes are created inside the function, losing the benefit of re.compile;
+    they should be hoisted to module scope with underscore-prefixed names.
+  matched_finding: null
+  note: fixed during review — regexes are module-level, compiled, underscore-prefixed (discussion_r69313226)
+  matchable: false
+- ground_truth: g3
+  issue: Using the validity check as a filter() predicate misrepresents what it does (nothing is
+    filtered); rename to check_header_validity and call it in the single loop that sets headers.
+  matched_finding: null
+  note: fixed during review — renamed check_header_validity and called in the single prepare_headers
+    loop (discussion_r69365861)
+  matchable: false
+- ground_truth: g4
+  issue: 'The byte-string regex is missing an escaped backslash: ''\S'' in a plain (non-raw) byte
+    string needs to be ''\\S'' to mean the regex class.'
+  matched_finding: null
+  note: fixed during review — the byte regex has the escaped backslash b'^\\S...' at the reviewed
+    head (discussion_r69381140)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Regex does not match on non-string/non-bytes header values (e.g. integers), causing TypeError
+    instead of InvalidHeader
+  valid: true
+  note: verified TypeError; this shipped as the real requests 2.11 integer-header regression (#3477),
+    hotfixed in 2.11.1
+- finding: 1
+  title: Header name (key) is never validated — only the value is checked
+  valid: true
+  note: 'factual: only the value is validated; modern requests validates both name and value (HEADER_VALIDATORS)'
+- finding: 2
+  title: Regex allows values starting with \r or \n (bare carriage-return or linefeed at start)
+  valid: true
+  note: muddled path (first refutes its own \S worry) but lands on the verified $-anchor gap
+- finding: 3
+  title: Headers added after prepare_headers() (e.g. by prepare_body, prepare_auth, prepare_cookies)
+    are never validated
+  valid: uncertain
+  note: real residual paths, but arguably outside the PR's declared scope (user headers dict) and
+    those values are mostly library-generated
+- finding: 4
+  title: Missing blank line before function definition (PEP 8)
+  valid: true
+  note: 'confirmed: single blank line before the new block'
+- finding: 5
+  title: New tests require a live httpbin server — should use unit tests against PreparedRequest
+    instead
+  valid: true
+  note: 'factual and sharper than the full run''s version: the check is pure and testable via PreparedRequest
+    without network'
+- finding: 6
+  title: 'test_header_no_leading_space: tab character test uses spaces, not an actual tab'
+  valid: true
+  note: 'confirmed: spaces not tab'
+- finding: 7
+  title: test_header_validation uses str.encode(u'fbbq') which always produces b'fbbq', not a unicode
+    test
+  valid: uncertain
+  note: muddled mix of a py2/3-compat idiom observation and a thin coverage point
+- finding: 8
+  title: Trailing whitespace on import line
+  valid: true
+  note: confirmed in diff
+- finding: 9
+  title: Missing space after comma in test_header_validation signature
+  valid: true
+  note: confirmed in diff

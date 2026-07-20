@@ -1,0 +1,76 @@
+case: flask_2031
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: File handles must be closed on the error/exception paths (e.g. RequestedRangeNotSatisfiable)
+    regardless of whether send_file opened the file or received it — the initial patch leaked the
+    handle in some cases.
+  matched_finding: null
+  note: finding 0 flags the crash inside the close handler but not the reviewer's close-on-all-error-paths
+    leak concern; no leak finding present
+  matchable: true
+- ground_truth: g2
+  issue: Feature detection for werkzeug range support is too broad; it should be a werkzeug version
+    check or an existence check of the specific function, not a blanket try/except.
+  matched_finding: null
+  note: fixed during review — the reviewed head already uses the existence check the reviewer asked
+    for
+  matchable: false
+finding_validity:
+- finding: 0
+  title: AttributeError when RequestedRangeNotSatisfiable is raised on the X-Sendfile path (file
+    is None)
+  valid: true
+  note: 'confirmed: x-sendfile + filename path has file=None, so the 416 handler raises AttributeError'
+- finding: 1
+  title: Range requests incorrectly advertised and attempted when fsize is None (file-object path)
+  valid: true
+  note: 'confirmed against werkzeug 0.12 source: Accept-Ranges is advertised while range processing
+    is silently skipped when complete_length is None'
+- finding: 2
+  title: No test for range requests when a file-object (fp) is passed instead of a filename
+  valid: true
+  note: no range test passes a file object; both the 206 and 416 paths are untested for that input
+- finding: 3
+  title: Version-detection expression duplicated between helpers.py and tests
+  valid: true
+  note: verbatim duplication confirmed in both files; extracting a shared flag is a defensible ask,
+    though independent skipif detection is also idiomatic
+- finding: 4
+  title: X-Sendfile + Range request interaction not tested
+  valid: true
+  note: no test combines use_x_sendfile with a Range header
+- finding: 5
+  title: Range request tests do not assert Content-Range or Accept-Ranges response headers
+  valid: true
+  note: 206 tests assert status and body only, never Content-Range/Accept-Ranges
+- finding: 6
+  title: Fallback branch (old werkzeug without Range support) not tested
+  valid: true
+  note: conditional=True appears only inside the skipif-guarded test, so the fallback branch is never
+    exercised
+- finding: 7
+  title: x-sendfile header not removed for 206 Partial Content (and potentially 416) responses
+  valid: true
+  note: 'same real gap as the x-sendfile/206 interaction: header not stripped for partial-content
+    statuses, front-server-dependent'
+- finding: 8
+  title: 304 x-sendfile header removal not tested through the new range-aware code path
+  valid: true
+  note: no test at the reviewed head triggers a 304 at all
+- finding: 9
+  title: 'Typo in skip reason: "not implement" should be "not implemented"'
+  valid: true
+  note: typo confirmed
+- finding: 10
+  title: Chained method calls across lines are hard to read
+  valid: true
+  note: the three-line method chain is genuinely awkward
+- finding: 11
+  title: Backslash line continuation inconsistent with existing import style
+  valid: true
+  note: parentheses are the standard recommendation; minor but defensible
+- finding: 12
+  title: Redundant inline comment restates the condition
+  valid: false
+  note: the comment explains what the duck-typing check detects — informative, not redundant

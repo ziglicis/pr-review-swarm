@@ -1,0 +1,123 @@
+case: requests_3655
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: When tell() fails at prepare time, _body_position stays None and rewind_body silently skips
+    instead of raising; a sentinel object is needed to distinguish "never set" from "tell failed".
+  matched_finding: null
+  note: fixed during review — the object() sentinel distinguishing failed tell() from never-set is
+    at the reviewed head (discussion_r85648021)
+  matchable: false
+- ground_truth: g2
+  issue: Casting tell()'s result with int() is wrong on Python 2 where long (bignum) is meaningful;
+    an integer_types tuple belongs in compat.py — and the first attempt wrote (int) which isn't a
+    tuple at all.
+  matched_finding: null
+  note: fixed during review — integer_types tuple lives in compat.py and rewind_body uses isinstance
+    against it (discussion_r85892421)
+  matchable: false
+- ground_truth: g3
+  issue: The new exception name RedirectError is too vague for what it signals; it should be the
+    specific UnrewindableBodyError.
+  matched_finding: null
+  note: fixed during review — the exception is named UnrewindableBodyError (discussion_r85712220)
+  matchable: false
+- ground_truth: g4
+  issue: Tests must assert the actual content re-read after rewind and cover an object with seek()
+    but a broken/missing tell().
+  matched_finding: null
+  note: addressed during review — tests assert re-read content and cover no-seek/failed-seek/failed-tell
+    objects (discussion_r85716594)
+  matchable: false
+- ground_truth: g5
+  issue: The rewind helper doesn't use self — it's a function masquerading as a method and belongs
+    in utils.
+  matched_finding: null
+  note: fixed during review — rewind_body is a function in utils.py (discussion_r85892494)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Sensitive request body silently forwarded to cross-origin 307/308 redirect target
+  valid: false
+  note: 307/308 MUST resend the body per spec — browsers do the same; flagging spec-mandated behavior
+    as a vulnerability
+- finding: 1
+  title: No integration test for 307/308 redirect with an unrewindable body propagating `UnrewindableBodyError`
+    through the session
+  valid: true
+  note: 'factual: rewind_body is only unit-tested; no resolve_redirects-level test for the failure
+    path'
+- finding: 2
+  title: 'Rewindable guard insufficient: missing `body is not None` check allows spurious `rewind_body`
+    on null body'
+  valid: uncertain
+  note: the coupling (header purge must precede the rewindable check) is real and undocumented, but
+    there is no current defect and the hypothesized triggers are speculative
+- finding: 3
+  title: UnrewindableBodyError from failed-tell bodies propagates unhandled through the redirect
+    loop
+  valid: false
+  note: raising through the redirect loop is the designed behavior — the in-code comment says exactly
+    that ('instead of hanging the connection')
+- finding: 4
+  title: No test verifying rewind is skipped when `_body_position` is set but transfer headers are
+    absent
+  valid: true
+  note: factual; marginal branch coverage gap
+- finding: 5
+  title: '`_body_position` not asserted in `test_prepared_copy`'
+  valid: true
+  note: 'factual: copy() now copies _body_position but test_prepared_copy does not assert it'
+- finding: 6
+  title: No test for 308 Permanent Redirect body rewind (only 307 is exercised)
+  valid: true
+  note: 'factual: only 307 is exercised'
+- finding: 7
+  title: '`tell` attribute check does not verify callability; non-callable `tell` attribute would
+    raise `TypeError`'
+  valid: uncertain
+  note: callable() suggestion is defensible, but the claimed silent failure is wrong — an uncaught
+    TypeError would propagate loudly
+- finding: 8
+  title: No test for `rewind_body` called directly with `_body_position=None` (non-stream body)
+  valid: true
+  note: 'factual: rewind_body''s None-position behavior is untested'
+- finding: 9
+  title: '`rewind_body` raises `UnrewindableBodyError` when called with a `None` body and `None`
+    position'
+  valid: uncertain
+  note: raising is a reasonable contract for the function; the sync-coupling point duplicates finding
+    2
+- finding: 10
+  title: '`rewind_body` should validate `_body_position` is non-negative before calling `seek()`'
+  valid: false
+  note: _body_position is a private attribute recorded from tell(); the attacker premise is far-fetched
+- finding: 11
+  title: No test for `_body_position` sentinel when `tell()` raises `IOError` (only `OSError` is
+    tested)
+  valid: uncertain
+  note: self-admitted low priority; IOError is OSError on py3, distinct only on py2
+- finding: 12
+  title: 'Typo in error message: ''occured'' should be ''occurred'' (also echoed in test assertion)'
+  valid: true
+  note: confirmed in diff (and the typo survives in requests to this day)
+- finding: 13
+  title: Unused `Session` variable `s` in several new tests
+  valid: true
+  note: 'confirmed: six dead Session assignments'
+- finding: 14
+  title: Missing blank line before `UnrewindableBodyError` class definition
+  valid: true
+  note: 'confirmed: single blank line after RetryError'
+- finding: 15
+  title: Missing second blank line before top-level function `rewind_body`
+  valid: true
+  note: 'confirmed: single blank line before rewind_body'
+- finding: 16
+  title: Long line in `test_HTTP_307_ALLOW_REDIRECT_POST`
+  valid: uncertain
+  note: weak; the file tolerates long lines elsewhere
+- finding: 17
+  title: Duplicate `BadFileObj` inner class defined separately in multiple tests
+  valid: uncertain
+  note: defensible DRY nit; three near-identical classes kept separate arguably for test clarity

@@ -1,0 +1,68 @@
+case: httpx_2423
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: The rewrite silently changes user-visible behavior (whether line endings are kept/normalized
+    in yielded lines) — the changed test expectations reveal it, and behavior must be preserved.
+  matched_finding: null
+  note: deliberate change accepted in review (it is the PR's title); the changed test expectations
+    pin it; no finding raises the endings-dropped compatibility concern
+  matchable: false
+- ground_truth: g2
+  issue: A trailing carriage return at the end of a decode() call must be buffered — it may be the
+    first half of a CRLF pair split across chunks, and splitlines() alone treats it as a complete
+    newline.
+  matched_finding: null
+  note: implemented at the reviewed head — trailing_cr buffering is present (discussion_r1045052360)
+  matchable: false
+- ground_truth: g3
+  issue: Checking that the text ends with a linefeed is insufficient, since str.splitlines recognizes
+    many more newline characters (vertical tab, form feed, file/group/record separators, U+2028/U+2029),
+    and the tests don't cover them.
+  matched_finding: 1
+  note: the code half is fixed (NEWLINE_CHARS covers the full splitlines set) but the tests still
+    cover none of the exotic terminators — finding 1 flags exactly that residual
+  matchable: true
+- ground_truth: g4
+  issue: Building the buffer by string concatenation is quadratic across many small decode() calls;
+    a list buffer joined on demand is needed.
+  matched_finding: null
+  note: implemented at the reviewed head — list buffer joined on demand (discussion_r1066603902)
+  matchable: false
+- ground_truth: g5
+  issue: flush() returns the buffered line but doesn't reset the buffer and trailing-CR state, so
+    a second flush repeats output.
+  matched_finding: null
+  note: implemented at the reviewed head — flush() resets both buffer and trailing_cr (discussion_r1067360513)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: IndexError when buffer is non-empty and splitlines() returns an empty list
+  valid: false
+  note: 'false premise: str.splitlines() returns [''''] (not []) for ''\n'' — it is [] only for empty
+    text, which the `if not text` guard already excludes; reproducer executed against the head implementation
+    returns [''abc''] with no IndexError; flagged critical at 0.97 confidence'
+- finding: 1
+  title: No tests for the newly recognised Unicode newline characters or cross-chunk edge cases
+  valid: true
+  note: 'correct residual of g3: none of the eight exotic terminators appear in any test'
+- finding: 2
+  title: NEWLINE_CHARS re-created on every call inside a hot method
+  valid: false
+  note: 'factually wrong mechanism: a string literal is a compile-time constant in CPython — no per-call
+    allocation, just LOAD_CONST; and the maintainers kept it method-local'
+- finding: 3
+  title: Several edge-case paths in decode() and flush() lack test coverage
+  valid: true
+  note: 'factual: the named paths are only implicitly covered'
+- finding: 4
+  title: flush() with only a pending trailing_cr and empty buffer returns [''] — intent should be
+    clarified
+  valid: false
+  note: 'non-issue: flush() returning [''''] for a lone trailing \r exactly matches ''\r''.splitlines()
+    == [''''] — the PR''s stated contract; deliberate behavior change with flush resetting both fields;
+    its claim that trailing_cr is ''never explicitly'' reset is contradicted by the flush body'
+- finding: 5
+  title: 'Typo in docstring: "stdllib" should be "stdlib"'
+  valid: true
+  note: typo confirmed

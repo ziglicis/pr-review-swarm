@@ -1,0 +1,69 @@
+case: httpx_2278
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: When the user supplies a Content-Type header without a boundary, setdefault won't overwrite
+    it, and the request goes out with no multipart boundary at all — violating the spec so no server
+    can parse it; the boundary must be injected into the existing header.
+  matched_finding: null
+  note: 'MISSED though live at the reviewed head: with a user Content-Type lacking a boundary, setdefault
+    keeps the user header while the body uses a random boundary — unparseable request. The system
+    analyzed the exact mechanism and concluded ''correct'' instead of flagging it (finding 2, whose
+    title even claims the opposite of what its detail concludes); finding 4 flags the missing body
+    assertion'
+  matchable: true
+- ground_truth: g2
+  issue: RFC 2046 allows the boundary parameter to be quoted; the parser must strip quotes (and handle
+    mixed-case/whitespace) rather than only accepting the bare token form.
+  matched_finding: null
+  note: fixed during review — strip(b'"') and the quoted-boundary parametrized tests are present
+    at the reviewed head (discussion_r945186942)
+  matchable: false
+- ground_truth: g3
+  issue: The boundary should be extracted from headers upstream in _models.py and passed down, removing
+    the content_type parameter from encode_request/encode_multipart_data signatures entirely.
+  matched_finding: null
+  note: implemented during review — extraction lives in _models.py and encode_request/encode_multipart_data
+    take boundary, not content_type (discussion_r945184961)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Empty boundary returned when `boundary=` is present with no value
+  valid: true
+  note: 'verified: MultipartStream guards with `is None`, so b'''' passes through and an empty boundary
+    is used — real unvalidated edge'
+- finding: 1
+  title: Boundary parser silently ignores trailing whitespace, producing wrong boundary bytes
+  valid: false
+  note: 'muddled: section.strip() runs before slicing, so its whitespace scenarios are either already
+    handled or exist only for malformed input'
+- finding: 2
+  title: Content-Type header overwritten when user specifies an explicit boundary
+  valid: false
+  note: title ('header overwritten') is refuted by its own detail, which concludes the behavior is
+    fine
+- finding: 3
+  title: Boundary parser does not handle RFC 2046 linear whitespace around `=` sign
+  valid: uncertain
+  note: LWS around '=' is legal in MIME but not in the HTTP Content-Type parameter grammar; edge
+    is malformed input in this context
+- finding: 4
+  title: test_multipart_header_without_boundary does not verify that the body is valid multipart
+  valid: true
+  note: factual; the missing body assertion is what would have exposed the g1 mismatch
+- finding: 5
+  title: Removing the default value for `boundary` parameter breaks callers that omit it
+  valid: uncertain
+  note: self-qualified correctly (internal function, no public break); the surviving point is a real
+    default-value asymmetry with MultipartStream
+- finding: 6
+  title: Content-type header read before cookies are fully applied, but boundary extraction still
+    correct
+  valid: false
+  note: a 'just a note' non-finding; re-encoding an ASCII value with the inferred header encoding
+    is lossless
+- finding: 7
+  title: No test for the case where the user-supplied boundary contains characters that are invalid
+    per RFC 2046
+  valid: true
+  note: defensible coverage ask documenting the unvalidated-boundary behavior

@@ -1,0 +1,55 @@
+case: requests_3984
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: If the body ends with a CRLF split at a chunk boundary, the chunk becomes empty after stripping,
+    splitlines() returns [], and lines[-1] raises IndexError.
+  matched_finding: null
+  note: 'fixed during review — the `if not chunk: continue` guard is at the reviewed head (discussion_r112750569)'
+  matchable: false
+- ground_truth: g2
+  issue: Chunks like ['...\r', '\n', '\nmore'] strip two newline characters instead of emitting the
+    empty line — the CR flag must be reset after consuming one LF.
+  matched_finding: null
+  note: 'fixed during review — the flag is reassigned every chunk and the [b''a\r'', b''\n'', b''\nb'']
+    test case landed (discussion_r112929801); note a residual none of the experiments found: an empty
+    chunk between ''\r'' and ''\n'' resets the flag and yields a spurious empty line'
+  matchable: false
+- ground_truth: g3
+  issue: New tests use unprefixed string literals that are intended to be unicode; they must carry
+    the u'' prefix to pass on Python 2.
+  matched_finding: null
+  note: fixed during review — tests carry u'' prefixes (discussion_r112804923)
+  matchable: false
+- ground_truth: g4
+  issue: The chunk/flag handling should be restructured for readability (named condition variables,
+    single assignment site) rather than the doubled-up inline conditions.
+  matched_finding: null
+  note: addressed during review — named condition variable and single assignment site (discussion_r113172022)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: last_chunk_ends_with_cr not updated when chunk is consumed by continue
+  valid: false
+  note: 'no failing sequence exists: after consuming a lone ''\n'' the flag is correctly False —
+    the pre-strip chunk ended with ''\n'', not ''\r'''
+- finding: 1
+  title: last_chunk_ends_with_cr evaluated against pre-pending-prepend chunk but after pending is
+    prepended
+  valid: false
+  note: 'impossible premise: pending never ends with ''\r'' (splitlines pops terminator-ended lines
+    fully; pending only holds an unterminated tail) — its own sibling finding 2 documents this exclusivity'
+- finding: 2
+  title: Non-obvious ordering dependency between pending prepend and last_chunk_ends_with_cr check
+  valid: uncertain
+  note: accurate analysis of a real non-obvious invariant, but claims no defect — a documentation
+    ask
+- finding: 3
+  title: test_response_lines mutates mock_chunks but mock_iter_content closure refers to the outer
+    mock_chunks variable — may break if order of assertions changes
+  valid: uncertain
+  note: the closure late-binding fragility is real but intentional and only bites on reordering
+- finding: 4
+  title: decode_unicode check uses truthiness rather than explicit `is not None` check
+  valid: false
+  note: self-described as acceptable; decode_unicode=0 is not a supported call pattern

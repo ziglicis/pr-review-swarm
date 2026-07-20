@@ -1,0 +1,81 @@
+case: httpx_1197
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: The closed-check belongs as a plain inline guard at the top of send(), not as a decorator
+    on request() — simpler, better tracebacks, and the right layer.
+  matched_finding: 0
+  note: finding 0 (and its sync/async duplicate, finding 1) flags the use-after-close hole left by
+    the missing send() guard the reviewer requested
+  matchable: true
+- ground_truth: g2
+  issue: 'close() should be idempotent: calling it on an already-closed client should pass silently
+    instead of erroring.'
+  matched_finding: null
+  note: implemented during review — close()/aclose() are guarded with `if not self.is_closed` at
+    the reviewed head (discussion_r472952614)
+  matchable: false
+- ground_truth: g3
+  issue: _is_closed = True should be set as the first statement of close(), not the last, to shrink
+    the race window with concurrent sends.
+  matched_finding: null
+  note: implemented during review — `_is_closed = True` is the first statement inside the guard at
+    the reviewed head (discussion_r472953172)
+  matchable: false
+- ground_truth: g4
+  issue: 'The warning class choice matters for visibility: UserWarning vs ResourceWarning was debated
+    (ResourceWarning is silenced by default; UserWarning pollutes the user''s namespace) — resolved
+    to UserWarning.'
+  matched_finding: 2
+  note: finding 2 raises the ResourceWarning-vs-UserWarning class choice (as the asyncio/aiohttp
+    standard), the same debate the reviewers had
+  matchable: true
+finding_validity:
+- finding: 0
+  title: '`Client.send()` re-opens a closed client by resetting `_is_closed = False`'
+  valid: true
+  note: 'correct: the reviewer''s requested raise-guard is absent at the head and send() re-arms
+    a closed client'
+- finding: 1
+  title: '`AsyncClient.send()` re-opens a closed client by resetting `_is_closed = False`'
+  valid: true
+  note: same issue, async variant; correct — though baseline failed to merge the sync/async duplicates
+- finding: 2
+  title: '`AsyncClient.__del__` warning may cause exceptions during interpreter shutdown'
+  valid: uncertain
+  note: shutdown-safety hardening is defensible and matches asyncio/aiohttp practice, but the ResourceWarning
+    suggestion contradicts the reviewer's explicit UserWarning resolution (discussion_r474644263)
+- finding: 3
+  title: Initial state `_is_closed = True` is semantically wrong for a brand-new client
+  valid: uncertain
+  note: the never-opened-vs-closed semantic critique is coherent, but the behavior is pinned deliberately
+    by test_that_async_client_is_closed_by_default and is harmless (nothing to tear down)
+- finding: 4
+  title: '`Client.__del__` calls `self.close()` which silently does nothing for an unclosed client'
+  valid: uncertain
+  note: title contradicts its own detail (close() does run); the surviving point — sync/async __del__
+    asymmetry — is a deliberate design (sync can clean up, async cannot)
+- finding: 5
+  title: Warning test relies on `del` triggering `__del__` immediately, which is CPython-specific
+  valid: true
+  note: 'real portability flaw: pytest.warns around `del` relies on CPython refcounting; PyPy defers
+    __del__'
+- finding: 6
+  title: Proxy close tests now require network-like activity to arm the close guard
+  valid: true
+  note: 'legit: the tests now hit http://example.com over real network and the test name no longer
+    matches what is exercised'
+- finding: 7
+  title: '`Client.__exit__` guard `if not self.is_closed` skips transport exit if already closed'
+  valid: uncertain
+  note: same enter/exit protocol asymmetry as the full run's finding; no practical harm since close()
+    already tore down
+- finding: 8
+  title: '`test_that_send_cause_client_to_be_not_closed` makes a real HTTP request without a mock
+    transport'
+  valid: true
+  note: 'real defect: unit tests now depend on live network access to example.com'
+- finding: 9
+  title: 'Docstring grammar: "Check if the client being closed"'
+  valid: true
+  note: grammar error confirmed

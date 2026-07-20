@@ -1,0 +1,68 @@
+case: flask_3059
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The full os.fspath backport is questioned: coercing with str() changes the type, third-party
+    libraries do implement __fspath__ on older Pythons, and the review converges on the PEP 519 protocol-check
+    variant rather than either extreme.'
+  matched_finding: null
+  note: resolved during review — the reviewed head contains the exact PEP protocol-check one-liner
+    the thread converged on (discussion_r245371019)
+  matchable: false
+- ground_truth: g2
+  issue: send_file arguments can be file-like objects, so they must not be blindly passed through
+    fspath(); an explicit __fspath__ hasattr check is required on that path.
+  matched_finding: null
+  note: resolved during review — the hasattr __fspath__ guard mattrobenolt required is present at
+    the head (discussion_r245182635); notably the system argues *against* it (redundancy findings),
+    judged invalid
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Fallback `fspath` doesn't validate input type, silently accepts arbitrary objects
+  valid: uncertain
+  note: accurate deviation from os.fspath, but it is the PEP-recommended backport the reviewers converged
+    on; <3.6 only
+- finding: 1
+  title: bytes path from `__fspath__` can bypass or break `safe_join` traversal check
+  valid: true
+  note: PEP-legal bytes returns flow into safe_join/string_types checks that only handle str; unhelpful
+    failure instead of BadRequest is real
+- finding: 2
+  title: 'Typo: "as describe" should be "as described"'
+  valid: true
+  note: typo confirmed
+- finding: 3
+  title: Redundant `hasattr` guard before calling `fspath` in `send_file`
+  valid: false
+  note: 'not redundant: on 3.6+ os.fspath raises TypeError on file-like objects — the guard is what
+    the reviewer required (g2)'
+- finding: 4
+  title: Fallback `fspath` implementation not tested in isolation (neither branch)
+  valid: true
+  note: no direct unit test of the shim exists; coverage depends on which branch the test env imports
+- finding: 5
+  title: PathLike `send_file` test only covers relative path — absolute path case missing
+  valid: true
+  note: only the relative case is tested
+- finding: 6
+  title: '`send_from_directory` PathLike test only covers both-args-PathLike; mixed cases not tested'
+  valid: true
+  note: factual; the two fspath calls are independent
+- finding: 7
+  title: PathLike static-file test appended inline rather than as its own test method
+  valid: true
+  note: 'confirmed in diff: appended inside test_static_file with a section comment, unlike the sibling
+    pathlike tests'
+- finding: 8
+  title: Compat `fspath` body style inconsistent with surrounding functions
+  valid: false
+  note: 'factually wrong: the body is on its own indented line, not on the def line'
+- finding: 9
+  title: Changelog PEP citation style inconsistent with surrounding entries
+  valid: uncertain
+  note: weak subjective nit; an inline PEP citation is informative and no rule forbids it
+- finding: 10
+  title: Docstring backtick formatting for "PathLike object" is non-standard
+  valid: true
+  note: confirmed in diff; same literal-grouping nit as full's finding

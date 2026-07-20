@@ -1,0 +1,693 @@
+{
+  "case": "requests_5856",
+  "experiment": "full",
+  "pr_url": "https://github.com/psf/requests/pull/5856",
+  "head_sha": "8f0dcc4ecd71877389b0031af4d623a4a7350dee",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180185,
+  "summary": "This PR introduces `requests.exceptions.JSONDecodeError` to unify JSON decode error handling across Python 2/3 and stdlib/simplejson, but several correctness issues undermine the stated guarantees. The most critical problem is that the early UTF-detection code path never wraps `json.JSONDecodeError` into `RequestsJSONDecodeError`, meaning callers cannot rely on always receiving the new exception type. Additional gaps exist in test coverage for edge cases and the Python 2 code path.",
+  "findings": [
+    {
+      "agent": "correctness, security",
+      "file": "requests/models.py",
+      "line_start": 898,
+      "line_end": 907,
+      "severity": "major",
+      "title": "JSONDecodeError from the early UTF-detection code path is never wrapped into RequestsJSONDecodeError",
+      "detail": "When `self.encoding` is falsy, `self.content` is non-empty and longer than 3 bytes, and `guess_json_utf` returns a non-None encoding, `complexjson.loads(self.content.decode(encoding), **kwargs)` is called (around line 899\u2013901). Only a `UnicodeDecodeError` is caught from this block \u2014 a `json.JSONDecodeError` or `simplejson.JSONDecodeError` raised here escapes entirely unwrapped. The second `complexjson.loads()` call (around line 910) is correctly guarded, but the first is not. This breaks the PR's stated invariant that callers always see `requests.exceptions.JSONDecodeError`. Fix: wrap the first `complexjson.loads()` in the same try/except block that already covers the second call (or consolidate both into one guarded block).",
+      "confidence": 0.97
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/exceptions.py",
+      "line_start": 34,
+      "line_end": 35,
+      "severity": "major",
+      "title": "No test asserts that JSONDecodeError is catchable as RequestException / InvalidJSONError",
+      "detail": "The PR explicitly states that the new `JSONDecodeError` 'Can be caught from `requests.exceptions.RequestException` as well', but there is no test validating this. A regression that breaks the inheritance chain (e.g., an MRO conflict or an explicit `__init__` override that doesn't call `super()`) would go undetected. Add assertions such as `assert isinstance(exc, requests.exceptions.RequestException)` and `assert isinstance(exc, requests.exceptions.InvalidJSONError)` in the existing or a new test.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "correctness, test_coverage",
+      "file": "requests/models.py",
+      "line_start": 914,
+      "line_end": 917,
+      "severity": "major",
+      "title": "Python 2 branch uses deprecated e.message and is completely untested",
+      "detail": "Line 915 accesses `e.message` on a Python 2 `ValueError`. The `.message` attribute was deprecated since Python 2.6 and is not reliably populated for all `ValueError` subclasses (including those raised by `simplejson`); the standard idiom is `str(e)` or `e.args[0]`. If `e.message` is absent, an `AttributeError` is raised instead of the intended `RequestsJSONDecodeError`, silently swallowing the real error. Additionally, the sole new test (`test_json_decode_compatibility`) always runs on Python 3, so this code path is never exercised. Either replace `e.message` with `str(e)` and add a test that simulates the Python 2 path (e.g., by mocking `is_py2`).",
+      "confidence": 0.87
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/compat.py",
+      "line_start": 71,
+      "line_end": 74,
+      "severity": "major",
+      "title": "simplejson-installed code path for CompatJSONDecodeError is not tested",
+      "detail": "The branch that sets `JSONDecodeError = simplejson.JSONDecodeError` (lines 71-72) is only exercised when simplejson is actually installed in the test environment. No test mocks or forces this branch, so the aliasing through `CompatJSONDecodeError` into `requests.exceptions.JSONDecodeError` is untested. Add a test (possibly using `importlib` or `unittest.mock.patch`) that validates the exception hierarchy when `has_simplejson=True`.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/exceptions.py",
+      "line_start": 34,
+      "line_end": 35,
+      "severity": "major",
+      "title": "JSONDecodeError multiple-inheritance MRO may not correctly initialise json.JSONDecodeError internals",
+      "detail": "`requests.exceptions.JSONDecodeError` inherits from both `InvalidJSONError` (\u2192 `RequestException`) and `CompatJSONDecodeError` (`json.JSONDecodeError` on Python 3). `json.JSONDecodeError.__init__` requires exactly three positional arguments (`msg`, `doc`, `pos`) and does NOT call `super().__init__()`, so cooperative MRO initialisation is broken: `IOError.__init__` (from `RequestException`'s base) never receives the formatted message, potentially causing an incorrect or empty `str()` representation of the exception. In CPython this happens to work for the common case, but it is fragile and relies on undefined cooperative-inheritance behaviour in `json.JSONDecodeError`. Consider explicitly overriding `__init__` in `RequestsJSONDecodeError` to call both parent initialisers in the correct order.",
+      "confidence": 0.78
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/compat.py",
+      "line_start": 60,
+      "line_end": 60,
+      "severity": "major",
+      "title": "On Python 2 + simplejson, CompatJSONDecodeError is ValueError not simplejson.JSONDecodeError, breaking the subclass guarantee",
+      "detail": "When `is_py2` is True, `JSONDecodeError` in `compat.py` is unconditionally set to `ValueError` regardless of whether `simplejson` is installed. When simplejson IS installed, `requests.exceptions.JSONDecodeError` therefore only inherits from `(InvalidJSONError, ValueError)` \u2014 it is NOT a subclass of `simplejson.JSONDecodeError`. This means `except simplejson.JSONDecodeError` will NOT catch `requests.JSONDecodeError` on Python 2, breaking the backwards-compatibility guarantee described in the PR. Fix: mirror the Python 3 logic and set `CompatJSONDecodeError = simplejson.JSONDecodeError` when `has_simplejson` is True on Python 2.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "test_coverage",
+      "file": "tests/test_requests.py",
+      "line_start": 2575,
+      "line_end": 2578,
+      "severity": "minor",
+      "title": "test_json_decode_compatibility only checks exception type, not exception attributes",
+      "detail": "The test verifies that `requests.exceptions.JSONDecodeError` is raised but does not assert on any attributes (`e.msg`, `e.doc`, `e.pos`) that are now populated in the Python 3 branch. A regression that raises with wrong argument values, or populates `e.doc` with the wrong content, would not be caught. Extend the test to assert on at least `e.doc` (the response text) and `e.pos`.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 909,
+      "line_end": 917,
+      "severity": "minor",
+      "title": "response.json() error wrapping not tested with simplejson as the active JSON module",
+      "detail": "The new try/except wrapping `complexjson.loads` is only exercised in tests where the stdlib `json` module is active. There is no test that simulates `has_simplejson=True` and triggers a decode error, so the re-raise path `RequestsJSONDecodeError(e.msg, e.doc, e.pos)` is not validated for simplejson's exception shape. Add a test that patches `complexjson` to `simplejson` and asserts the correct exception is raised.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 905,
+      "line_end": 907,
+      "severity": "minor",
+      "title": "None-content path may raise TypeError rather than RequestsJSONDecodeError \u2014 edge case untested",
+      "detail": "When `r.content` is falsy, `self.text` is `None`, and `complexjson.loads(None)` raises a `TypeError`, not a `JSONDecodeError`. The new catch block only catches `JSONDecodeError`, so this edge case still surfaces a raw `TypeError` to the caller. The existing test `test_response_json_when_content_is_None` presumably still expects a plain `ValueError`, but it is unclear whether the new code changes this behaviour. Add an explicit test and, if needed, extend the except clause to also handle `TypeError` (or guard against `None` input before calling `loads`).",
+      "confidence": 0.7
+    },
+    {
+      "agent": "security",
+      "file": "requests/models.py",
+      "line_start": 911,
+      "line_end": 917,
+      "severity": "minor",
+      "title": "Full server-controlled response body stored verbatim in exception (potential log-injection / unbounded memory)",
+      "detail": "`e.doc` (the full decoded response text, which is server-controlled) is passed directly into `RequestsJSONDecodeError`. While not an injection risk within the Python process, arbitrarily large or maliciously crafted content stored in the exception object can cause unbounded memory consumption and log-injection if the exception is logged or serialised without truncation. Consider storing only `e.msg` and `e.pos`, or a truncated excerpt of `e.doc`, and exposing `e.doc` optionally through a property that lazily fetches it from `self.response`.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "security",
+      "file": "requests/exceptions.py",
+      "line_start": 34,
+      "line_end": 35,
+      "severity": "minor",
+      "title": "CompatJSONDecodeError fallback type is undocumented; a future bare-Exception fallback would create a catch-all",
+      "detail": "If `CompatJSONDecodeError` were ever set to a plain `Exception` (as the PR description's wording implies for some fallback paths), the multiple-inheritance of `requests.exceptions.JSONDecodeError` would inadvertently make it catch-all. The current code uses `json.JSONDecodeError` / `ValueError`, which is acceptable, but the invariant is nowhere documented or enforced. Add a comment or an assertion (`assert issubclass(CompatJSONDecodeError, ValueError)`) to prevent a future regression.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "style",
+      "file": "docs/user/quickstart.rst",
+      "line_start": 156,
+      "line_end": 158,
+      "severity": "nit",
+      "title": "Lowercase 'python' in documentation should be capitalised",
+      "detail": "Line 158 reads \"python versions\" with a lowercase 'p'. 'Python' is a proper noun and is consistently capitalised throughout the surrounding RST file. Change to \"Python versions\".",
+      "confidence": 0.95
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 2578,
+      "line_end": 2578,
+      "severity": "nit",
+      "title": "Missing newline at end of file",
+      "detail": "The file ends without a trailing newline. Python convention and the existing style of the test file (already fixed for the preceding `test_post_json_nan` test) require a newline at the end of the file. Add a trailing newline after the last line of `test_json_decode_compatibility`.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "style",
+      "file": "requests/exceptions.py",
+      "line_start": 35,
+      "line_end": 35,
+      "severity": "nit",
+      "title": "JSONDecodeError docstring missing trailing period and uses lowercase 'json'",
+      "detail": "All neighbouring exception class docstrings end with a full stop and use correct capitalisation, e.g. `\"\"\"A JSON error occurred.\"\"\"`. The new `JSONDecodeError` docstring reads `\"\"\"Couldn't decode the text into json\"\"\"` \u2014 missing a trailing period and using lowercase `json`. Change to `\"\"\"Couldn't decode the text into JSON.\"\"\"`",
+      "confidence": 0.9
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 34,
+      "line_end": 43,
+      "severity": "nit",
+      "title": "Import style: duplicate from-clause and confusingly named compat alias",
+      "detail": "Two separate issues compound here: (1) `JSONDecodeError` from `.exceptions` is imported in a standalone `from .exceptions import` line (line 34) rather than being grouped with the existing block on lines 30\u201333; (2) `JSONDecodeError` imported from `.compat` (line 43) and `RequestsJSONDecodeError` from `.exceptions` share a conceptually similar name, making the intent unclear. Consolidate the exceptions import block and rename the compat alias to `CompatJSONDecodeError` (already used in `exceptions.py`) or `_JSONDecodeError` to signal it is an internal shim.",
+      "confidence": 0.88
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 914,
+      "line_end": 914,
+      "severity": "nit",
+      "title": "Missing two spaces before inline comment on if-statement",
+      "detail": "PEP 8 and the surrounding code style require at least two spaces before an inline comment. The comment `# e is a ValueError` appears immediately after `if is_py2:` with only one space. Change to `if is_py2:  # e is a ValueError`.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "style",
+      "file": "requests/compat.py",
+      "line_start": 31,
+      "line_end": 31,
+      "severity": "nit",
+      "title": "has_simplejson flag lacks an explanatory comment consistent with surrounding style",
+      "detail": "The `has_simplejson = False` flag is placed immediately before its governing try/except without a comment, whereas the surrounding file annotates similar flags (e.g., `#: Python 3.x?` for `is_py3`). Adding a short comment (e.g., `#: True when simplejson is installed and used as the JSON backend.`) would be consistent with the file's documentation convention.",
+      "confidence": 0.65
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            898,
+            907
+          ],
+          "severity": "major",
+          "title": "JSONDecodeError from first code path (guess_json_utf) is never wrapped into RequestsJSONDecodeError",
+          "detail": "When `self.encoding` is falsy, `self.content` is non-empty and `> 3` bytes, and `guess_json_utf` returns a non-None encoding, `complexjson.loads(self.content.decode(encoding), **kwargs)` is called (line 899-901). If this call throws a `JSONDecodeError` it is NOT caught \u2013 only `UnicodeDecodeError` is handled (line 902). The raw `json.JSONDecodeError` or `simplejson.JSONDecodeError` escapes without being wrapped in `RequestsJSONDecodeError`, breaking the stated invariant that callers only ever see `requests.exceptions.JSONDecodeError`.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "major",
+          "title": "JSONDecodeError MRO conflict: RequestException.__init__ is incompatible with json.JSONDecodeError.__init__",
+          "detail": "`requests.exceptions.JSONDecodeError` inherits from both `InvalidJSONError` (\u2192 `RequestException`) and `CompatJSONDecodeError` (which is `json.JSONDecodeError` or `simplejson.JSONDecodeError` on Python 3). \n\n`json.JSONDecodeError.__init__` requires exactly three positional arguments: `msg`, `doc`, `pos`. `RequestException.__init__` accepts `*args, **kwargs` and pops `response`/`request` from kwargs before calling `super().__init__(*args, **kwargs)`. Because `RequestException` is earlier in the MRO, its `__init__` forwards `*args` to the next class in MRO (which eventually reaches `json.JSONDecodeError.__init__`). When `RequestsJSONDecodeError(e.msg, e.doc, e.pos)` is called (line 917 of models.py), `RequestException.__init__` receives `(msg, doc, pos)` in `*args` and calls `super().__init__(msg, doc, pos)`. Whether this chain successfully constructs a valid `json.JSONDecodeError` depends on MRO cooperative call propagation; specifically `json.JSONDecodeError.__init__` sets `self.lineno`, `self.colno`, etc. from those args. In CPython this happens to work, but `json.JSONDecodeError.__init__` is not designed for cooperative multiple-inheritance and does NOT call `super().__init__()`, so `IOError.__init__` (from `RequestException`'s base) never gets the message set correctly. The exception may render incorrectly (missing `str()` representation) or fail entirely if a subclass of `json.JSONDecodeError` is used as the compat base.",
+          "confidence": 0.78
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            915
+          ],
+          "severity": "minor",
+          "title": "Python 2 path uses e.message which is deprecated and may be empty",
+          "detail": "On line 915, `e.message` is used for Python 2 `ValueError`. In Python 2, `.message` was deprecated since Python 2.6 and is not guaranteed to be populated for all `ValueError` subclasses (including those raised by `simplejson`). The standard way to get the message from a Python 2 exception is `str(e)` or `e.args[0]`. If `e.message` is empty or absent an `AttributeError` or silent loss of the error message will occur.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/compat.py",
+          "line_range": [
+            60,
+            60
+          ],
+          "severity": "major",
+          "title": "On Python 2 with simplejson installed, CompatJSONDecodeError is ValueError but simplejson raises simplejson.JSONDecodeError",
+          "detail": "In `compat.py`, when `is_py2` is True, `JSONDecodeError` is always set to `ValueError` regardless of whether `simplejson` is installed (line 60). However when `simplejson` IS installed (`has_simplejson = True`), the `json` import in compat is actually `simplejson`, and `simplejson.JSONDecodeError` inherits from `ValueError`. This means `CompatJSONDecodeError` in `exceptions.py` is `ValueError` (not `simplejson.JSONDecodeError`) and `requests.exceptions.JSONDecodeError` on Python 2 + simplejson will only be `(InvalidJSONError, ValueError)`. The `except JSONDecodeError` catch in `models.py` line 911 works because `simplejson.JSONDecodeError` IS-A `ValueError`, but the `e.message` access on line 915 may still fail as noted above. More critically, `requests.JSONDecodeError` is NOT a subclass of `simplejson.JSONDecodeError` on Python 2, so `except simplejson.JSONDecodeError` will NOT catch `requests.JSONDecodeError` on Python 2, breaking the backwards-compat guarantee described in the PR summary.",
+          "confidence": 0.75
+        }
+      ],
+      "tool_calls": 3,
+      "tokens_in": 63765,
+      "tokens_out": 1534,
+      "cost_usd": 0.214305,
+      "duration_s": 32.46895862487145,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            899,
+            907
+          ],
+          "severity": "major",
+          "title": "JSON decode errors from the early-return UTF path are not caught and re-raised as RequestsJSONDecodeError",
+          "detail": "The first call to `complexjson.loads()` at line 899 (inside the `if encoding is not None` block) is NOT wrapped in a try/except. If the content passes the UTF-encoding detection but contains malformed JSON, a raw `json.JSONDecodeError` or `simplejson.JSONDecodeError` will propagate directly to the caller \u2014 bypassing the new `RequestsJSONDecodeError` wrapper entirely. Only the second call to `complexjson.loads()` (line 910) is guarded. This breaks the stated guarantee that all JSON decode failures raise `requests.exceptions.JSONDecodeError`, and means callers who see an exception from the first code path must still catch the underlying library exception. The fix is to wrap lines 898-901 in a matching try/except block that re-raises as `RequestsJSONDecodeError`.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            911,
+            917
+          ],
+          "severity": "minor",
+          "title": "e.msg / e.doc / e.pos forwarded from server-controlled response content into the new exception \u2014 potential information leakage / exception-message injection",
+          "detail": "The three positional arguments `e.msg`, `e.doc`, and `e.pos` passed to `RequestsJSONDecodeError` come directly from the server's response body (`e.doc` is the full decoded response text). This is not an injection risk in the traditional sense (it stays within the exception object), but it does mean that arbitrarily large, attacker-controlled data is stored in the exception. If the exception is subsequently logged, serialised, or displayed without truncation, this could act as a log-injection / information-disclosure vector. Consider storing only `e.msg` and `e.pos` (or a truncated excerpt of `e.doc`) to limit exposure.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "security",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "minor",
+          "title": "JSONDecodeError MRO relies on CompatJSONDecodeError being Exception \u2014 silent fallback to bare Exception on Python 2 without simplejson",
+          "detail": "On Python 2, `CompatJSONDecodeError` is set to `ValueError` (compat.py line 60), so the MRO of `requests.exceptions.JSONDecodeError` becomes `(JSONDecodeError, InvalidJSONError, RequestException, IOError, ValueError, ...)`. That is reasonable. However if for any reason `CompatJSONDecodeError` resolves to a plain `Exception` (as stated in the PR description for the simplejson-absent case on some paths), catching `requests.JSONDecodeError` could inadvertently swallow unrelated exceptions. More importantly, the PR description itself mentions replacing `simplejson.JSONDecodeError` with a plain `Exception` when simplejson is absent, but the actual code does not do this \u2014 it uses `json.JSONDecodeError` on Python 3 and `ValueError` on Python 2. If a future maintainer follows the PR description literally and sets the fallback to `Exception`, the multiple-inheritance catch-all would become a serious security/correctness issue. The fallback type should be documented or constrained to a narrow base class.",
+          "confidence": 0.6
+        }
+      ],
+      "tool_calls": 3,
+      "tokens_in": 27479,
+      "tokens_out": 1044,
+      "cost_usd": 0.098097,
+      "duration_s": 27.74858120805584,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            34,
+            34
+          ],
+          "severity": "minor",
+          "title": "Inconsistent import style: JSONDecodeError imported via a separate `from` statement",
+          "detail": "The rest of the exceptions from `requests.exceptions` are imported in the block just above (lines 30-33). `JSONDecodeError` is then imported in an extra, standalone `from .exceptions import` line. The surrounding convention groups all imports from the same module together. Consider adding `JSONDecodeError` to the existing block and aliasing it there, e.g.:\n\n    from .exceptions import (\n        HTTPError, MissingSchema, InvalidURL, ChunkedEncodingError,\n        ContentDecodingError, ConnectionError, StreamConsumedError,\n        InvalidJSONError, JSONDecodeError as RequestsJSONDecodeError)",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            43,
+            43
+          ],
+          "severity": "minor",
+          "title": "`JSONDecodeError` imported from both `compat` and `exceptions`, creating two names for related-but-different things",
+          "detail": "`JSONDecodeError` is imported from `.compat` into `models.py` (line 43) and used only in the `except` clause of `response.json()`. `RequestsJSONDecodeError` (from `.exceptions`) is what gets raised. Importing the compat alias under a name that collides conceptually with the public exception class makes the intent harder to follow at a glance. A clearer name such as `CompatJSONDecodeError` (already used in `exceptions.py` itself) or `_JSONDecodeError` would signal that this is the low-level compat shim, not the public API type.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            914
+          ],
+          "severity": "nit",
+          "title": "Missing space before inline comment `# e is a ValueError`",
+          "detail": "The existing codebase uses `# comment` with a space after `#`. The inline comment `# e is a ValueError` on line 914 is fine in that regard, but the comment is placed immediately after `if is_py2:` with no space between the colon and `#`. PEP 8 (and the style of the surrounding file) expects at least two spaces before an inline comment: `if is_py2:  # e is a ValueError`.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            35,
+            35
+          ],
+          "severity": "nit",
+          "title": "Docstring punctuation inconsistent with surrounding exception classes",
+          "detail": "All neighbouring exception docstrings end with a full stop (period), e.g. `\"\"\"A JSON error occurred.\"\"\"`, `\"\"\"An HTTP error occurred.\"\"\"`. The new `JSONDecodeError` docstring `\"\"\"Couldn't decode the text into json\"\"\"` is missing a trailing period and uses lowercase `json` where the rest of the file would capitalise it as part of a proper noun reference.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "docs/user/quickstart.rst",
+          "line_range": [
+            156,
+            158
+          ],
+          "severity": "nit",
+          "title": "Capitalisation of 'python' in documentation",
+          "detail": "Line 158 reads \"python versions\" with a lowercase 'p'. The surrounding RST file consistently capitalises 'Python' as a proper noun. It should read \"Python versions\".",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2578,
+            2578
+          ],
+          "severity": "nit",
+          "title": "Missing newline at end of file",
+          "detail": "The file ends without a trailing newline (`\\ No newline at end of file`). The existing test file (and Python convention) expects a newline at the end of the file. The same issue existed on the line before (line 2573), which was already fixed for `test_post_json_nan` \u2014 `test_json_decode_compatibility` should get the same treatment.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/compat.py",
+          "line_range": [
+            31,
+            31
+          ],
+          "severity": "nit",
+          "title": "`has_simplejson` flag placed before the `try` block it describes",
+          "detail": "`has_simplejson = False` is initialised on line 31, one line before the `try/except` that sets it to `True`. While functionally correct, the style of the existing file places all non-conditional setup after the section comment. A small style note: the flag and the try/except are tightly coupled; a brief comment explaining the flag's purpose (similar to the `#: Python 3.x?` annotation style used for `is_py3` above) would be consistent with the surrounding convention.",
+          "confidence": 0.65
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 9930,
+      "tokens_out": 1229,
+      "cost_usd": 0.048225,
+      "duration_s": 25.284045750042424,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            917
+          ],
+          "severity": "major",
+          "title": "Python 2 branch of json() error handling not tested",
+          "detail": "The `is_py2` branch at line 914 raises `RequestsJSONDecodeError(e.message)` but there is no test that exercises this code path. The sole new test (`test_json_decode_compatibility`) always runs on Python 3, so the `e.message` path (ValueError on Python 2) is never exercised. A unit test that mocks `is_py2=True` or explicitly simulates a Python-2-style ValueError with a `.message` attribute is needed.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "major",
+          "title": "JSONDecodeError inheritance from RequestException / InvalidJSONError not tested",
+          "detail": "There is no test asserting that `requests.exceptions.JSONDecodeError` is catchable as `requests.exceptions.RequestException` or `requests.exceptions.InvalidJSONError`. The PR description lists this as an explicit goal ('Can be caught from requests.exceptions.RequestException as well'), but no test validates it.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/compat.py",
+          "line_range": [
+            71,
+            74
+          ],
+          "severity": "major",
+          "title": "simplejson-installed path for JSONDecodeError in compat not tested",
+          "detail": "The `if has_simplejson` branch that imports `JSONDecodeError` from `simplejson` (lines 71-72) is only exercised when simplejson is installed. No test mocks or forces this branch, so the aliasing of `simplejson.JSONDecodeError` via `CompatJSONDecodeError` is not covered. A test verifying the exception hierarchy when simplejson is present is missing.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            909,
+            917
+          ],
+          "severity": "minor",
+          "title": "response.json() with simplejson installed not separately tested",
+          "detail": "The new try/except wrapping `complexjson.loads` in `json()` is only tested with the stdlib `json` module. There is no test that runs this code path when simplejson is the active json module (`has_simplejson=True`), so the re-raise via `RequestsJSONDecodeError(e.msg, e.doc, e.pos)` is only implicitly covered for the stdlib case.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2575,
+            2578
+          ],
+          "severity": "minor",
+          "title": "test_json_decode_compatibility only checks exception type, not exception attributes",
+          "detail": "The test verifies that `requests.exceptions.JSONDecodeError` is raised, but does not assert on any of the exception's attributes (e.g., `e.msg`, `e.doc`, `e.pos`) that are now populated in the Python 3 branch. This means a regression that populates those fields incorrectly (or raises with wrong args) would not be caught.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            905,
+            907
+          ],
+          "severity": "minor",
+          "title": "json() with None self.text (no content) still raises ValueError, not RequestsJSONDecodeError",
+          "detail": "When `r.content` is falsy, `complexjson.loads(None)` is called (via `self.text`) and can raise a TypeError rather than a JSONDecodeError, so the new catch block would not handle it. The existing test `test_response_json_when_content_is_None` still expects a plain `ValueError`, meaning this edge case of the new logic is untested \u2014 there is no test confirming whether the None-content path now surfaces a `requests.JSONDecodeError` or still a raw `ValueError`/`TypeError`.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 32765,
+      "tokens_out": 1009,
+      "cost_usd": 0.11343,
+      "duration_s": 20.17114383308217,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness, security",
+          "file": "requests/models.py",
+          "line_range": [
+            898,
+            907
+          ],
+          "severity": "major",
+          "title": "JSONDecodeError from the early UTF-detection code path is never wrapped into RequestsJSONDecodeError",
+          "detail": "When `self.encoding` is falsy, `self.content` is non-empty and longer than 3 bytes, and `guess_json_utf` returns a non-None encoding, `complexjson.loads(self.content.decode(encoding), **kwargs)` is called (around line 899\u2013901). Only a `UnicodeDecodeError` is caught from this block \u2014 a `json.JSONDecodeError` or `simplejson.JSONDecodeError` raised here escapes entirely unwrapped. The second `complexjson.loads()` call (around line 910) is correctly guarded, but the first is not. This breaks the PR's stated invariant that callers always see `requests.exceptions.JSONDecodeError`. Fix: wrap the first `complexjson.loads()` in the same try/except block that already covers the second call (or consolidate both into one guarded block).",
+          "confidence": 0.97
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "major",
+          "title": "No test asserts that JSONDecodeError is catchable as RequestException / InvalidJSONError",
+          "detail": "The PR explicitly states that the new `JSONDecodeError` 'Can be caught from `requests.exceptions.RequestException` as well', but there is no test validating this. A regression that breaks the inheritance chain (e.g., an MRO conflict or an explicit `__init__` override that doesn't call `super()`) would go undetected. Add assertions such as `assert isinstance(exc, requests.exceptions.RequestException)` and `assert isinstance(exc, requests.exceptions.InvalidJSONError)` in the existing or a new test.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "correctness, test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            917
+          ],
+          "severity": "major",
+          "title": "Python 2 branch uses deprecated e.message and is completely untested",
+          "detail": "Line 915 accesses `e.message` on a Python 2 `ValueError`. The `.message` attribute was deprecated since Python 2.6 and is not reliably populated for all `ValueError` subclasses (including those raised by `simplejson`); the standard idiom is `str(e)` or `e.args[0]`. If `e.message` is absent, an `AttributeError` is raised instead of the intended `RequestsJSONDecodeError`, silently swallowing the real error. Additionally, the sole new test (`test_json_decode_compatibility`) always runs on Python 3, so this code path is never exercised. Either replace `e.message` with `str(e)` and add a test that simulates the Python 2 path (e.g., by mocking `is_py2`).",
+          "confidence": 0.87
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/compat.py",
+          "line_range": [
+            71,
+            74
+          ],
+          "severity": "major",
+          "title": "simplejson-installed code path for CompatJSONDecodeError is not tested",
+          "detail": "The branch that sets `JSONDecodeError = simplejson.JSONDecodeError` (lines 71-72) is only exercised when simplejson is actually installed in the test environment. No test mocks or forces this branch, so the aliasing through `CompatJSONDecodeError` into `requests.exceptions.JSONDecodeError` is untested. Add a test (possibly using `importlib` or `unittest.mock.patch`) that validates the exception hierarchy when `has_simplejson=True`.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "major",
+          "title": "JSONDecodeError multiple-inheritance MRO may not correctly initialise json.JSONDecodeError internals",
+          "detail": "`requests.exceptions.JSONDecodeError` inherits from both `InvalidJSONError` (\u2192 `RequestException`) and `CompatJSONDecodeError` (`json.JSONDecodeError` on Python 3). `json.JSONDecodeError.__init__` requires exactly three positional arguments (`msg`, `doc`, `pos`) and does NOT call `super().__init__()`, so cooperative MRO initialisation is broken: `IOError.__init__` (from `RequestException`'s base) never receives the formatted message, potentially causing an incorrect or empty `str()` representation of the exception. In CPython this happens to work for the common case, but it is fragile and relies on undefined cooperative-inheritance behaviour in `json.JSONDecodeError`. Consider explicitly overriding `__init__` in `RequestsJSONDecodeError` to call both parent initialisers in the correct order.",
+          "confidence": 0.78
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/compat.py",
+          "line_range": [
+            60,
+            60
+          ],
+          "severity": "major",
+          "title": "On Python 2 + simplejson, CompatJSONDecodeError is ValueError not simplejson.JSONDecodeError, breaking the subclass guarantee",
+          "detail": "When `is_py2` is True, `JSONDecodeError` in `compat.py` is unconditionally set to `ValueError` regardless of whether `simplejson` is installed. When simplejson IS installed, `requests.exceptions.JSONDecodeError` therefore only inherits from `(InvalidJSONError, ValueError)` \u2014 it is NOT a subclass of `simplejson.JSONDecodeError`. This means `except simplejson.JSONDecodeError` will NOT catch `requests.JSONDecodeError` on Python 2, breaking the backwards-compatibility guarantee described in the PR. Fix: mirror the Python 3 logic and set `CompatJSONDecodeError = simplejson.JSONDecodeError` when `has_simplejson` is True on Python 2.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2575,
+            2578
+          ],
+          "severity": "minor",
+          "title": "test_json_decode_compatibility only checks exception type, not exception attributes",
+          "detail": "The test verifies that `requests.exceptions.JSONDecodeError` is raised but does not assert on any attributes (`e.msg`, `e.doc`, `e.pos`) that are now populated in the Python 3 branch. A regression that raises with wrong argument values, or populates `e.doc` with the wrong content, would not be caught. Extend the test to assert on at least `e.doc` (the response text) and `e.pos`.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            909,
+            917
+          ],
+          "severity": "minor",
+          "title": "response.json() error wrapping not tested with simplejson as the active JSON module",
+          "detail": "The new try/except wrapping `complexjson.loads` is only exercised in tests where the stdlib `json` module is active. There is no test that simulates `has_simplejson=True` and triggers a decode error, so the re-raise path `RequestsJSONDecodeError(e.msg, e.doc, e.pos)` is not validated for simplejson's exception shape. Add a test that patches `complexjson` to `simplejson` and asserts the correct exception is raised.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            905,
+            907
+          ],
+          "severity": "minor",
+          "title": "None-content path may raise TypeError rather than RequestsJSONDecodeError \u2014 edge case untested",
+          "detail": "When `r.content` is falsy, `self.text` is `None`, and `complexjson.loads(None)` raises a `TypeError`, not a `JSONDecodeError`. The new catch block only catches `JSONDecodeError`, so this edge case still surfaces a raw `TypeError` to the caller. The existing test `test_response_json_when_content_is_None` presumably still expects a plain `ValueError`, but it is unclear whether the new code changes this behaviour. Add an explicit test and, if needed, extend the except clause to also handle `TypeError` (or guard against `None` input before calling `loads`).",
+          "confidence": 0.7
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            911,
+            917
+          ],
+          "severity": "minor",
+          "title": "Full server-controlled response body stored verbatim in exception (potential log-injection / unbounded memory)",
+          "detail": "`e.doc` (the full decoded response text, which is server-controlled) is passed directly into `RequestsJSONDecodeError`. While not an injection risk within the Python process, arbitrarily large or maliciously crafted content stored in the exception object can cause unbounded memory consumption and log-injection if the exception is logged or serialised without truncation. Consider storing only `e.msg` and `e.pos`, or a truncated excerpt of `e.doc`, and exposing `e.doc` optionally through a property that lazily fetches it from `self.response`.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "security",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "minor",
+          "title": "CompatJSONDecodeError fallback type is undocumented; a future bare-Exception fallback would create a catch-all",
+          "detail": "If `CompatJSONDecodeError` were ever set to a plain `Exception` (as the PR description's wording implies for some fallback paths), the multiple-inheritance of `requests.exceptions.JSONDecodeError` would inadvertently make it catch-all. The current code uses `json.JSONDecodeError` / `ValueError`, which is acceptable, but the invariant is nowhere documented or enforced. Add a comment or an assertion (`assert issubclass(CompatJSONDecodeError, ValueError)`) to prevent a future regression.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "docs/user/quickstart.rst",
+          "line_range": [
+            156,
+            158
+          ],
+          "severity": "nit",
+          "title": "Lowercase 'python' in documentation should be capitalised",
+          "detail": "Line 158 reads \"python versions\" with a lowercase 'p'. 'Python' is a proper noun and is consistently capitalised throughout the surrounding RST file. Change to \"Python versions\".",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2578,
+            2578
+          ],
+          "severity": "nit",
+          "title": "Missing newline at end of file",
+          "detail": "The file ends without a trailing newline. Python convention and the existing style of the test file (already fixed for the preceding `test_post_json_nan` test) require a newline at the end of the file. Add a trailing newline after the last line of `test_json_decode_compatibility`.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            35,
+            35
+          ],
+          "severity": "nit",
+          "title": "JSONDecodeError docstring missing trailing period and uses lowercase 'json'",
+          "detail": "All neighbouring exception class docstrings end with a full stop and use correct capitalisation, e.g. `\"\"\"A JSON error occurred.\"\"\"`. The new `JSONDecodeError` docstring reads `\"\"\"Couldn't decode the text into json\"\"\"` \u2014 missing a trailing period and using lowercase `json`. Change to `\"\"\"Couldn't decode the text into JSON.\"\"\"`",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            34,
+            43
+          ],
+          "severity": "nit",
+          "title": "Import style: duplicate from-clause and confusingly named compat alias",
+          "detail": "Two separate issues compound here: (1) `JSONDecodeError` from `.exceptions` is imported in a standalone `from .exceptions import` line (line 34) rather than being grouped with the existing block on lines 30\u201333; (2) `JSONDecodeError` imported from `.compat` (line 43) and `RequestsJSONDecodeError` from `.exceptions` share a conceptually similar name, making the intent unclear. Consolidate the exceptions import block and rename the compat alias to `CompatJSONDecodeError` (already used in `exceptions.py`) or `_JSONDecodeError` to signal it is an internal shim.",
+          "confidence": 0.88
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            914
+          ],
+          "severity": "nit",
+          "title": "Missing two spaces before inline comment on if-statement",
+          "detail": "PEP 8 and the surrounding code style require at least two spaces before an inline comment. The comment `# e is a ValueError` appears immediately after `if is_py2:` with only one space. Change to `if is_py2:  # e is a ValueError`.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "requests/compat.py",
+          "line_range": [
+            31,
+            31
+          ],
+          "severity": "nit",
+          "title": "has_simplejson flag lacks an explanatory comment consistent with surrounding style",
+          "detail": "The `has_simplejson = False` flag is placed immediately before its governing try/except without a comment, whereas the surrounding file annotates similar flags (e.g., `#: Python 3.x?` for `is_py3`). Adding a short comment (e.g., `#: True when simplejson is installed and used as the JSON backend.`) would be consistent with the file's documentation convention.",
+          "confidence": 0.65
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 5102,
+      "tokens_out": 3486,
+      "cost_usd": 0.067596,
+      "duration_s": 61.28682604106143,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 139041,
+    "tokens_out": 8302,
+    "cost_usd": 0.541653,
+    "duration_s": 167.0
+  }
+}

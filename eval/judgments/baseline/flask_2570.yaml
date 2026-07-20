@@ -1,0 +1,23 @@
+case: flask_2570
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The get_debug_flag/property pattern is debated: one maintainer asks for the property decorator,
+    the author explicitly prefers the older pattern — genuine unresolved style disagreement.'
+  matched_finding: null
+  note: 'baseline run errored (API 400: tool_use without matching tool_result) and produced zero
+    findings'
+  matchable: true
+- ground_truth: g2
+  issue: The claim that "the debugger will kick in" in development env is inaccurate — it only activates
+    when FLASK_DEBUG is set, and the docs/docstrings as written would perpetuate a common confusion.
+  matched_finding: null
+  note: baseline run errored and produced zero findings
+  matchable: true
+- ground_truth: g3
+  issue: 'Assorted polish: typo ("repopulate") and visually inconsistent indentation style flagged
+    in several places.'
+  matched_finding: null
+  note: baseline run errored and produced zero findings
+  matchable: true
+finding_validity: []

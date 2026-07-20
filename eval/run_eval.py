@@ -150,10 +150,19 @@ async def run_case(case: dict, experiment: str) -> dict:
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment", choices=EXPERIMENTS, required=True)
+    parser.add_argument("--experiment", choices=EXPERIMENTS)
     parser.add_argument("--case", help="substring filter on case names")
     parser.add_argument("--force", action="store_true", help="rerun cached cases")
+    parser.add_argument("--report", action="store_true",
+                        help="score completed judgments and write eval/results.md")
     args = parser.parse_args()
+    if args.report:
+        from eval.score import write_report
+
+        print(f"wrote {write_report()}")
+        return 0
+    if not args.experiment:
+        parser.error("--experiment is required unless --report is given")
     load_dotenv(EVAL_DIR.parent / ".env")
 
     cases = load_dataset(args.case)
