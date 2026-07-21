@@ -2,50 +2,30 @@
   "case": "flask_2031",
   "experiment": "baseline",
   "pr_url": "https://github.com/pallets/flask/pull/2031",
-  "head_sha": "9f77b8991655a552507a3c07ab6ebbba3f447ddf",
+  "head_sha": "9b88f305768f56fd4bcd3041c584d8d036b0a2e6",
   "sha_matches_dataset": true,
-  "timestamp": 1784180309,
+  "timestamp": 1784571825,
   "summary": "",
   "findings": [
     {
       "agent": "baseline",
       "file": "flask/helpers.py",
-      "line_start": 593,
-      "line_end": 595,
-      "severity": "critical",
-      "title": "File descriptor leak on RequestedRangeNotSatisfiable when file was opened by send_file",
-      "detail": "When `file is None` before the range-request block (i.e. send_file opened the file itself at line 549), the local variable `file` holds an open file handle. On a 416 error `make_conditional` raises `RequestedRangeNotSatisfiable`. The handler at line 594 does `file.close()` \u2014 but this only works if `file` is still the object that was opened. However, when `use_x_sendfile` is True, `data = None` and `file` may have been closed already (line 542). Conversely, when file was passed in by the *caller* (the `else` branch at line 516-518), calling `file.close()` here is wrong: the caller owns that file object and closing it without the caller's knowledge is a bug. The code should only close the file if it was opened internally (i.e. `filename` was provided and `use_x_sendfile` is False).",
+      "line_start": 588,
+      "line_end": 598,
+      "severity": "major",
+      "title": "Silent fallback on `TypeError` hides real bugs and may pass wrong `fsize`",
+      "detail": "When `make_conditional(request, accept_ranges=True, complete_length=fsize)` raises `TypeError` (indicating an older werkzeug that doesn't support the new signature), the code silently falls back to `rv.make_conditional(request)`. This has two problems:\n1. Any *other* `TypeError` raised inside `make_conditional` (e.g. a bug in werkzeug or a wrong type passed) will also be swallowed and silently fall back, masking real errors.\n2. On older werkzeug without range-request support, if `fsize` is `None` (file object path), this fallback is correct, but there is no signal to the caller that range requests are not actually supported.\nA safer approach is to detect werkzeug version/capability at import time or to check for the specific signature before calling, rather than catching a broad `TypeError`.",
       "confidence": 0.85
     },
     {
       "agent": "baseline",
       "file": "flask/helpers.py",
-      "line_start": 586,
-      "line_end": 595,
+      "line_start": 595,
+      "line_end": 598,
       "severity": "major",
-      "title": "fsize is None when a file object is passed, causing make_conditional to receive None as complete_length",
-      "detail": "When `filename_or_fp` is a file-like object (not a string), `fsize` stays `None` (it is only set in the `use_x_sendfile` branch or the `file is None` branch). The new code path at line 591-592 then calls `rv.make_conditional(request, accept_ranges=True, complete_length=None)`. Passing `None` as `complete_length` may cause incorrect or undefined behaviour in Werkzeug's range-request handling (e.g. it cannot generate a valid `Content-Range` header). For file objects that support `seek`/`tell`, the size could be computed; otherwise range requests should be skipped or the Accept-Ranges header should not be advertised.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "baseline",
-      "file": "flask/helpers.py",
-      "line_start": 586,
-      "line_end": 601,
-      "severity": "major",
-      "title": "Range requests silently unsupported / no Accept-Ranges header when file object is passed",
-      "detail": "When a file-like object (not a filename string) is passed, `fsize` is `None`. The call to `make_conditional(request, accept_ranges=True, complete_length=None)` will attempt to advertise `Accept-Ranges: bytes` and process a Range header without knowing the total size. Per RFC 7233, a server must know the complete length to emit a valid `Content-Range`. The code should either compute the size (via seek/tell) or fall back to the old `make_conditional(request)` path (no range support) when the size is unknown.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "baseline",
-      "file": "flask/helpers.py",
-      "line_start": 593,
-      "line_end": 595,
-      "severity": "major",
-      "title": "file variable may be undefined when RequestedRangeNotSatisfiable is raised with use_x_sendfile",
-      "detail": "In the `use_x_sendfile` branch (line 540-546), `data = None` and the original file object (if any) was already closed (line 542). After that, `file` may be the original caller-supplied file (now closed) or the local `file` variable which was set to `None` at line 513 (for the filename-only path). When `make_conditional` raises in the X-Sendfile path, calling `file.close()` at line 594 would either close an already-closed file or call `close()` on `None` (AttributeError). The guard `if file is not None: file.close()` is missing.",
-      "confidence": 0.8
+      "title": "File leaked when `close_on_416=False` and 416 is raised for file-object input",
+      "detail": "When `filename_or_fp` is a file object (not a string path), `close_on_416` remains `False`. If `make_conditional` raises `RequestedRangeNotSatisfiable`, the `except` block skips closing the file because `close_on_416 is False`, then re-raises. However the file object that was passed in (or even opened by the caller) is now wrapped but never iterated and never closed. This is an inconsistency: a file opened internally IS closed (correct), but a caller-supplied file object that triggers a 416 is silently leaked. At minimum a comment explaining the reasoning (i.e. caller owns lifetime of passed-in objects) would help; ideally the response object should still be closed properly before re-raising.",
+      "confidence": 0.75
     },
     {
       "agent": "baseline",
@@ -53,49 +33,59 @@
       "line_start": 504,
       "line_end": 514,
       "severity": "minor",
-      "title": "Test typo in skip reason: 'not implement' should be 'not implemented'",
-      "detail": "The `reason` string in the `@pytest.mark.skipif` decorator reads `\"not implement within werkzeug\"` \u2014 it should be `\"not implemented within werkzeug\"` (missing 'd').",
-      "confidence": 1.0
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_helpers.py",
-      "line_start": 467,
-      "line_end": 529,
-      "severity": "minor",
-      "title": "No test for range request when file-like object (not filename) is passed",
-      "detail": "The new range-request logic has a code path for file-like objects where `fsize` is None. There is no test exercising this case. Given the potential issue with `complete_length=None`, a test covering a file-object input with `conditional=True` and a `Range` header would help catch regressions.",
-      "confidence": 0.8
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_helpers.py",
-      "line_start": 467,
-      "line_end": 529,
-      "severity": "minor",
-      "title": "No test verifying Accept-Ranges header is present in response",
-      "detail": "RFC 7233 requires that a server advertising range-request support include `Accept-Ranges: bytes` in its responses. The new tests check status codes and data content but do not verify that the `Accept-Ranges` response header is set correctly on a plain (non-range) GET request.",
-      "confidence": 0.75
-    },
-    {
-      "agent": "baseline",
-      "file": "flask/helpers.py",
-      "line_start": 587,
-      "line_end": 589,
-      "severity": "minor",
-      "title": "Version-detection via duck-typing on Range class is fragile and adds complexity",
-      "detail": "Using `callable(getattr(Range, 'to_content_range_header', None))` to detect Werkzeug version support is an unusual pattern. A cleaner approach would be to explicitly check the Werkzeug version via `werkzeug.__version__` or use a try/except import of the new API. The comment says 'Remove this test when support for Werkzeug <0.12 is dropped', but it is easy to forget. Consider using `pkg_resources` version comparison or a module-level boolean sentinel set once at import time, rather than repeating the `getattr` test on every request.",
+      "title": "Missing test for 416 response body and `Content-Range` header",
+      "detail": "RFC 7233 requires that a 416 (Range Not Satisfiable) response MUST include a `Content-Range: bytes */<complete-length>` header. The test verifies the status code is 416 but does not assert that the `Content-Range` header is present and correct, nor that the response body matches the werkzeug error page. This reduces confidence that the 416 response is fully RFC-compliant.",
       "confidence": 0.7
     },
     {
       "agent": "baseline",
       "file": "flask/helpers.py",
-      "line_start": 600,
-      "line_end": 601,
+      "line_start": 599,
+      "line_end": 602,
       "severity": "minor",
-      "title": "304 x-sendfile cleanup not applied to 416 responses",
-      "detail": "The existing comment says x-sendfile headers should be stripped for 304 responses. With range requests, a 416 response could theoretically also be returned; but since 416 is re-raised as an exception, the cleanup never runs for that case. This is a minor inconsistency but worth noting \u2014 an X-Sendfile header could linger if a future Werkzeug version returns 416 as a response object rather than raising.",
-      "confidence": 0.5
+      "title": "304 x-sendfile removal also needed for 206 partial-content responses",
+      "detail": "The code removes the `x-sendfile` header only for 304 responses, but the same reasoning (some servers ignore special status codes for x-sendfile) could apply to 206 partial-content responses. If x-sendfile is in the headers and the response status is 206, the x-sendfile header may be misinterpreted by the front-end server. Consider also popping `x-sendfile` when `rv.status_code == 206`.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_helpers.py",
+      "line_start": 480,
+      "line_end": 483,
+      "severity": "minor",
+      "title": "Test assertion for partial content uses file read after `rv.data` comparison \u2014 both correct but fragile",
+      "detail": "Each test case opens the resource file and reads it independently. Since `index.html` is small and static this is fine, but for `bytes=4-15` the assertion `rv.data == f.read()[4:16]` is correct (end is inclusive in the Range header, exclusive in Python slicing). This is good. However, there is no assertion on the `Content-Range` response header (e.g. `Content-Range: bytes 4-15/20`) to confirm the server properly communicates which range was returned.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 508,
+      "line_end": 509,
+      "severity": "minor",
+      "title": "`close_on_416` flag is an indirect and fragile way to track file ownership",
+      "detail": "Using a separate boolean `close_on_416` to track whether this function opened the file (and thus owns it) is fragile: if new code paths are added in the future, it is easy to forget to update this flag. A cleaner pattern would be to introduce a local `file_opened_here` variable, or to simply check `isinstance(filename_or_fp, string_types)` again at the point of cleanup, keeping the ownership semantics explicit.",
+      "confidence": 0.55
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_helpers.py",
+      "line_start": 467,
+      "line_end": 470,
+      "severity": "nit",
+      "title": "Typo in `skipif` reason string",
+      "detail": "The `reason` string reads `\"not implement within werkzeug\"` which should be `\"not implemented within werkzeug\"` (missing 'd').",
+      "confidence": 0.99
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 450,
+      "line_end": 452,
+      "severity": "nit",
+      "title": "Doc comment says 'upgrade the response stream' \u2014 imprecise wording",
+      "detail": "The new docstring addition says 'this method will try to upgrade the response stream to support range requests'. This phrasing is a bit ambiguous. It would be clearer to say 'this method will respond with a 206 Partial Content response if a valid Range header is present in the request, and will set Accept-Ranges on the response.'",
+      "confidence": 0.7
     }
   ],
   "agent_runs": [
@@ -107,49 +97,25 @@
           "agent": "baseline",
           "file": "flask/helpers.py",
           "line_range": [
-            593,
-            595
+            588,
+            598
           ],
-          "severity": "critical",
-          "title": "File descriptor leak on RequestedRangeNotSatisfiable when file was opened by send_file",
-          "detail": "When `file is None` before the range-request block (i.e. send_file opened the file itself at line 549), the local variable `file` holds an open file handle. On a 416 error `make_conditional` raises `RequestedRangeNotSatisfiable`. The handler at line 594 does `file.close()` \u2014 but this only works if `file` is still the object that was opened. However, when `use_x_sendfile` is True, `data = None` and `file` may have been closed already (line 542). Conversely, when file was passed in by the *caller* (the `else` branch at line 516-518), calling `file.close()` here is wrong: the caller owns that file object and closing it without the caller's knowledge is a bug. The code should only close the file if it was opened internally (i.e. `filename` was provided and `use_x_sendfile` is False).",
+          "severity": "major",
+          "title": "Silent fallback on `TypeError` hides real bugs and may pass wrong `fsize`",
+          "detail": "When `make_conditional(request, accept_ranges=True, complete_length=fsize)` raises `TypeError` (indicating an older werkzeug that doesn't support the new signature), the code silently falls back to `rv.make_conditional(request)`. This has two problems:\n1. Any *other* `TypeError` raised inside `make_conditional` (e.g. a bug in werkzeug or a wrong type passed) will also be swallowed and silently fall back, masking real errors.\n2. On older werkzeug without range-request support, if `fsize` is `None` (file object path), this fallback is correct, but there is no signal to the caller that range requests are not actually supported.\nA safer approach is to detect werkzeug version/capability at import time or to check for the specific signature before calling, rather than catching a broad `TypeError`.",
           "confidence": 0.85
         },
         {
           "agent": "baseline",
           "file": "flask/helpers.py",
           "line_range": [
-            586,
-            595
+            595,
+            598
           ],
           "severity": "major",
-          "title": "fsize is None when a file object is passed, causing make_conditional to receive None as complete_length",
-          "detail": "When `filename_or_fp` is a file-like object (not a string), `fsize` stays `None` (it is only set in the `use_x_sendfile` branch or the `file is None` branch). The new code path at line 591-592 then calls `rv.make_conditional(request, accept_ranges=True, complete_length=None)`. Passing `None` as `complete_length` may cause incorrect or undefined behaviour in Werkzeug's range-request handling (e.g. it cannot generate a valid `Content-Range` header). For file objects that support `seek`/`tell`, the size could be computed; otherwise range requests should be skipped or the Accept-Ranges header should not be advertised.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "baseline",
-          "file": "flask/helpers.py",
-          "line_range": [
-            586,
-            601
-          ],
-          "severity": "major",
-          "title": "Range requests silently unsupported / no Accept-Ranges header when file object is passed",
-          "detail": "When a file-like object (not a filename string) is passed, `fsize` is `None`. The call to `make_conditional(request, accept_ranges=True, complete_length=None)` will attempt to advertise `Accept-Ranges: bytes` and process a Range header without knowing the total size. Per RFC 7233, a server must know the complete length to emit a valid `Content-Range`. The code should either compute the size (via seek/tell) or fall back to the old `make_conditional(request)` path (no range support) when the size is unknown.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "baseline",
-          "file": "flask/helpers.py",
-          "line_range": [
-            593,
-            595
-          ],
-          "severity": "major",
-          "title": "file variable may be undefined when RequestedRangeNotSatisfiable is raised with use_x_sendfile",
-          "detail": "In the `use_x_sendfile` branch (line 540-546), `data = None` and the original file object (if any) was already closed (line 542). After that, `file` may be the original caller-supplied file (now closed) or the local `file` variable which was set to `None` at line 513 (for the filename-only path). When `make_conditional` raises in the X-Sendfile path, calling `file.close()` at line 594 would either close an already-closed file or call `close()` on `None` (AttributeError). The guard `if file is not None: file.close()` is missing.",
-          "confidence": 0.8
+          "title": "File leaked when `close_on_416=False` and 416 is raised for file-object input",
+          "detail": "When `filename_or_fp` is a file object (not a string path), `close_on_416` remains `False`. If `make_conditional` raises `RequestedRangeNotSatisfiable`, the `except` block skips closing the file because `close_on_416 is False`, then re-raises. However the file object that was passed in (or even opened by the caller) is now wrapped but never iterated and never closed. This is an inconsistency: a file opened internally IS closed (correct), but a caller-supplied file object that triggers a 416 is silently leaked. At minimum a comment explaining the reasoning (i.e. caller owns lifetime of passed-in objects) would help; ideally the response object should still be closed properly before re-raising.",
+          "confidence": 0.75
         },
         {
           "agent": "baseline",
@@ -159,71 +125,83 @@
             514
           ],
           "severity": "minor",
-          "title": "Test typo in skip reason: 'not implement' should be 'not implemented'",
-          "detail": "The `reason` string in the `@pytest.mark.skipif` decorator reads `\"not implement within werkzeug\"` \u2014 it should be `\"not implemented within werkzeug\"` (missing 'd').",
-          "confidence": 1.0
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            467,
-            529
-          ],
-          "severity": "minor",
-          "title": "No test for range request when file-like object (not filename) is passed",
-          "detail": "The new range-request logic has a code path for file-like objects where `fsize` is None. There is no test exercising this case. Given the potential issue with `complete_length=None`, a test covering a file-object input with `conditional=True` and a `Range` header would help catch regressions.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            467,
-            529
-          ],
-          "severity": "minor",
-          "title": "No test verifying Accept-Ranges header is present in response",
-          "detail": "RFC 7233 requires that a server advertising range-request support include `Accept-Ranges: bytes` in its responses. The new tests check status codes and data content but do not verify that the `Accept-Ranges` response header is set correctly on a plain (non-range) GET request.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "baseline",
-          "file": "flask/helpers.py",
-          "line_range": [
-            587,
-            589
-          ],
-          "severity": "minor",
-          "title": "Version-detection via duck-typing on Range class is fragile and adds complexity",
-          "detail": "Using `callable(getattr(Range, 'to_content_range_header', None))` to detect Werkzeug version support is an unusual pattern. A cleaner approach would be to explicitly check the Werkzeug version via `werkzeug.__version__` or use a try/except import of the new API. The comment says 'Remove this test when support for Werkzeug <0.12 is dropped', but it is easy to forget. Consider using `pkg_resources` version comparison or a module-level boolean sentinel set once at import time, rather than repeating the `getattr` test on every request.",
+          "title": "Missing test for 416 response body and `Content-Range` header",
+          "detail": "RFC 7233 requires that a 416 (Range Not Satisfiable) response MUST include a `Content-Range: bytes */<complete-length>` header. The test verifies the status code is 416 but does not assert that the `Content-Range` header is present and correct, nor that the response body matches the werkzeug error page. This reduces confidence that the 416 response is fully RFC-compliant.",
           "confidence": 0.7
         },
         {
           "agent": "baseline",
           "file": "flask/helpers.py",
           "line_range": [
-            600,
-            601
+            599,
+            602
           ],
           "severity": "minor",
-          "title": "304 x-sendfile cleanup not applied to 416 responses",
-          "detail": "The existing comment says x-sendfile headers should be stripped for 304 responses. With range requests, a 416 response could theoretically also be returned; but since 416 is re-raised as an exception, the cleanup never runs for that case. This is a minor inconsistency but worth noting \u2014 an X-Sendfile header could linger if a future Werkzeug version returns 416 as a response object rather than raising.",
-          "confidence": 0.5
+          "title": "304 x-sendfile removal also needed for 206 partial-content responses",
+          "detail": "The code removes the `x-sendfile` header only for 304 responses, but the same reasoning (some servers ignore special status codes for x-sendfile) could apply to 206 partial-content responses. If x-sendfile is in the headers and the response status is 206, the x-sendfile header may be misinterpreted by the front-end server. Consider also popping `x-sendfile` when `rv.status_code == 206`.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            480,
+            483
+          ],
+          "severity": "minor",
+          "title": "Test assertion for partial content uses file read after `rv.data` comparison \u2014 both correct but fragile",
+          "detail": "Each test case opens the resource file and reads it independently. Since `index.html` is small and static this is fine, but for `bytes=4-15` the assertion `rv.data == f.read()[4:16]` is correct (end is inclusive in the Range header, exclusive in Python slicing). This is good. However, there is no assertion on the `Content-Range` response header (e.g. `Content-Range: bytes 4-15/20`) to confirm the server properly communicates which range was returned.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            508,
+            509
+          ],
+          "severity": "minor",
+          "title": "`close_on_416` flag is an indirect and fragile way to track file ownership",
+          "detail": "Using a separate boolean `close_on_416` to track whether this function opened the file (and thus owns it) is fragile: if new code paths are added in the future, it is easy to forget to update this flag. A cleaner pattern would be to introduce a local `file_opened_here` variable, or to simply check `isinstance(filename_or_fp, string_types)` again at the point of cleanup, keeping the ownership semantics explicit.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            467,
+            470
+          ],
+          "severity": "nit",
+          "title": "Typo in `skipif` reason string",
+          "detail": "The `reason` string reads `\"not implement within werkzeug\"` which should be `\"not implemented within werkzeug\"` (missing 'd').",
+          "confidence": 0.99
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            450,
+            452
+          ],
+          "severity": "nit",
+          "title": "Doc comment says 'upgrade the response stream' \u2014 imprecise wording",
+          "detail": "The new docstring addition says 'this method will try to upgrade the response stream to support range requests'. This phrasing is a bit ambiguous. It would be clearer to say 'this method will respond with a 206 Partial Content response if a valid Range header is present in the request, and will set Accept-Ranges on the response.'",
+          "confidence": 0.7
         }
       ],
       "tool_calls": 4,
-      "tokens_in": 35433,
-      "tokens_out": 2080,
-      "cost_usd": 0.137499,
-      "duration_s": 39.95911012496799,
+      "tokens_in": 35196,
+      "tokens_out": 1833,
+      "cost_usd": 0.133083,
+      "duration_s": 38.916468374896795,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 35433,
-    "tokens_out": 2080,
-    "cost_usd": 0.137499,
-    "duration_s": 40.0
+    "tokens_in": 35196,
+    "tokens_out": 1833,
+    "cost_usd": 0.133083,
+    "duration_s": 38.9
   }
 }

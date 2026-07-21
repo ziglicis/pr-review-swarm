@@ -4,80 +4,77 @@ ground_truth_matches:
 - ground_truth: g1
   issue: The brute-force test making 100 HTTP requests is aggressive and not reliably failing; a
     deterministic test coordinating threads with threading.Event and no network would be better.
-  matched_finding: 4
-  note: the brute-force test is still at the reviewed head; finding 4 captures its unreliability
-    ('a race condition could still go undetected') — the reviewer's determinism concern (discussion_r27737727)
+  matched_finding: null
+  note: 'PRESENT: the 100-request ThreadPool brute-force test is at review_sha; Lukasa flagged it
+    ''overly aggressive'', suggested threading.Event (discussion_r27737727)'
   matchable: true
 - ground_truth: g2
   issue: The thread-local attribute should be private (underscore-prefixed) and clearly named (e.g.
     _thread_local) so readers understand it without reading the whole class.
-  matched_finding: null
-  note: fixed during review — the attribute is private and named _thread_local at the reviewed head
-    (discussion_r27754250)
-  matchable: false
+  matched_finding: 4
+  note: 'PRESENT: thread-local stored as `self.tl` (opaque, not private _thread_local); sigmavirus24
+    asked for clearer naming (discussion_r27754250)'
+  matchable: true
 - ground_truth: g3
   issue: The getattr fallback for num_401_calls is dead weight after the refactor — the value is
     always assigned in __call__, so the default branch can never trigger and should be removed.
   matched_finding: null
-  note: fixed during review — the getattr fallback is gone; handle_401 reads the thread-local directly
-    (discussion_r27659035)
+  note: 'NON-matchable: no getattr fallback at review_sha — handle_401 reads `self.tl.num_401_calls`
+    directly; the dead getattr (discussion_r27659035) was already removed'
   matchable: false
 finding_validity:
 - finding: 0
-  title: ThreadPool guard silently skips test body instead of marking the test as skipped
-  valid: true
-  note: 'factual: vacuous pass when ThreadPool is None; skipif is the suite''s pattern'
+  title: num_401_calls initialized to None and hook callbacks may run on a different thread — both
+    cause crashes
+  valid: uncertain
+  note: 'None-init is real but the crash is unreachable: __call__ sets num_401_calls=1 before hooks
+    fire on the same thread'
 - finding: 1
-  title: handle_redirect's thread-local counter reset is untested
+  title: test_DIGESTAUTH_THREADED silently skips entire assertion block when ThreadPool is unavailable
   valid: true
-  note: 'factual: no digest-auth redirect test exists'
+  note: test silently skips its assertions when ThreadPool is unavailable
 - finding: 2
-  title: num_401_calls initialized to None instead of 1 — AttributeError / TypeError risk in handle_401
-  valid: false
-  note: 'unreachable in requests'' synchronous model: hooks are registered inside __call__ (which
-    sets num_401_calls=1 before the request is sent) and fire on the same thread post-send; requests
-    keeps the None initialization to this day without incident'
+  title: No unit test for per-thread state isolation or num_401_calls reset behavior
+  valid: true
+  note: 'coverage gap: no unit test for per-thread isolation/reset'
 - finding: 3
-  title: init_per_thread_state not tested in isolation — guard semantics unverified
-  valid: true
-  note: 'factual: guard semantics only exercised via live httpbin integration'
+  title: Stale per-thread nonce/challenge state never reset between requests on the same thread
+  valid: uncertain
+  note: stale per-thread state persists on a reused thread — real but arguably intended
 - finding: 4
-  title: test_DIGESTAUTH_THREADED does not assert per-thread counter independence
+  title: Attribute name `tl` is too abbreviated and opaque
   valid: true
-  note: 'factual and matches the reviewer''s core concern: races can pass undetected'
+  note: 'g2: `tl` attribute name is opaque'
 - finding: 5
-  title: No test for __call__ with a file-like body (thread-local pos branch uncovered)
-  valid: true
-  note: 'verified: test_DIGEST_STREAM uses stream=True GETs with no file-like body; the pos branch
-    is uncovered'
+  title: Sentinel attribute `init` in init_per_thread_state is misleadingly named
+  valid: uncertain
+  note: sentinel 'init' naming — subjective
 - finding: 6
-  title: Thread-local state is never re-initialized after first use — stale nonce/chal may persist
-    across unrelated servers
-  valid: uncertain
-  note: real design property but pre-existing semantics preserved (instance attrs persisted identically
-    before the PR); the finding itself calls it largely intentional
+  title: test_DIGESTAUTH_THREADED does not assert HTTP 200 status code
+  valid: true
+  note: 'coverage gap: test doesn''t assert HTTP 200'
 - finding: 7
-  title: Threaded test issues real external HTTP requests with credentials in CI
-  valid: false
-  note: the whole suite hits httpbin with dummy credentials by established practice; no marginal
-    risk
+  title: '''Already initialized'' path in init_per_thread_state is not tested'
+  valid: true
+  note: 'coverage gap: already-initialized path untested'
 - finding: 8
-  title: WWW-Authenticate header passed to parse_dict_header without length or sanity check
-  valid: false
-  note: pre-existing code outside the PR's change, self-acknowledged; resource concern speculative
+  title: handle_redirect() per-thread num_401_calls reset not covered by concurrent test
+  valid: true
+  note: 'coverage gap: handle_redirect reset uncovered'
 - finding: 9
-  title: Missing spaces around = in keyword argument (PEP 8)
+  title: No concurrent test for wrong-password path in threaded digest auth
   valid: true
-  note: PEP 8 violation confirmed in diff
+  note: 'coverage gap: no concurrent wrong-password test'
 - finding: 10
-  title: Unused return value 1 in do_request helper
-  valid: true
-  note: 'factual: pool.map result discarded; trivial'
+  title: Server-controlled www-authenticate header stored in long-lived thread-local without strict
+    validation
+  valid: uncertain
+  note: www-authenticate stored in thread-local — speculative
 - finding: 11
-  title: Sentinel attribute name 'init' is ambiguous
-  valid: uncertain
-  note: defensible naming nit, but requests keeps the 'init' sentinel to this day
+  title: Missing spaces around `=` in keyword assignment
+  valid: true
+  note: missing spaces around = — factual
 - finding: 12
-  title: init_per_thread_state uses an inline comment instead of a docstring
-  valid: uncertain
-  note: subjective docstring-vs-comment nit; maintainers kept it as-is
+  title: '`do_request` ignores its argument and returns an unused literal'
+  valid: true
+  note: do_request ignores its arg + returns an unused literal — factual

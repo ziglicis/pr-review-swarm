@@ -5,93 +5,103 @@ ground_truth_matches:
   issue: When tell() fails at prepare time, _body_position stays None and rewind_body silently skips
     instead of raising; a sentinel object is needed to distinguish "never set" from "tell failed".
   matched_finding: null
-  note: fixed during review — the object() sentinel distinguishing failed tell() from never-set is
-    at the reviewed head (discussion_r85648021)
+  note: 'NON-matchable: the object() sentinel for failed tell() is already present at review_sha
+    (findings reference it), addressing discussion_r85648021'
   matchable: false
 - ground_truth: g2
   issue: Casting tell()'s result with int() is wrong on Python 2 where long (bignum) is meaningful;
     an integer_types tuple belongs in compat.py — and the first attempt wrote (int) which isn't a
     tuple at all.
   matched_finding: null
-  note: fixed during review — integer_types tuple lives in compat.py and rewind_body uses isinstance
-    against it (discussion_r85892421)
-  matchable: false
+  note: 'PRESENT: rewind_body uses `isinstance(_body_position, int)` — misses py2 long; Lukasa flagged
+    it (discussion_r85892421); unmatched'
+  matchable: true
 - ground_truth: g3
   issue: The new exception name RedirectError is too vague for what it signals; it should be the
     specific UnrewindableBodyError.
   matched_finding: null
-  note: fixed during review — the exception is named UnrewindableBodyError (discussion_r85712220)
+  note: 'NON-matchable: the exception is already named UnrewindableBodyError at review_sha, not RedirectError
+    (discussion_r85712220)'
   matchable: false
 - ground_truth: g4
   issue: Tests must assert the actual content re-read after rewind and cover an object with seek()
     but a broken/missing tell().
-  matched_finding: null
-  note: addressed during review — tests assert re-read content and cover no-seek/failed-seek/failed-tell
-    objects (discussion_r85716594)
-  matchable: false
+  matched_finding: 8
+  note: 'PRESENT: tests don''t cover the seek-but-broken-tell path / re-read content (discussion_r85716594)'
+  matchable: true
 - ground_truth: g5
   issue: The rewind helper doesn't use self — it's a function masquerading as a method and belongs
     in utils.
   matched_finding: null
-  note: fixed during review — rewind_body is a function in utils.py (discussion_r85892494)
-  matchable: false
+  note: 'PRESENT: rewind_body is a method with unused self; Lukasa: ''self is unused in this method''
+    (discussion_r85892494); unmatched'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: No integration test for `UnrewindableBodyError` propagating out of `resolve_redirects`
+  title: No test for 307 redirect with chunked/streaming body (`Transfer-Encoding` branch)
   valid: true
-  note: 'factual: no integration test for the primary user-facing failure path'
+  note: 'coverage gap: 307 chunked/streaming body untested'
 - finding: 1
-  title: Rewind condition uses fragile header check and is vulnerable to server-controlled headers
-  valid: false
-  note: the security headline is counterfactual ('if the intent were ever changed'); the check reads
-    outgoing headers by design, not coincidence
-- finding: 2
-  title: No test for `Transfer-Encoding` / chunked-body path through a 307 redirect
-  valid: true
-  note: 'factual: no chunked/Transfer-Encoding body is tested through a 307'
-- finding: 3
-  title: '`rewind_body` raises `UnrewindableBodyError` instead of no-op when body is non-seekable
-    and `_body_position` is None'
+  title: Rewindability check uses header presence as fragile proxy for body presence
   valid: uncertain
-  note: raising is a reasonable standalone contract; guarded by rewindable in the only call site
-- finding: 4
-  title: 'Typo in public exception message and test assertion: "occured" should be "occurred"'
+  note: header-presence rewindability proxy — coupling
+- finding: 2
+  title: '`rewind_body` raises `UnrewindableBodyError` for unseekable streams even when `rewindable`
+    is True'
+  valid: uncertain
+  note: rewind_body standalone-robustness for unseekable — mild
+- finding: 3
+  title: No end-to-end test that `resolve_redirects` correctly skips rewind for non-stream bodies
+    via 307
   valid: true
-  note: confirmed typo, including the mirrored test assertion
+  note: 'coverage gap: no e2e resolve_redirects skip test'
+- finding: 4
+  title: '`rewind_body` seeks to a potentially attacker-influenced or negative position without bounds
+    checking'
+  valid: false
+  note: seek position comes from tell(), not an attacker — far-fetched
 - finding: 5
+  title: 'Typo in error message: ''occured'' should be ''occurred'' (also in test assertion)'
+  valid: true
+  note: typo occured — factual
+- finding: 6
   title: Missing blank line before `UnrewindableBodyError` class definition
   valid: true
-  note: confirmed single blank line
-- finding: 6
-  title: Missing blank line before top-level function `rewind_body`
-  valid: true
-  note: confirmed single blank line
+  note: missing blank line before UnrewindableBodyError — factual
 - finding: 7
-  title: No test verifying `_body_position` is preserved by `PreparedRequest.copy()`
+  title: '`PreparedRequest.copy()` copying `_body_position` is not explicitly tested'
   valid: true
-  note: 'factual: copy() preservation unasserted'
+  note: 'coverage gap: copy() _body_position untested'
 - finding: 8
-  title: '`object()` sentinel for failed `tell()` is undocumented and should be a named constant'
-  valid: uncertain
-  note: object() sentinel is kept in requests to this day; serialization concern speculative
+  title: No test for `IOError` or `ValueError` raised by `tell()` in `prepare_body`
+  valid: true
+  note: 'g4: no test for IOError/ValueError from tell()'
 - finding: 9
-  title: No explicit test asserting `rewind_body` is skipped for non-stream body in `resolve_redirects`
-  valid: uncertain
-  note: self-acknowledged as incidentally covered; weak
+  title: Sentinel `_body_position` with a body that has `seek` is not tested in `rewind_body`
+  valid: true
+  note: 'coverage gap: sentinel body-position with seek untested'
 - finding: 10
-  title: Seek position from `tell()` is not validated before use
-  valid: false
-  note: 'far-fetched: position comes from the object''s own tell()'
-- finding: 11
-  title: No test for stream where `tell()` returns a non-integer
-  valid: true
-  note: 'factual edge tied to the reviewed integer_types mechanism: a float tell() raises UnrewindableBodyError
-    and is untested'
-- finding: 12
-  title: Unused `s = requests.Session()` assignments in multiple new test functions
-  valid: true
-  note: confirmed dead assignments
-- finding: 13
-  title: Long lines in new test methods inconsistent with surrounding style
+  title: Sentinel `object()` for failed `tell()` causes `UnrewindableBodyError` on every redirect
+    rather than silently skipping
   valid: uncertain
-  note: weak style point
+  note: sentinel object() behavior — mild
+- finding: 11
+  title: 'Typo in docstring: ''it''s'' should be ''its'''
+  valid: true
+  note: it's → its (Lukasa)
+- finding: 12
+  title: Use `is None` instead of `== None` in test assertion
+  valid: true
+  note: == None → is None (Lukasa)
+- finding: 13
+  title: Unused `s = requests.Session()` variable in `test_prepare_body_position_non_stream`
+  valid: true
+  note: unused s variable — factual
+- finding: 14
+  title: Missing blank line(s) between `SessionRedirectMixin` and `Session` class
+  valid: true
+  note: missing blank line SessionRedirectMixin/Session — factual
+- finding: 15
+  title: Overly long line in `test_HTTP_307_ALLOW_REDIRECT_POST_WITH_SEEKABLE`
+  valid: uncertain
+  note: overly long line — subjective

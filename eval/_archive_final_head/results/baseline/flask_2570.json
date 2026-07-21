@@ -1,0 +1,29 @@
+{
+  "case": "flask_2570",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/pallets/flask/pull/2570",
+  "head_sha": "b8f955dd58411836df32d1e1258f92f9ee8ffcc6",
+  "sha_matches_dataset": true,
+  "timestamp": 1784217850,
+  "summary": "",
+  "findings": [],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "error",
+      "findings": [],
+      "tool_calls": 4,
+      "tokens_in": 169778,
+      "tokens_out": 400,
+      "cost_usd": 0.515334,
+      "duration_s": 14.460241915890947,
+      "skip_or_error_reason": "BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.6: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_011v9fetg23CGGEq1SXx4Bn3. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'req_011Cd6281PLAE6FvB2E5bgwS'}"
+    }
+  ],
+  "totals": {
+    "tokens_in": 169778,
+    "tokens_out": 400,
+    "cost_usd": 0.515334,
+    "duration_s": 14.5
+  }
+}

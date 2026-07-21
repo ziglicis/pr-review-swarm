@@ -2,59 +2,69 @@
   "case": "flask_2570",
   "experiment": "full",
   "pr_url": "https://github.com/pallets/flask/pull/2570",
-  "head_sha": "b8f955dd58411836df32d1e1258f92f9ee8ffcc6",
+  "head_sha": "8a0de67cc03706180382a16f3bc0c5b8b168c237",
   "sha_matches_dataset": true,
-  "timestamp": 1784217831,
-  "summary": "This PR adds `FLASK_ENV` support to Flask, introducing `get_env()` and updating `get_debug_flag()` in helpers.py, updating the debug property in app.py, and adding environment-related output and warnings to the CLI. The changes are broadly useful but contain several correctness issues around falsy-string handling, an always-true guard that prints misleading output, and a security concern about FLASK_ENV implicitly enabling the interactive debugger. Test coverage for the new CLI and app-level behaviors is also lacking.",
+  "timestamp": 1784589637,
+  "summary": "This PR adds FLASK_ENV support, wiring environment detection through get_env()/get_debug_flag() helpers and replacing the old ConfigAttribute-based debug with a property. The change introduces several correctness regressions \u2014 most critically, get_debug_flag() now always returns a boolean instead of None, breaking \"was FLASK_DEBUG explicitly set?\" detection in cli.py \u2014 and has notable gaps in test coverage. Documentation has at least one factually contradictory statement that must be corrected before merge.",
   "findings": [
     {
-      "agent": "correctness",
-      "file": "flask/cli.py",
-      "line_start": 619,
-      "line_end": 640,
+      "agent": "correctness, security",
+      "file": "flask/helpers.py",
+      "line_start": 66,
+      "line_end": 73,
       "severity": "major",
-      "title": "`get_debug_flag()` never returns None, so `debug is not None` guard is always True and 'Forcing debug mode' prints unconditionally",
-      "detail": "The updated `get_debug_flag()` in helpers.py always returns a concrete bool (either `True` or `False`) and can never return `None`. As a result, the guard `if debug is not None:` at line 639 is always `True`, causing `' * Forcing debug mode on/off'` to be printed on every `flask run`, even when neither `FLASK_DEBUG` nor `FLASK_ENV` was explicitly set by the user. This contradicts the intent of the message, which should only appear when the user has *explicitly forced* a debug mode. In production this will misleadingly print 'Forcing debug mode off' on every start. The same always-true condition in `ScriptInfo.load_app` (line 361-362) means `app.debug` is unconditionally overwritten even when the user set nothing, though in practice the values should be consistent. The fix is to either restore the ability of `get_debug_flag()` to return `None` (when neither env var is set), or change the message to one that is always appropriate to print.",
+      "title": "get_debug_flag() always returns a boolean, breaking explicit-vs-default detection and mishandling empty FLASK_DEBUG",
+      "detail": "The old get_debug_flag(default=None) returned None when FLASK_DEBUG was not set, allowing callers to distinguish 'debug was explicitly configured' from 'debug was not set'. The new implementation always returns True or False: when FLASK_DEBUG is absent it falls back to FLASK_ENV, and when FLASK_DEBUG is set to an empty string ('') it also falls through to the FLASK_ENV check rather than treating the empty value as an explicit False.\n\nConsequences:\n1. In run_command (cli.py line 632), the guard `if debug is not None` is always True, so '* Forcing debug mode off' is printed on every ordinary production invocation where the user never set FLASK_DEBUG \u2014 contradicting the 'Forcing' wording which implies an explicit override.\n2. In ScriptInfo.load_app (cli.py line 361), `if debug is not None: app.debug = debug` was meant to only override app.debug when the CLI flag was explicitly provided. It now always overrides, silently clobbering any debug=True set in the app config or constructor.\n3. Operators who write FLASK_DEBUG='' to suppress debug mode (e.g. from a config-management system that cannot unset variables) will unexpectedly inherit debug mode if FLASK_ENV=development is also set.\n\nFix: restore a three-valued return (True / False / None) for 'explicitly on / explicitly off / not set', or introduce a separate boolean to distinguish the 'user set FLASK_DEBUG' case from the 'env-derived default' case in callers.",
       "confidence": 0.95
     },
     {
-      "agent": "correctness, style",
-      "file": "flask/helpers.py",
-      "line_start": 58,
-      "line_end": 72,
+      "agent": "correctness, test_coverage",
+      "file": "tests/test_helpers.py",
+      "line_start": 888,
+      "line_end": 901,
       "severity": "major",
-      "title": "Falsy-string check (`if not val:`) treats explicit empty-string env vars as unset, masking user intent",
-      "detail": "Both `get_env()` (line 59-62) and `get_debug_flag()` (line 66-67) use `if not val:` to fall back to defaults, which conflates `None` (variable not set) with `''` (variable explicitly set to empty string). \n\nFor `get_env()`: `FLASK_ENV=` in a shell is silently overridden to `'production'` rather than being flagged as an unusual/empty value. The test case `('', 'production', False)` in `test_get_env` encodes this arguably-wrong behavior.\n\nFor `get_debug_flag()`: `FLASK_DEBUG=` (empty string) falls through to the `get_env()` branch instead of being treated as a non-debug flag. A user who sets `FLASK_DEBUG=` expecting it to mean 'off' will accidentally have debug mode enabled if `FLASK_ENV=development` is also set, which is subtle and dangerous.\n\nThe idiomatic fix is to change both guards to `if val is None:` so only a truly absent variable triggers the fallback. Additionally, `''` should be added to the `not-in` exclusion list in `get_debug_flag()` so an empty `FLASK_DEBUG` is treated as falsy (i.e., debug off).\n\nAs a style note (from f14), `get_env` could also be simplified to `return os.environ.get('FLASK_ENV') or 'production'`, though this shares the same falsy-string semantics and should only be used after the `is None` fix is applied.",
-      "confidence": 0.88
+      "title": "Dead branch in test_get_debug_flag and missing coverage of the FLASK_DEBUG-not-set path",
+      "detail": "Two related gaps:\n1. The parametrize table was updated so expected_flag is always True or False, but the test body still contains `if expected_flag is None: assert get_debug_flag() is None`. This branch is permanently dead; any future regression where get_debug_flag() incorrectly returns None would go undetected.\n2. The old table's ('', None, True) row tested the path where FLASK_DEBUG is empty and a non-None default drives the result. The new signature drops the default parameter entirely, but there is no test verifying get_debug_flag() behaviour when both FLASK_DEBUG and FLASK_ENV are absent (the 'truly unset' path).",
+      "confidence": 0.92
     },
     {
-      "agent": "test_coverage",
-      "file": "flask/cli.py",
-      "line_start": 612,
-      "line_end": 663,
+      "agent": "correctness, test_coverage",
+      "file": "tests/test_helpers.py",
+      "line_start": 903,
+      "line_end": 912,
       "severity": "major",
-      "title": "Production environment warning, env print line, and updated shell banner lack test coverage",
-      "detail": "Three new behaviors in the CLI have no tests:\n1. The production-environment warning block (lines 612-617) \u2014 no test verifies it is printed when `FLASK_ENV=production` or suppressed when `FLASK_ENV=development`.\n2. The `' * Env %s'` print (line 638) \u2014 no test verifies the env name appears in run_command output.\n3. The shell_command banner was updated from showing `[debug]` to showing `app.env` (line 663) \u2014 no test verifies the new banner format.\nAll three should have corresponding tests in `test_cli.py`.",
-      "confidence": 0.85
+      "title": "test_get_env does not isolate FLASK_DEBUG and misses the FLASK_ENV+FLASK_DEBUG interaction",
+      "detail": "Two gaps in test_get_env:\n1. The test sets FLASK_ENV but never clears FLASK_DEBUG. Because get_debug_flag() checks FLASK_DEBUG first, any residual FLASK_DEBUG value in the process environment (from CI, a .env file loaded by load_dotenv, or a prior test) will cause the assertion `assert get_debug_flag() == debug` to fail or silently pass for the wrong reason. A `monkeypatch.delenv('FLASK_DEBUG', raising=False)` call is needed.\n2. There is no parametrized case where FLASK_ENV=development and FLASK_DEBUG=0 are both set, to verify that an explicit FLASK_DEBUG=0 takes precedence over the env-derived default. This is the most important interaction introduced by this PR and it is completely uncovered.",
+      "confidence": 0.88
     },
     {
       "agent": "test_coverage",
       "file": "flask/app.py",
       "line_start": 642,
-      "line_end": 816,
+      "line_end": 645,
       "severity": "major",
-      "title": "New `make_config()` ENV/DEBUG defaults, debug property getter/setter, and `app.env` ConfigAttribute not tested",
-      "detail": "Three related untested behaviors in app.py:\n1. The `make_config()` logic (lines 642-645) that calls `get_env()` and `get_debug_flag()` to populate `ENV` and `DEBUG` defaults has no dedicated test. No test asserts that `app.env` and `app.debug` take correct values when `FLASK_ENV`/`FLASK_DEBUG` are or are not set at construction time.\n2. The debug attribute was refactored from a `ConfigAttribute` to a property with `_get_debug`, `_set_debug`, and `_set_debug_value`. No tests verify that setting `app.debug` updates both `app.config['DEBUG']` and `app.jinja_env.auto_reload`, or that reading `app.debug` returns `app.config['DEBUG']`.\n3. The new `env` ConfigAttribute is not tested \u2014 no test checks that `app.env` reads from `app.config['ENV']` or that changing `app.config['ENV']` is reflected in `app.env`.",
-      "confidence": 0.83
+      "title": "Integration path through make_config and new 'env' attribute not tested",
+      "detail": "make_config() now calls get_env() and get_debug_flag() to populate the 'ENV' and 'DEBUG' config defaults, and a new env = ConfigAttribute('ENV') attribute is introduced. No test verifies:\n- A freshly constructed Flask app has app.config['ENV'] == 'production' (or 'development' when FLASK_ENV=development).\n- app.config['DEBUG'] is correctly initialised via this path.\n- app.env round-trips through app.config['ENV'] (i.e. setting app.env = 'development' writes config and vice-versa).\nThe helpers are tested in isolation but the integration wiring through app.py is unverified.",
+      "confidence": 0.86
+    },
+    {
+      "agent": "correctness, test_coverage",
+      "file": "flask/app.py",
+      "line_start": 793,
+      "line_end": 812,
+      "severity": "major",
+      "title": "New debug property forces premature Jinja2 environment initialisation and is untested",
+      "detail": "The debug attribute was changed from a plain ConfigAttribute to a property backed by _get_debug/_set_debug/_set_debug_value. _set_debug_value calls self.jinja_env.auto_reload, where jinja_env is a locked_cached_property that triggers create_jinja_environment(). create_jinja_environment() reads self.templates_auto_reload which itself reads self.debug (via self.config['DEBUG']). Any assignment to app.debug before jinja_env is first legitimately initialised therefore forces premature Jinja2 env creation with potentially stale settings.\n\nThis is a regression from _reconfigure_for_run_debug, which was explicitly designed to be called after app construction. ScriptInfo.load_app (cli.py line 362) now does `app.debug = debug` via this setter after the app is constructed but potentially before templates are first rendered, which can leave jinja_env cached with incorrect auto_reload settings.\n\nAdditionally, there are no tests that set app.debug = True/False via the new property and verify that jinja_env.auto_reload is updated accordingly.",
+      "confidence": 0.82
     },
     {
       "agent": "security",
       "file": "flask/helpers.py",
-      "line_start": 58,
-      "line_end": 62,
+      "line_start": 59,
+      "line_end": 73,
       "severity": "major",
-      "title": "FLASK_ENV implicitly enables the Werkzeug interactive debugger without validation or prominent logging",
-      "detail": "Because `get_debug_flag()` returns `True` whenever `get_env() == 'development'`, any process that can inject or mutate `FLASK_ENV` (a `.env` file loaded by python-dotenv, a misconfigured reverse proxy, or a shared-hosting scenario) can silently enable the Werkzeug interactive REPL, which permits arbitrary code execution. The previous model only allowed debug-mode to be enabled via `FLASK_DEBUG`, a single, explicit, documented variable. The new code introduces a second, less-obvious path.\n\nAt minimum: (1) the ENV value should be restricted to a known allowlist (`'production'`, `'development'`, `'testing'`) with an error or warning on any other value, and (2) the mapping from `FLASK_ENV=development` \u2192 debug-on should be logged prominently so operators are aware. Without validation, a typo in FLASK_ENV also silently falls through to non-debug mode without the operator noticing, which is a related operational risk.",
+      "title": "FLASK_ENV silently activates the Werkzeug RCE-capable debugger without prominent documentation",
+      "detail": "get_debug_flag() now promotes the application to full debug mode (enabling the Werkzeug interactive debugger, which allows arbitrary remote code execution in the browser) whenever FLASK_ENV == 'development', without requiring FLASK_DEBUG to be set. This is a second, less-obvious path to debug-mode activation. An attacker or misconfigured system that can write FLASK_ENV=development (e.g. via a .flaskenv file loaded by python-dotenv, a CI/CD pipeline that surfaces untrusted environment input, or a shared hosting environment) gains the Werkzeug RCE debugger without the operator realising that FLASK_ENV has this side-effect.\n\nThe prior code required an explicit FLASK_DEBUG=1. The new coupling between FLASK_ENV and debug activation should be prominently documented with a security warning, get_env() should reject or warn on unrecognised values, and the raw value should not be passed through without validation.",
       "confidence": 0.82
     },
     {
@@ -63,129 +73,79 @@
       "line_start": 133,
       "line_end": 135,
       "severity": "minor",
-      "title": "Contradictory phrasing: 'and to disable the debug mode' in context that enables it",
-      "detail": "Line 133 reads: \"To enable all development features (and to disable the debug mode)\". This is contradictory \u2014 setting `FLASK_ENV=development` *enables* debug mode, not disables it. This parenthetical will confuse readers and should be corrected or removed.",
+      "title": "Parenthetical contradicts actual behaviour: FLASK_ENV=development enables debug mode, not disables it",
+      "detail": "The sentence reads: 'To enable all development features (and to disable the debug mode) you can export the FLASK_ENV environment variable and set it to development.' Setting FLASK_ENV=development *enables* debug mode, so the parenthetical is factually backwards. This will directly mislead readers about the security implications. The parenthetical must be corrected or removed.",
       "confidence": 0.95
     },
     {
-      "agent": "correctness, style, test_coverage",
-      "file": "tests/test_helpers.py",
-      "line_start": 895,
-      "line_end": 901,
-      "severity": "minor",
-      "title": "Dead branch in `test_get_debug_flag`: `assert get_debug_flag() is None` can never be reached",
-      "detail": "After updating the parametrize table, `expected_flag` is never `None` in any test case (all cases now use `False` or `True`). The branch `if expected_flag is None: assert get_debug_flag() is None` (lines 897-898) is therefore dead code and can never execute. This means the test no longer documents or verifies any scenario where `get_debug_flag()` returns `None`. If the `None`-return path has been intentionally removed from `get_debug_flag()`, the dead branch should be deleted; if it can still be reached, a test case should cover it. This is reported by both the correctness and style reviewers.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "correctness",
-      "file": "tests/test_helpers.py",
-      "line_start": 909,
-      "line_end": 912,
-      "severity": "minor",
-      "title": "`test_get_env` does not isolate `FLASK_DEBUG`, potentially polluting `get_debug_flag()` assertions",
-      "detail": "`test_get_env` patches `FLASK_ENV` but never clears `FLASK_DEBUG`. If `FLASK_DEBUG` is set in the test-runner environment (e.g. `FLASK_DEBUG=1`), `get_debug_flag()` will return `True` for every parametrize case regardless of `FLASK_ENV`, causing `assert get_debug_flag() == debug` to fail or silently pass for wrong reasons. The test should add `monkeypatch.delenv('FLASK_DEBUG', raising=False)` to guarantee isolation.",
-      "confidence": 0.9
-    },
-    {
       "agent": "style",
-      "file": "docs/config.rst",
-      "line_start": 67,
-      "line_end": 68,
-      "severity": "minor",
-      "title": "Shell code block missing `.. code-block::` directive, will render incorrectly in Sphinx",
-      "detail": "The code example at lines 67-68 appears as literal paragraph text rather than inside a `.. code-block::` or `::` block with four-space indentation. The surrounding documentation consistently uses indented code blocks for shell examples. Without the proper directive, Sphinx will not render this as a code block, making the docs harder to read.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "correctness, security",
-      "file": "flask/cli.py",
-      "line_start": 612,
-      "line_end": 617,
-      "severity": "minor",
-      "title": "Production warning only fires for the exact string `'production'`, silently skipped for non-development environments",
-      "detail": "The condition `if get_env() == 'production'` only warns when the env is exactly `'production'`. Users with `FLASK_ENV=staging`, `FLASK_ENV=test`, or a typo like `FLASK_ENV=productiion` get no warning even though running the development server in those environments is equally inappropriate. Furthermore, because `FLASK_ENV` is not validated against an allowlist, setting it to any arbitrary value (accidentally or maliciously) fully suppresses the warning. The intent described in the PR and docs is to warn whenever the user is *not* in development mode, so the guard should be `if get_env() != 'development':` (or enumerate a set of safe envs). The warning is also emitted to stdout rather than stderr, making it easy to miss in CI/CD pipelines.",
-      "confidence": 0.82
-    },
-    {
-      "agent": "style",
-      "file": "flask/cli.py",
-      "line_start": 612,
-      "line_end": 617,
-      "severity": "minor",
-      "title": "Production warning uses `click.secho` while surrounding output uses plain `print`, mixing output styles",
-      "detail": "The run-command output block (lines 637-640) consistently uses `print(...)`. The new production-environment warning switches to `click.secho(...)`, mixing two output styles in the same function. Either convert to `print` for consistency, or document a deliberate reason for the difference (e.g., to allow color output for the warning).",
-      "confidence": 0.8
-    },
-    {
-      "agent": "correctness",
       "file": "flask/app.py",
-      "line_start": 814,
-      "line_end": 816,
+      "line_start": 795,
+      "line_end": 808,
       "severity": "minor",
-      "title": "`_set_debug_value` triggers early Jinja environment creation before config files are loaded",
-      "detail": "In `_set_debug_value` (line 816), accessing `self.jinja_env.auto_reload` triggers the `locked_cached_property` to build and permanently cache the Jinja2 environment. If `_set_debug_value` is called early (e.g. from `ScriptInfo.load_app` via `app.debug = debug` before `app.config.from_*` runs), the Jinja env is created and cached with whatever `templates_auto_reload` evaluates to at that moment. Any subsequent change to `TEMPLATES_AUTO_RELOAD` or `DEBUG` via a config file will not affect the already-cached `jinja_env.auto_reload`. The deleted `_reconfigure_for_run_debug` docstring explicitly acknowledged this ordering concern; the new code is subject to the same problem but without any documentation warning.",
-      "confidence": 0.7
-    },
-    {
-      "agent": "test_coverage",
-      "file": "flask/helpers.py",
-      "line_start": 58,
-      "line_end": 72,
-      "severity": "minor",
-      "title": "`get_debug_flag()` interaction when both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set is not tested",
-      "detail": "When `FLASK_DEBUG` is explicitly set, `get_debug_flag()` returns based on that value and ignores `FLASK_ENV`. However, there is no test covering the scenario where both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set simultaneously. This scenario is important to confirm that an explicit `FLASK_DEBUG=0` correctly overrides the `FLASK_ENV=development` implied-debug behavior.",
-      "confidence": 0.7
-    },
-    {
-      "agent": "style",
-      "file": "docs/server.rst",
-      "line_start": 35,
-      "line_end": 35,
-      "severity": "nit",
-      "title": "Grammar: 'On older Flask version' should be 'On older Flask versions'",
-      "detail": "Line 35 reads \"On older Flask version (before 1.0)\" \u2014 `version` should be plural: `versions`.",
-      "confidence": 0.95
+      "title": "debug property uses verbose module-level helper pattern instead of @property/@setter decorators",
+      "detail": "The debug attribute is implemented with module-level _get_debug, _set_debug, and _set_debug_value functions followed by `debug = property(_get_debug, _set_debug)` and `del _get_debug, _set_debug`. This is inconsistent with the env = ConfigAttribute('ENV') attribute just above it and with standard Python style. The conventional approach inside a class body is the @property / @debug.setter decorator pair, which eliminates the need for the del trick and the extra _set_debug_value indirection (the setter body is only two lines and can live inline).",
+      "confidence": 0.85
     },
     {
       "agent": "style",
       "file": "docs/cli.rst",
       "line_start": 127,
       "line_end": 128,
-      "severity": "nit",
-      "title": "Awkward grammar: 'The other default environment which is known is'",
-      "detail": "The sentence \"The other default environment which is known is `development`.\" is grammatically awkward. Consider: \"The other recognised environment is `development`.\"",
-      "confidence": 0.9
+      "severity": "minor",
+      "title": "Awkward phrasing in cli.rst",
+      "detail": "Lines 127-128 contain awkward phrasing that harms readability. The exact text was not fully reproduced in the raw finding, but the reviewer flagged it as a prose-quality issue that should be rewritten for clarity before merge.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "test_coverage",
+      "file": "flask/cli.py",
+      "line_start": 631,
+      "line_end": 657,
+      "severity": "minor",
+      "title": "New 'Env' banner line and updated shell banner format not covered by tests",
+      "detail": "Two new output changes in cli.py have no test coverage:\n1. Line 631 adds `print(' * Env %s' % get_env())` to run_command output. No test in test_cli.py asserts this line appears or checks that the correct environment name is interpolated.\n2. The shell_command banner was changed to embed app.env (e.g. '[development]') rather than '[debug]'. No test checks the new banner format.\nWithout assertions on these output strings, formatting regressions or wrong values will go undetected.",
+      "confidence": 0.79
+    },
+    {
+      "agent": "correctness",
+      "file": "flask/helpers.py",
+      "line_start": 59,
+      "line_end": 63,
+      "severity": "minor",
+      "title": "get_env() treats empty string FLASK_ENV='' the same as unset, silently falling back to 'production'",
+      "detail": "The check `if not val` returns True for both an unset variable (None) and an empty string (''). A user who sets FLASK_ENV='' by mistake gets production behaviour without any warning. The conventional pattern `if val is None` would only fall back when the variable is truly absent, making misconfiguration visible. This applies symmetrically to get_debug_flag() where the same `if not val` idiom is used for FLASK_DEBUG.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "security",
+      "file": "flask/cli.py",
+      "line_start": 631,
+      "line_end": 631,
+      "severity": "minor",
+      "title": "Raw FLASK_ENV value printed to console without validation, allowing ANSI injection",
+      "detail": "print(' * Env %s' % get_env()) writes the raw FLASK_ENV environment variable value to stdout with no length limit, whitelist check, or sanitisation. An attacker with the ability to set process environment variables can inject terminal escape sequences (ANSI injection) to alter the terminal display or, on vulnerable terminals, execute terminal commands. The value should be validated against a known-good whitelist (['production', 'development', 'testing']) or at minimum stripped of control characters before being printed.",
+      "confidence": 0.65
     },
     {
       "agent": "style",
-      "file": "flask/app.py",
-      "line_start": 795,
-      "line_end": 798,
+      "file": "flask/helpers.py",
+      "line_start": 59,
+      "line_end": 63,
       "severity": "nit",
-      "title": "Missing blank line between `_get_debug` and `_set_debug` method definitions",
-      "detail": "The `_get_debug` and `_set_debug` methods are defined back-to-back without a blank line between them. The surrounding code in the file consistently separates method definitions with a blank line. Add one blank line between the two defs to match the existing convention.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "style",
-      "file": "flask/app.py",
-      "line_start": 788,
-      "line_end": 793,
-      "severity": "nit",
-      "title": "`env` ConfigAttribute placed in the middle of the class body rather than near the other class-level attributes",
-      "detail": "The `env` `ConfigAttribute` and its `#:` docblock are placed in the middle of where the old `_reconfigure_for_run_debug` method was. The existing style places class-level `ConfigAttribute` declarations together near the top of the class (alongside `testing`, etc.). Moving `env` to that section would be more consistent with the rest of the class layout.",
-      "confidence": 0.75
+      "title": "Verbose two-step if/reassign pattern in get_env() instead of a one-liner",
+      "detail": "The current implementation:\n```python\nval = os.environ.get('FLASK_ENV')\nif not val:\n    val = 'production'\nreturn val\n```\ncan be expressed more concisely and idiomatically as:\n```python\nreturn os.environ.get('FLASK_ENV') or 'production'\n```\nThis matches the surrounding style in the file and reduces noise.",
+      "confidence": 0.8
     },
     {
       "agent": "style",
       "file": "flask/cli.py",
-      "line_start": 638,
-      "line_end": 638,
+      "line_start": 631,
+      "line_end": 631,
       "severity": "nit",
-      "title": "Env print label is unusually terse compared to sibling lines",
-      "detail": "Line 638 prints `' * Env %s'` while adjacent lines use more descriptive labels like `' * Serving Flask app \"%s\"'` and `' * Forcing debug mode %s'`. Consider using `'Environment: %s'` or `'Env: %s'` (with a colon) for readability and consistency with server startup output style.",
-      "confidence": 0.7
+      "title": "'* Env %s' startup message format is inconsistent with sibling messages",
+      "detail": "The new line `' * Env %s'` is neither a verb-based phrase nor a 'Key: value' form, unlike the surrounding print statements. A label like '* Environment: %s' would be clearer, more descriptive, and more consistent with a label-colon-value convention. The docs example in docs/cli.rst (line 143) shows '* Env production' without a colon, but that example should be updated together with any change here.",
+      "confidence": 0.75
     }
   ],
   "agent_runs": [
@@ -195,75 +155,63 @@
       "findings": [
         {
           "agent": "correctness",
-          "file": "flask/cli.py",
+          "file": "flask/helpers.py",
           "line_range": [
-            619,
-            640
+            66,
+            73
           ],
           "severity": "major",
-          "title": "`get_debug_flag()` always returns a bool, so `debug is not None` guard is always True and 'Forcing debug mode' prints unconditionally",
-          "detail": "The new `get_debug_flag()` in helpers.py (lines 65-72) always returns a concrete bool \n\n```python\ndef get_debug_flag():\n    val = os.environ.get('FLASK_DEBUG')\n    if not val:\n        env = get_env()\n        if env == 'development':\n            return True\n        return False          # <-- never returns None\n    return val.lower() not in ('0', 'false', 'no')\n```\n\nThe old signature had a `default` parameter and could return `None`. As a result, `if debug is not None:` on line 639 is always `True`, and `' * Forcing debug mode on/off'` is printed unconditionally, even when the user never set `FLASK_DEBUG` or `FLASK_ENV`. The message is supposed to convey that the user *forced* debug mode explicitly; now it fires for every `flask run` in production (showing 'Forcing debug mode off'), which is confusing and contradicts the surrounding documentation.\n\nThe same issue affects `ScriptInfo.load_app` (line 361-362): `if debug is not None: app.debug = debug` now always overwrites `app.debug` even when the user set nothing, though in practice the values should be consistent.",
+          "title": "get_debug_flag() never returns None, breaking the \"FLASK_DEBUG not set\" detection in cli.py",
+          "detail": "The old get_debug_flag(default=None) returned None when FLASK_DEBUG was not set, allowing callers (particularly run_command in cli.py) to distinguish between \"debug was explicitly set\" and \"debug was not set\". The new implementation always returns a boolean (True for development env, False otherwise) when FLASK_DEBUG is absent. In run_command (cli.py line 632), the check `if debug is not None` is supposed to guard the \"Forcing debug mode\" message \u2014 i.e., only print it when the user explicitly set FLASK_DEBUG. Since get_debug_flag() now returns False (not None) when neither FLASK_DEBUG nor FLASK_ENV=development is set, the message \"* Forcing debug mode off\" will be printed on every invocation where FLASK_DEBUG is not set, which is incorrect. The same issue exists in ScriptInfo.load_app (cli.py line 361): `if debug is not None: app.debug = debug` previously meant \"only override app.debug if the CLI explicitly provided a flag\". Now it always overrides, which means any debug=True set in the app's config file or constructor would be silently overwritten with False on every CLI invocation.",
           "confidence": 0.95
-        },
-        {
-          "agent": "correctness",
-          "file": "flask/cli.py",
-          "line_range": [
-            612,
-            617
-          ],
-          "severity": "minor",
-          "title": "Production warning only fires for the exact string `'production'`, silently skipped for other non-development environments",
-          "detail": "The condition `if get_env() == 'production'` only warns when the env is exactly the string `'production'`. If a user sets `FLASK_ENV=staging`, `FLASK_ENV=test`, or even mis-spells it as `FLASK_ENV=productiion`, no warning is shown even though the development server is equally inappropriate. Conversely the intent in the PR description and docs is clearly to warn whenever the user is *not* in development mode, so the guard should likely be `if get_env() != 'development'`.",
-          "confidence": 0.8
         },
         {
           "agent": "correctness",
           "file": "flask/app.py",
           "line_range": [
-            814,
-            816
+            810,
+            812
           ],
-          "severity": "minor",
-          "title": "`_set_debug_value` triggers early Jinja environment creation, caching it before config files are loaded",
-          "detail": "In `_set_debug_value` (line 816), accessing `self.jinja_env.auto_reload` triggers the `locked_cached_property` to build and permanently cache the Jinja2 environment. If `_set_debug_value` is called early (e.g. from `ScriptInfo.load_app` \n via `app.debug = debug` before `app.config.from_*` runs), the Jinja env is created and cached with whatever `templates_auto_reload` evaluates to at that moment. Any subsequent change to `TEMPLATES_AUTO_RELOAD` or `DEBUG` via a config file will not affect the already-cached `jinja_env.auto_reload`. The deleted `_reconfigure_for_run_debug` docstring explicitly acknowledged this ordering concern; the new code is subject to the same problem without any warning.",
-          "confidence": 0.7
+          "severity": "major",
+          "title": "_set_debug_value accesses self.jinja_env before it is ready during __init__",
+          "detail": "debug = property(_get_debug, _set_debug) and _set_debug_value calls self.jinja_env.auto_reload. jinja_env is a locked_cached_property that calls create_jinja_environment(), which in turn reads self.templates_auto_reload \u2014 which reads self.debug (via self.config['DEBUG']). The Flask.__init__ calls self.make_config() and then self.add_url_rule for the static route via self.add_url_rule, but config setup happens before jinja_env is accessed. However any code that calls app.debug = value before jinja_env is first initialised will force premature initialisation of the Jinja2 environment. In particular, ScriptInfo.load_app does `app.debug = debug` (cli.py line 362) after the app is already constructed, so jinja_env may already be cached with stale auto_reload settings. This is a regression from the old _reconfigure_for_run_debug which explicitly handled this same scenario; it was only called after app construction, and is now replaced with a setter that triggers jinja_env initialisation. The deeper risk is: if app.debug is set during __init__ before jinja_env is initialized, it will force early Jinja2 env creation with potentially wrong settings.",
+          "confidence": 0.75
         },
         {
           "agent": "correctness",
           "file": "flask/helpers.py",
           "line_range": [
             59,
-            62
+            63
           ],
-          "severity": "major",
-          "title": "`get_env()` treats empty string `FLASK_ENV` as unset, silently masking an explicit user mistake",
-          "detail": "The guard `if not val:` catches both the case where `FLASK_ENV` is absent (`os.environ.get` returns `None`) and the case where it is explicitly set to the empty string (`''`). In the `test_get_env` test, the parametrize case `('', 'production', False)` calls `monkeypatch.setenv('FLASK_ENV', '')`, which sets the variable to an empty string \u2014 a value that is silently overridden to `'production'`. This is the same `!val` falsy-check antipattern: `FLASK_ENV=` (empty) in a real shell environment is a valid (if unusual) configuration, but here it is indistinguishable from absence. If the intent is to produce `'production'` only when the variable is truly absent, the check should be `if val is None:` rather than `if not val:`.",
-          "confidence": 0.85
+          "severity": "minor",
+          "title": "get_env() treats empty string FLASK_ENV as unset",
+          "detail": "The check `if not val` treats an empty string FLASK_ENV='' the same as unset, silently falling back to 'production'. A user setting FLASK_ENV='' by mistake would get production behavior without any warning. The more conventional pattern would be `if val is None` to only fall back when the variable is truly absent. This is a minor edge case but could hide misconfiguration.",
+          "confidence": 0.7
         },
         {
           "agent": "correctness",
-          "file": "flask/helpers.py",
+          "file": "flask/cli.py",
           "line_range": [
-            66,
-            72
+            631,
+            633
           ],
-          "severity": "major",
-          "title": "`get_debug_flag()` treats empty string `FLASK_DEBUG` as unset, bypassing the explicit value",
-          "detail": "The guard `if not val:` on line 67 causes an explicitly set `FLASK_DEBUG=` (empty string, e.g. `FLASK_DEBUG= flask run`) to fall through to the `get_env()` branch instead of being treated as a truthy/falsy debug setting. The previous code had the same issue with the empty-string case, but the test at line 889 now encodes `('', False, False)` as the expected result for `FLASK_DEBUG=''`, meaning any user who deliberately sets `FLASK_DEBUG=` expecting it to be falsy will accidentally have debug mode enabled if `FLASK_ENV=development` is also set. This is particularly subtle because on many shells `FLASK_DEBUG=` is syntactically valid and would be expected to disable debug mode (consistent with the `'0'`, `'false'`, `'no'` treatment), yet here it instead defers to FLASK_ENV. The fix is to change the guard to `if val is None:` so that an explicitly empty `FLASK_DEBUG` is treated as a non-debug flag (its `.lower()` would not be in the exclusion list so it would return `True` \u2014 which is also wrong; the better fix is `if val is None: \u2026` and adding `''` to the falsy set in the `not-in` check).",
-          "confidence": 0.82
+          "severity": "minor",
+          "title": "\"Forcing debug mode\" message is printed even when debug mode is not explicitly forced",
+          "detail": "Because get_debug_flag() now always returns a boolean (never None), the guard `if debug is not None` on line 632 is always True. This means \"* Forcing debug mode off\" will be printed on every ordinary production invocation where the user did not set FLASK_DEBUG at all. The intended behaviour (based on the prior code and the message wording \"Forcing\") is to print this only when FLASK_DEBUG is explicitly set.",
+          "confidence": 0.95
         },
         {
           "agent": "correctness",
           "file": "tests/test_helpers.py",
           "line_range": [
-            895,
-            901
+            897,
+            898
           ],
-          "severity": "minor",
-          "title": "Dead code: `if expected_flag is None` branch can never be reached",
-          "detail": "After the parametrize change, `expected_flag` is never `None` in any test case (it is always `False`, `False`, `False`, `False`, or `True`). The branch `if expected_flag is None: assert get_debug_flag() is None` on line 897-898 can therefore never execute. While this is a test-correctness issue rather than a production bug, it means the test no longer exercises the `None`-return path of `get_debug_flag`, which was previously reachable (old signature had a `default` parameter). If the `None` path is intentionally removed from `get_debug_flag`, the dead branch should be removed too; if it is still reachable in some other way, a test case should cover it.",
-          "confidence": 0.9
+          "severity": "major",
+          "title": "Dead branch: `expected_flag is None` can never be true after parametrize change",
+          "detail": "The parametrize table was changed so that `expected_flag` is now always `False` or `True` \n the `('', None, True)` row was replaced with `('', False, False)`. However the test body still contains `if expected_flag is None: assert get_debug_flag() is None`. Because `expected_flag` is never `None` in any parametrized case, this branch is permanently dead and the `is None` assertion is never exercised. Any future regression where `get_debug_flag()` returns `None` for an empty `FLASK_DEBUG` value would go undetected.",
+          "confidence": 0.95
         },
         {
           "agent": "correctness",
@@ -272,17 +220,17 @@
             909,
             912
           ],
-          "severity": "minor",
-          "title": "`test_get_env` does not isolate `FLASK_DEBUG`, so its `get_debug_flag()` assertions may be polluted by a pre-existing `FLASK_DEBUG` env var",
-          "detail": "`test_get_env` uses `monkeypatch.setenv('FLASK_ENV', env)` but never clears or patches `FLASK_DEBUG`. If `FLASK_DEBUG` happens to be set in the test-runner environment (e.g. `FLASK_DEBUG=1`), `get_debug_flag()` will return `True` for every parametrize case regardless of `FLASK_ENV`, causing the `assert get_debug_flag() == debug` assertions to be wrong. The test should also call `monkeypatch.delenv('FLASK_DEBUG', raising=False)` to guarantee isolation.",
-          "confidence": 0.9
+          "severity": "major",
+          "title": "`test_get_env` does not isolate `FLASK_DEBUG`, causing potential cross-test interference",
+          "detail": "`test_get_env` calls `monkeypatch.setenv('FLASK_ENV', env)` but never clears `FLASK_DEBUG`. `get_debug_flag()` in helpers.py checks `FLASK_DEBUG` first; if that variable is set in the process environment (e.g., by the CI runner, a .env file loaded by `load_dotenv`, or by `test_get_debug_flag` which does `monkeypatch.setenv('FLASK_DEBUG', ...)` \n monkeypatch restores it after each test, but ordering can matter in shared state), the assertion `assert get_debug_flag() == debug` on line 911 may fail or silently pass with the wrong reason. The test should add `monkeypatch.delenv('FLASK_DEBUG', raising=False)` to guarantee isolation.",
+          "confidence": 0.85
         }
       ],
-      "tool_calls": 7,
-      "tokens_in": 229109,
-      "tokens_out": 3752,
-      "cost_usd": 0.7436069999999999,
-      "duration_s": 78.28337074979208,
+      "tool_calls": 6,
+      "tokens_in": 249378,
+      "tokens_out": 2943,
+      "cost_usd": 0.792279,
+      "duration_s": 60.120768417138606,
       "skip_or_error_reason": null
     },
     {
@@ -293,44 +241,44 @@
           "agent": "security",
           "file": "flask/helpers.py",
           "line_range": [
-            58,
-            62
+            59,
+            63
           ],
           "severity": "major",
-          "title": "FLASK_ENV controls debug mode \u2014 untrusted env var can silently enable the Werkzeug interactive debugger",
-          "detail": "get_env() reads FLASK_ENV from the process environment without any validation. get_debug_flag() then implicitly sets debug=True whenever FLASK_ENV=='development' (helpers.py:68-70). In turn, app.debug drives use_debugger in Flask.run() (app.py:896). Any process that can inject or mutate FLASK_ENV (e.g. a .env file loaded by python-dotenv, a misconfigured reverse proxy that passes the env var, or a shared-hosting scenario) can therefore silently enable the Werkzeug interactive REPL, which allows arbitrary code execution. The previous model only allowed debug to be enabled by FLASK_DEBUG, which was a single, explicit, documented variable. Now a second env-var path exists that is even less obvious because the connection between FLASK_ENV='development' and debug-mode-on is indirect and not validated. At minimum the mapping from FLASK_ENV to debug should be logged prominently; ideally the ENV value should be restricted to a known allowlist ('production', 'development', 'testing') with an error or warning on any other value, so that a typo does not silently fall through to non-debug mode without the operator noticing.",
+          "title": "FLASK_ENV controls debug mode via unauthenticated environment variable",
+          "detail": "The new `get_env()` function reads `FLASK_ENV` from the process environment without any validation or sanitization. `get_debug_flag()` then promotes the application directly to debug mode (enabling the Werkzeug interactive debugger and auto-reloader) whenever `FLASK_ENV == 'development'`. An attacker who can inject or manipulate the process environment (e.g. through a `.env` / `.flaskenv` file that is loaded by python-dotenv, or via a misconfigured CI/CD pipeline that surfaces environment variables from untrusted input) can set `FLASK_ENV=development` and activate the interactive debugger \u2014 which provides arbitrary remote code execution in the browser. The previous code required the explicit `FLASK_DEBUG=1` variable; this PR adds a second, less-obvious attack surface (`FLASK_ENV`) that silently enables debug mode without the operator knowing that `FLASK_ENV` has this side-effect. At minimum the function should reject or warn on unrecognised values, and the interaction between `FLASK_ENV=development` and debug-mode activation should be prominently documented and validated.",
           "confidence": 0.85
-        },
-        {
-          "agent": "security",
-          "file": "flask/helpers.py",
-          "line_range": [
-            58,
-            62
-          ],
-          "severity": "minor",
-          "title": "No allowlist validation on FLASK_ENV value \u2014 arbitrary string stored in app config and printed to users",
-          "detail": "get_env() accepts any string from the environment and returns it verbatim (defaulting to 'production' only on empty/unset). This value is stored as app.config['ENV'] and is printed to stdout in cli.py line 638 (' * Env %s' % get_env()) and in the shell banner (cli.py line 663). While neither location constitutes a direct injection vector in isolation, the value flows into user-visible output with no sanitisation. A validation step (e.g., asserting the value is one of a fixed set such as 'production', 'development', 'testing') would eliminate any future risk of unexpected values being surfaced or misinterpreted.",
-          "confidence": 0.65
         },
         {
           "agent": "security",
           "file": "flask/cli.py",
           "line_range": [
-            612,
-            617
+            631,
+            631
           ],
           "severity": "minor",
-          "title": "Production-environment warning can be suppressed silently by setting FLASK_ENV to any non-'production' string",
-          "detail": "The production warning in run_command is only issued when get_env() == 'production'. Because get_env() trusts the FLASK_ENV environment variable without validation, a user who accidentally or maliciously sets FLASK_ENV to any arbitrary value (e.g. 'prod', 'staging', '') will bypass the warning entirely. The warning message is also not elevated to a hard error or stderr, making it easy to miss in CI/CD log streams. This is a defense-in-depth concern: the check should either enumerate the non-production values that suppress the warning, or issue the warning whenever the environment is not explicitly 'development' or 'testing'.",
-          "confidence": 0.7
+          "title": "Unvalidated FLASK_ENV value printed to console without sanitization",
+          "detail": "The line `print(' * Env %s' % get_env())` writes the raw `FLASK_ENV` environment variable value (or 'production' as a default) to stdout. While `get_env()` returns the raw string with no validation or length limit, an attacker with the ability to set process environment variables could inject terminal escape sequences (ANSI injection) that alter the terminal display, e.g. to fake subsequent lines of console output or execute terminal commands on vulnerable terminals. The value should be validated against a whitelist (e.g. 'production', 'development', 'testing') or at minimum sanitised before being printed.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "security",
+          "file": "flask/helpers.py",
+          "line_range": [
+            66,
+            73
+          ],
+          "severity": "major",
+          "title": "Empty FLASK_DEBUG string silently activates debug mode via FLASK_ENV fallback",
+          "detail": "In the new `get_debug_flag()`, when `FLASK_DEBUG` is set to an empty string (`''`) the condition `if not val` is True and the function falls through to the `get_env()` check. If `FLASK_ENV` is simultaneously set to `'development'`, debug mode is enabled even though the operator explicitly set `FLASK_DEBUG` to an empty value. Operators may legitimately use `FLASK_DEBUG=` to suppress debug mode (especially when value is derived from a config-management system that cannot unset variables), and the fallback to `get_env()` violates the principle of least surprise. An empty `FLASK_DEBUG` should be treated as an explicit `False` rather than a \"not set\" sentinel, or the logic must be clearly documented.",
+          "confidence": 0.75
         }
       ],
       "tool_calls": 3,
-      "tokens_in": 80118,
-      "tokens_out": 1020,
-      "cost_usd": 0.255654,
-      "duration_s": 27.73537362506613,
+      "tokens_in": 78925,
+      "tokens_out": 978,
+      "cost_usd": 0.251445,
+      "duration_s": 22.731360167032108,
       "skip_or_error_reason": null
     },
     {
@@ -339,75 +287,39 @@
       "findings": [
         {
           "agent": "style",
+          "file": "flask/helpers.py",
+          "line_range": [
+            59,
+            63
+          ],
+          "severity": "nit",
+          "title": "Verbose `if not val` / reassignment pattern instead of `or`",
+          "detail": "The surrounding `get_debug_flag` style (and general Python idiom) would express the default more concisely:\n\n```python\ndef get_env():\n    return os.environ.get('FLASK_ENV') or 'production'\n```\n\nThe current two-step `if not val: val = 'production'; return val` is needlessly wordy.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
           "file": "flask/app.py",
           "line_range": [
             795,
-            798
+            808
           ],
           "severity": "minor",
-          "title": "Missing blank line between two method definitions inside class body",
-          "detail": "`_get_debug` and `_set_debug` are defined back-to-back without a blank line between them. The surrounding code in the file consistently separates method definitions with a blank line. Add one blank line between the two defs to match that convention.",
+          "title": "Private getter/setter helpers left as module-level names after `del`",
+          "detail": "The pattern used here:\n\n```python\ndef _get_debug(self): ...\ndef _set_debug(self, value): ...\ndebug = property(_get_debug, _set_debug)\ndel _get_debug, _set_debug\n```\n\nis inconsistent with how `env` is expressed just above it (using `ConfigAttribute`). If a plain `ConfigAttribute` is not appropriate, the conventional Python style for a property defined inside a class body is to use the `@property` / `@debug.setter` decorator pair, which avoids the need for the `del` trick entirely and matches readability expectations. The `_set_debug_value` helper is also an extra level of indirection with a non-obvious name \u2014 the body is two lines and could simply live in the setter.",
           "confidence": 0.85
         },
         {
           "agent": "style",
-          "file": "flask/app.py",
+          "file": "flask/cli.py",
           "line_range": [
-            788,
-            793
+            631,
+            631
           ],
           "severity": "nit",
-          "title": "Class-level attribute docstring placed after deleted method block is oddly indented / misplaced",
-          "detail": "The `env` `ConfigAttribute` and its preceding `#:` docblock appear in the middle of what was the old `_reconfigure_for_run_debug` method's location. The existing style places class-level `ConfigAttribute` declarations together near the top of the class (around the other `#:` docblocks for `testing`, etc.). Moving `env` up there would be more consistent with the rest of the class layout.",
+          "title": "`* Env %s` startup message is missing a colon, inconsistent with sibling messages",
+          "detail": "Every other `print` in the same block uses `'key: value'` phrasing (e.g. `'Serving Flask app \"%s\"'` uses a verb, `'Forcing debug mode %s'` uses a verb). The new line `' * Env %s'` is neither a verb-based phrase nor a `Key: value` form. A label like `' * Environment: %s'` would be clearer and more consistent with the docs example output shown in `docs/cli.rst` line 143 (`* Env production`) which also lacks a colon.",
           "confidence": 0.75
-        },
-        {
-          "agent": "style",
-          "file": "flask/cli.py",
-          "line_range": [
-            612,
-            617
-          ],
-          "severity": "minor",
-          "title": "Production warning uses `click.secho` while surrounding output uses plain `print`",
-          "detail": "The run-command output (lines 637-640) consistently uses `print(...)`. The new warning block switches to `click.secho`, mixing two output styles in the same function. Either convert everything in the block to `print` (keeping consistency with the surrounding code) or document a deliberate reason for the difference.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "style",
-          "file": "flask/cli.py",
-          "line_range": [
-            638,
-            638
-          ],
-          "severity": "nit",
-          "title": "Env print line lacks a colon separator, inconsistent with sibling lines",
-          "detail": "Line 638 prints `' * Env %s'` while the adjacent lines print `' * Serving Flask app \"%s\"'` and `' * Forcing debug mode %s'`. The pattern elsewhere in the block uses a descriptive label followed by the value with no extra separator, but the label `Env` is unusually terse compared to the others. Consider `'Environment: %s'` or `'Env: %s'` with a colon for readability and to match the style of the server startup output.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "style",
-          "file": "flask/helpers.py",
-          "line_range": [
-            58,
-            62
-          ],
-          "severity": "nit",
-          "title": "`get_env` uses a two-branch if/assign instead of a one-liner with `or`",
-          "detail": "The old `get_debug_flag` used a similar pattern, but the idiomatic Python style visible in this file and in `get_debug_flag` itself is a concise conditional. The three lines:\n```python\nval = os.environ.get('FLASK_ENV')\nif not val:\n    val = 'production'\nreturn val\n```\ncan be written as:\n```python\nreturn os.environ.get('FLASK_ENV') or 'production'\n```\nThis is shorter, consistent with Python conventions, and easier to scan.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            897,
-            901
-          ],
-          "severity": "minor",
-          "title": "Dead branch: `assert get_debug_flag() is None` can never be reached after removing the `default` parameter",
-          "detail": "Line 897-898 still contains `assert get_debug_flag() is None` guarded by `if debug == ''`. However, `get_debug_flag()` no longer returns `None` (it now returns `False` when `FLASK_ENV` is not `development`). The parametrize table no longer includes a case where `expected_flag` is `None`, so this branch is dead code. It should be removed or updated to match the new behaviour.",
-          "confidence": 0.9
         },
         {
           "agent": "style",
@@ -417,21 +329,9 @@
             135
           ],
           "severity": "minor",
-          "title": "Parenthetical remark \"and to disable the debug mode\" is confusing / contradictory",
-          "detail": "Line 133 reads: \"To enable all development features (and to disable the debug mode)\". This is contradictory \u2014 setting `FLASK_ENV=development` *enables* debug mode, not disables it. The existing surrounding prose is clear and precise; this phrase will confuse readers.",
+          "title": "Parenthetical `(and to disable the debug mode)` is contradictory / misleading",
+          "detail": "The sentence reads: \"To enable all development features (and to disable the debug mode) you can export the `FLASK_ENV` environment variable and set it to `development`\". Setting `FLASK_ENV=development` *enables* debug mode, so the parenthetical is the opposite of what happens. The surrounding docs are otherwise careful about this distinction \u2014 this phrasing will confuse readers.",
           "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "docs/config.rst",
-          "line_range": [
-            67,
-            68
-          ],
-          "severity": "minor",
-          "title": "Shell code block missing leading `$` prompt and indentation, inconsistent with surrounding examples",
-          "detail": "The code example at lines 67-68:\n```\n$ export FLASK_ENV=development\n$ flask run\n```\nis not indented inside a `.. code-block::` or `::` block \u2014 it appears as literal paragraph text. The surrounding documentation consistently indents shell examples with four spaces inside a `::` block (see the \"Application Discovery\" section). The missing indentation will render incorrectly in Sphinx.",
-          "confidence": 0.85
         },
         {
           "agent": "style",
@@ -440,29 +340,17 @@
             127,
             128
           ],
-          "severity": "nit",
-          "title": "Awkward phrasing \"The other default environment which is known is\"",
-          "detail": "The sentence \"The other default environment which is known is `development`.\" is grammatically awkward. The existing docs use clear, direct prose. Consider: \"The other recognised environment is `development`.\"",
-          "confidence": 0.9
-        },
-        {
-          "agent": "style",
-          "file": "docs/server.rst",
-          "line_range": [
-            35,
-            35
-          ],
-          "severity": "nit",
-          "title": "Grammar: \"On older Flask version\" should be \"On older Flask versions\"",
-          "detail": "Line 35 reads \"On older Flask version (before 1.0)\" \u2014 `version` should be plural (`versions`). The surrounding documentation is carefully proofread; this is a minor typo.",
-          "confidence": 0.95
+          "severity": "minor",
+          "title": "Awkward phrasing ",
+          "detail": ", ",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 16233,
-      "tokens_out": 1535,
-      "cost_usd": 0.071724,
-      "duration_s": 31.40734124998562,
+      "tokens_in": 15956,
+      "tokens_out": 888,
+      "cost_usd": 0.061188,
+      "duration_s": 19.38883874984458,
       "skip_or_error_reason": null
     },
     {
@@ -477,8 +365,8 @@
             645
           ],
           "severity": "major",
-          "title": "make_config() ENV/DEBUG defaults not directly tested",
-          "detail": "The new make_config() logic (lines 642-645) that calls get_env() and get_debug_flag() to populate 'ENV' and 'DEBUG' defaults on the Flask app has no dedicated test. There is no test asserting that app.env and app.debug take the correct values when FLASK_ENV/FLASK_DEBUG are or are not set during app construction.",
+          "title": "make_config ENV/DEBUG defaults not directly tested",
+          "detail": "The new make_config() logic (lines 642-645) calls get_env() and get_debug_flag() to populate the 'ENV' and 'DEBUG' config defaults. No test verifies that a freshly created Flask app has app.config['ENV'] set to 'production' (or 'development' when FLASK_ENV=development) and that app.config['DEBUG'] is wired correctly through make_config. The helpers are tested in isolation, but the integration path through app.py is not.",
           "confidence": 0.85
         },
         {
@@ -489,69 +377,45 @@
             812
           ],
           "severity": "major",
-          "title": "New debug property getter/setter and _set_debug_value() not tested",
-          "detail": "The debug attribute was refactored from a ConfigAttribute to a property with _get_debug, _set_debug, and _set_debug_value (which also sets jinja_env.auto_reload). There are no tests verifying that setting app.debug updates both app.config['DEBUG'] and app.jinja_env.auto_reload, nor that reading app.debug returns app.config['DEBUG'] correctly.",
-          "confidence": 0.8
+          "title": "New debug property (_get_debug/_set_debug/_set_debug_value) not covered by tests",
+          "detail": "The debug attribute was changed from a plain ConfigAttribute to a property backed by _get_debug/_set_debug/_set_debug_value. _set_debug_value also calls self.jinja_env.auto_reload = self.templates_auto_reload (previously in _reconfigure_for_run_debug). There are no tests that exercise setting app.debug = True/False via the new property and verifying that jinja_env.auto_reload is updated accordingly.",
+          "confidence": 0.88
         },
         {
           "agent": "test_coverage",
           "file": "flask/app.py",
           "line_range": [
-            788,
+            793,
             793
           ],
           "severity": "minor",
-          "title": "New app.env ConfigAttribute not tested",
-          "detail": "The new 'env' ConfigAttribute is not directly tested \u2014 no test checks that app.env reads from app.config['ENV'] or that changing app.config['ENV'] is reflected in app.env.",
-          "confidence": 0.75
+          "title": "New 'env' ConfigAttribute on Flask app not tested",
+          "detail": "The new env = ConfigAttribute('ENV') attribute (line 793) is not directly tested\u2014no test checks app.env or verifies it round-trips through app.config['ENV'].",
+          "confidence": 0.82
         },
         {
           "agent": "test_coverage",
           "file": "flask/cli.py",
           "line_range": [
-            612,
-            617
-          ],
-          "severity": "major",
-          "title": "Production environment warning in run_command not tested",
-          "detail": "The new production-environment warning (lines 612-617) that calls click.secho when get_env() == 'production' has no test coverage. There is no test in test_cli.py that verifies this warning is printed (or not printed) based on FLASK_ENV.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/cli.py",
-          "line_range": [
-            638,
-            638
+            631,
+            631
           ],
           "severity": "minor",
-          "title": "'Env <env>' print in run_command not tested",
-          "detail": "The new 'print(' * Env %s' % get_env())' line (line 638) has no test verifying that the env name is printed in the run_command output.",
+          "title": "New 'Env' banner line in run_command output not covered",
+          "detail": "Line 631 adds `print(' * Env %s' % get_env())` to the run_command output. No test in test_cli.py asserts that this line appears in the output, so the formatting and the correct env name are unchecked.",
           "confidence": 0.8
         },
         {
           "agent": "test_coverage",
           "file": "flask/cli.py",
           "line_range": [
-            659,
-            663
+            652,
+            657
           ],
           "severity": "minor",
-          "title": "Shell banner now uses app.env instead of debug flag \u2014 not tested",
-          "detail": "The shell_command banner format changed from showing '[debug]' to showing app.env (line 663). There is no test in test_cli.py that verifies the new banner format includes the environment name.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/helpers.py",
-          "line_range": [
-            58,
-            72
-          ],
-          "severity": "minor",
-          "title": "get_debug_flag() interaction with FLASK_ENV when FLASK_DEBUG is explicitly set is not tested",
-          "detail": "When FLASK_DEBUG is explicitly set (e.g. to '1'), get_debug_flag() returns based on the FLASK_DEBUG value and ignores FLASK_ENV. There is no test covering the scenario where both FLASK_ENV=development and FLASK_DEBUG=0 are set simultaneously (i.e., FLASK_DEBUG should override FLASK_ENV's implied debug value).",
-          "confidence": 0.7
+          "title": "Shell banner now shows app.env instead of debug flag \u2014 not tested",
+          "detail": "The shell_command banner was changed to embed app.env (e.g. '[development]') rather than '[debug]'. No existing test checks the new banner format to ensure the environment name is correctly interpolated.",
+          "confidence": 0.78
         },
         {
           "agent": "test_coverage",
@@ -561,16 +425,28 @@
             901
           ],
           "severity": "major",
-          "title": "test_get_debug_flag no longer tests get_debug_flag() returning None",
-          "detail": "The original test included a case ('', None, True) where get_debug_flag() was expected to return None when FLASK_DEBUG was empty and no default was given. The updated parametrize list (line 888) changes this to ('', False, False), removing coverage of any scenario where get_debug_flag() could return None. The code path where get_debug_flag() is called with no FLASK_ENV set and no FLASK_DEBUG set and returns False is tested, but the None branch inside test_get_debug_flag (lines 897-898) is now dead code since None is never expected.",
-          "confidence": 0.65
+          "title": "test_get_debug_flag no longer tests the FLASK_DEBUG-not-set (None) path",
+          "detail": "The old parametrize table included ('', None, True) which exercised the code path where FLASK_DEBUG is empty and a non-None default is provided. The new table removes that case and also removes the get_debug_flag(default=True) call. The new get_debug_flag() signature drops the 'default' parameter entirely, so the previous None-return path (when FLASK_DEBUG is unset and env is not development) is not independently verified for the case where FLASK_ENV is also absent.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            903,
+            912
+          ],
+          "severity": "minor",
+          "title": "test_get_env does not test interaction when both FLASK_ENV and FLASK_DEBUG are set",
+          "detail": "The new test_get_env only sets FLASK_ENV and checks get_debug_flag() and get_env(). There is no test case where both FLASK_ENV=development and FLASK_DEBUG=0 are set simultaneously, to verify that the explicit FLASK_DEBUG value takes precedence over the env-derived default in get_debug_flag().",
+          "confidence": 0.75
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 17900,
-      "tokens_out": 1130,
-      "cost_usd": 0.07065,
-      "duration_s": 22.814339250093326,
+      "tokens_in": 17635,
+      "tokens_out": 1052,
+      "cost_usd": 0.068685,
+      "duration_s": 20.886843415908515,
       "skip_or_error_reason": null
     },
     {
@@ -578,63 +454,75 @@
       "status": "ok",
       "findings": [
         {
-          "agent": "correctness",
-          "file": "flask/cli.py",
+          "agent": "correctness, security",
+          "file": "flask/helpers.py",
           "line_range": [
-            619,
-            640
+            66,
+            73
           ],
           "severity": "major",
-          "title": "`get_debug_flag()` never returns None, so `debug is not None` guard is always True and 'Forcing debug mode' prints unconditionally",
-          "detail": "The updated `get_debug_flag()` in helpers.py always returns a concrete bool (either `True` or `False`) and can never return `None`. As a result, the guard `if debug is not None:` at line 639 is always `True`, causing `' * Forcing debug mode on/off'` to be printed on every `flask run`, even when neither `FLASK_DEBUG` nor `FLASK_ENV` was explicitly set by the user. This contradicts the intent of the message, which should only appear when the user has *explicitly forced* a debug mode. In production this will misleadingly print 'Forcing debug mode off' on every start. The same always-true condition in `ScriptInfo.load_app` (line 361-362) means `app.debug` is unconditionally overwritten even when the user set nothing, though in practice the values should be consistent. The fix is to either restore the ability of `get_debug_flag()` to return `None` (when neither env var is set), or change the message to one that is always appropriate to print.",
+          "title": "get_debug_flag() always returns a boolean, breaking explicit-vs-default detection and mishandling empty FLASK_DEBUG",
+          "detail": "The old get_debug_flag(default=None) returned None when FLASK_DEBUG was not set, allowing callers to distinguish 'debug was explicitly configured' from 'debug was not set'. The new implementation always returns True or False: when FLASK_DEBUG is absent it falls back to FLASK_ENV, and when FLASK_DEBUG is set to an empty string ('') it also falls through to the FLASK_ENV check rather than treating the empty value as an explicit False.\n\nConsequences:\n1. In run_command (cli.py line 632), the guard `if debug is not None` is always True, so '* Forcing debug mode off' is printed on every ordinary production invocation where the user never set FLASK_DEBUG \u2014 contradicting the 'Forcing' wording which implies an explicit override.\n2. In ScriptInfo.load_app (cli.py line 361), `if debug is not None: app.debug = debug` was meant to only override app.debug when the CLI flag was explicitly provided. It now always overrides, silently clobbering any debug=True set in the app config or constructor.\n3. Operators who write FLASK_DEBUG='' to suppress debug mode (e.g. from a config-management system that cannot unset variables) will unexpectedly inherit debug mode if FLASK_ENV=development is also set.\n\nFix: restore a three-valued return (True / False / None) for 'explicitly on / explicitly off / not set', or introduce a separate boolean to distinguish the 'user set FLASK_DEBUG' case from the 'env-derived default' case in callers.",
           "confidence": 0.95
         },
         {
-          "agent": "correctness, style",
-          "file": "flask/helpers.py",
+          "agent": "correctness, test_coverage",
+          "file": "tests/test_helpers.py",
           "line_range": [
-            58,
-            72
+            888,
+            901
           ],
           "severity": "major",
-          "title": "Falsy-string check (`if not val:`) treats explicit empty-string env vars as unset, masking user intent",
-          "detail": "Both `get_env()` (line 59-62) and `get_debug_flag()` (line 66-67) use `if not val:` to fall back to defaults, which conflates `None` (variable not set) with `''` (variable explicitly set to empty string). \n\nFor `get_env()`: `FLASK_ENV=` in a shell is silently overridden to `'production'` rather than being flagged as an unusual/empty value. The test case `('', 'production', False)` in `test_get_env` encodes this arguably-wrong behavior.\n\nFor `get_debug_flag()`: `FLASK_DEBUG=` (empty string) falls through to the `get_env()` branch instead of being treated as a non-debug flag. A user who sets `FLASK_DEBUG=` expecting it to mean 'off' will accidentally have debug mode enabled if `FLASK_ENV=development` is also set, which is subtle and dangerous.\n\nThe idiomatic fix is to change both guards to `if val is None:` so only a truly absent variable triggers the fallback. Additionally, `''` should be added to the `not-in` exclusion list in `get_debug_flag()` so an empty `FLASK_DEBUG` is treated as falsy (i.e., debug off).\n\nAs a style note (from f14), `get_env` could also be simplified to `return os.environ.get('FLASK_ENV') or 'production'`, though this shares the same falsy-string semantics and should only be used after the `is None` fix is applied.",
-          "confidence": 0.88
+          "title": "Dead branch in test_get_debug_flag and missing coverage of the FLASK_DEBUG-not-set path",
+          "detail": "Two related gaps:\n1. The parametrize table was updated so expected_flag is always True or False, but the test body still contains `if expected_flag is None: assert get_debug_flag() is None`. This branch is permanently dead; any future regression where get_debug_flag() incorrectly returns None would go undetected.\n2. The old table's ('', None, True) row tested the path where FLASK_DEBUG is empty and a non-None default drives the result. The new signature drops the default parameter entirely, but there is no test verifying get_debug_flag() behaviour when both FLASK_DEBUG and FLASK_ENV are absent (the 'truly unset' path).",
+          "confidence": 0.92
         },
         {
-          "agent": "test_coverage",
-          "file": "flask/cli.py",
+          "agent": "correctness, test_coverage",
+          "file": "tests/test_helpers.py",
           "line_range": [
-            612,
-            663
+            903,
+            912
           ],
           "severity": "major",
-          "title": "Production environment warning, env print line, and updated shell banner lack test coverage",
-          "detail": "Three new behaviors in the CLI have no tests:\n1. The production-environment warning block (lines 612-617) \u2014 no test verifies it is printed when `FLASK_ENV=production` or suppressed when `FLASK_ENV=development`.\n2. The `' * Env %s'` print (line 638) \u2014 no test verifies the env name appears in run_command output.\n3. The shell_command banner was updated from showing `[debug]` to showing `app.env` (line 663) \u2014 no test verifies the new banner format.\nAll three should have corresponding tests in `test_cli.py`.",
-          "confidence": 0.85
+          "title": "test_get_env does not isolate FLASK_DEBUG and misses the FLASK_ENV+FLASK_DEBUG interaction",
+          "detail": "Two gaps in test_get_env:\n1. The test sets FLASK_ENV but never clears FLASK_DEBUG. Because get_debug_flag() checks FLASK_DEBUG first, any residual FLASK_DEBUG value in the process environment (from CI, a .env file loaded by load_dotenv, or a prior test) will cause the assertion `assert get_debug_flag() == debug` to fail or silently pass for the wrong reason. A `monkeypatch.delenv('FLASK_DEBUG', raising=False)` call is needed.\n2. There is no parametrized case where FLASK_ENV=development and FLASK_DEBUG=0 are both set, to verify that an explicit FLASK_DEBUG=0 takes precedence over the env-derived default. This is the most important interaction introduced by this PR and it is completely uncovered.",
+          "confidence": 0.88
         },
         {
           "agent": "test_coverage",
           "file": "flask/app.py",
           "line_range": [
             642,
-            816
+            645
           ],
           "severity": "major",
-          "title": "New `make_config()` ENV/DEBUG defaults, debug property getter/setter, and `app.env` ConfigAttribute not tested",
-          "detail": "Three related untested behaviors in app.py:\n1. The `make_config()` logic (lines 642-645) that calls `get_env()` and `get_debug_flag()` to populate `ENV` and `DEBUG` defaults has no dedicated test. No test asserts that `app.env` and `app.debug` take correct values when `FLASK_ENV`/`FLASK_DEBUG` are or are not set at construction time.\n2. The debug attribute was refactored from a `ConfigAttribute` to a property with `_get_debug`, `_set_debug`, and `_set_debug_value`. No tests verify that setting `app.debug` updates both `app.config['DEBUG']` and `app.jinja_env.auto_reload`, or that reading `app.debug` returns `app.config['DEBUG']`.\n3. The new `env` ConfigAttribute is not tested \u2014 no test checks that `app.env` reads from `app.config['ENV']` or that changing `app.config['ENV']` is reflected in `app.env`.",
-          "confidence": 0.83
+          "title": "Integration path through make_config and new 'env' attribute not tested",
+          "detail": "make_config() now calls get_env() and get_debug_flag() to populate the 'ENV' and 'DEBUG' config defaults, and a new env = ConfigAttribute('ENV') attribute is introduced. No test verifies:\n- A freshly constructed Flask app has app.config['ENV'] == 'production' (or 'development' when FLASK_ENV=development).\n- app.config['DEBUG'] is correctly initialised via this path.\n- app.env round-trips through app.config['ENV'] (i.e. setting app.env = 'development' writes config and vice-versa).\nThe helpers are tested in isolation but the integration wiring through app.py is unverified.",
+          "confidence": 0.86
+        },
+        {
+          "agent": "correctness, test_coverage",
+          "file": "flask/app.py",
+          "line_range": [
+            793,
+            812
+          ],
+          "severity": "major",
+          "title": "New debug property forces premature Jinja2 environment initialisation and is untested",
+          "detail": "The debug attribute was changed from a plain ConfigAttribute to a property backed by _get_debug/_set_debug/_set_debug_value. _set_debug_value calls self.jinja_env.auto_reload, where jinja_env is a locked_cached_property that triggers create_jinja_environment(). create_jinja_environment() reads self.templates_auto_reload which itself reads self.debug (via self.config['DEBUG']). Any assignment to app.debug before jinja_env is first legitimately initialised therefore forces premature Jinja2 env creation with potentially stale settings.\n\nThis is a regression from _reconfigure_for_run_debug, which was explicitly designed to be called after app construction. ScriptInfo.load_app (cli.py line 362) now does `app.debug = debug` via this setter after the app is constructed but potentially before templates are first rendered, which can leave jinja_env cached with incorrect auto_reload settings.\n\nAdditionally, there are no tests that set app.debug = True/False via the new property and verify that jinja_env.auto_reload is updated accordingly.",
+          "confidence": 0.82
         },
         {
           "agent": "security",
           "file": "flask/helpers.py",
           "line_range": [
-            58,
-            62
+            59,
+            73
           ],
           "severity": "major",
-          "title": "FLASK_ENV implicitly enables the Werkzeug interactive debugger without validation or prominent logging",
-          "detail": "Because `get_debug_flag()` returns `True` whenever `get_env() == 'development'`, any process that can inject or mutate `FLASK_ENV` (a `.env` file loaded by python-dotenv, a misconfigured reverse proxy, or a shared-hosting scenario) can silently enable the Werkzeug interactive REPL, which permits arbitrary code execution. The previous model only allowed debug-mode to be enabled via `FLASK_DEBUG`, a single, explicit, documented variable. The new code introduces a second, less-obvious path.\n\nAt minimum: (1) the ENV value should be restricted to a known allowlist (`'production'`, `'development'`, `'testing'`) with an error or warning on any other value, and (2) the mapping from `FLASK_ENV=development` \u2192 debug-on should be logged prominently so operators are aware. Without validation, a typo in FLASK_ENV also silently falls through to non-debug mode without the operator noticing, which is a related operational risk.",
+          "title": "FLASK_ENV silently activates the Werkzeug RCE-capable debugger without prominent documentation",
+          "detail": "get_debug_flag() now promotes the application to full debug mode (enabling the Werkzeug interactive debugger, which allows arbitrary remote code execution in the browser) whenever FLASK_ENV == 'development', without requiring FLASK_DEBUG to be set. This is a second, less-obvious path to debug-mode activation. An attacker or misconfigured system that can write FLASK_ENV=development (e.g. via a .flaskenv file loaded by python-dotenv, a CI/CD pipeline that surfaces untrusted environment input, or a shared hosting environment) gains the Werkzeug RCE debugger without the operator realising that FLASK_ENV has this side-effect.\n\nThe prior code required an explicit FLASK_DEBUG=1. The new coupling between FLASK_ENV and debug activation should be prominently documented with a security warning, get_env() should reject or warn on unrecognised values, and the raw value should not be passed through without validation.",
           "confidence": 0.82
         },
         {
@@ -645,105 +533,21 @@
             135
           ],
           "severity": "minor",
-          "title": "Contradictory phrasing: 'and to disable the debug mode' in context that enables it",
-          "detail": "Line 133 reads: \"To enable all development features (and to disable the debug mode)\". This is contradictory \u2014 setting `FLASK_ENV=development` *enables* debug mode, not disables it. This parenthetical will confuse readers and should be corrected or removed.",
+          "title": "Parenthetical contradicts actual behaviour: FLASK_ENV=development enables debug mode, not disables it",
+          "detail": "The sentence reads: 'To enable all development features (and to disable the debug mode) you can export the FLASK_ENV environment variable and set it to development.' Setting FLASK_ENV=development *enables* debug mode, so the parenthetical is factually backwards. This will directly mislead readers about the security implications. The parenthetical must be corrected or removed.",
           "confidence": 0.95
         },
         {
-          "agent": "correctness, style, test_coverage",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            895,
-            901
-          ],
-          "severity": "minor",
-          "title": "Dead branch in `test_get_debug_flag`: `assert get_debug_flag() is None` can never be reached",
-          "detail": "After updating the parametrize table, `expected_flag` is never `None` in any test case (all cases now use `False` or `True`). The branch `if expected_flag is None: assert get_debug_flag() is None` (lines 897-898) is therefore dead code and can never execute. This means the test no longer documents or verifies any scenario where `get_debug_flag()` returns `None`. If the `None`-return path has been intentionally removed from `get_debug_flag()`, the dead branch should be deleted; if it can still be reached, a test case should cover it. This is reported by both the correctness and style reviewers.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "correctness",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            909,
-            912
-          ],
-          "severity": "minor",
-          "title": "`test_get_env` does not isolate `FLASK_DEBUG`, potentially polluting `get_debug_flag()` assertions",
-          "detail": "`test_get_env` patches `FLASK_ENV` but never clears `FLASK_DEBUG`. If `FLASK_DEBUG` is set in the test-runner environment (e.g. `FLASK_DEBUG=1`), `get_debug_flag()` will return `True` for every parametrize case regardless of `FLASK_ENV`, causing `assert get_debug_flag() == debug` to fail or silently pass for wrong reasons. The test should add `monkeypatch.delenv('FLASK_DEBUG', raising=False)` to guarantee isolation.",
-          "confidence": 0.9
-        },
-        {
           "agent": "style",
-          "file": "docs/config.rst",
-          "line_range": [
-            67,
-            68
-          ],
-          "severity": "minor",
-          "title": "Shell code block missing `.. code-block::` directive, will render incorrectly in Sphinx",
-          "detail": "The code example at lines 67-68 appears as literal paragraph text rather than inside a `.. code-block::` or `::` block with four-space indentation. The surrounding documentation consistently uses indented code blocks for shell examples. Without the proper directive, Sphinx will not render this as a code block, making the docs harder to read.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "correctness, security",
-          "file": "flask/cli.py",
-          "line_range": [
-            612,
-            617
-          ],
-          "severity": "minor",
-          "title": "Production warning only fires for the exact string `'production'`, silently skipped for non-development environments",
-          "detail": "The condition `if get_env() == 'production'` only warns when the env is exactly `'production'`. Users with `FLASK_ENV=staging`, `FLASK_ENV=test`, or a typo like `FLASK_ENV=productiion` get no warning even though running the development server in those environments is equally inappropriate. Furthermore, because `FLASK_ENV` is not validated against an allowlist, setting it to any arbitrary value (accidentally or maliciously) fully suppresses the warning. The intent described in the PR and docs is to warn whenever the user is *not* in development mode, so the guard should be `if get_env() != 'development':` (or enumerate a set of safe envs). The warning is also emitted to stdout rather than stderr, making it easy to miss in CI/CD pipelines.",
-          "confidence": 0.82
-        },
-        {
-          "agent": "style",
-          "file": "flask/cli.py",
-          "line_range": [
-            612,
-            617
-          ],
-          "severity": "minor",
-          "title": "Production warning uses `click.secho` while surrounding output uses plain `print`, mixing output styles",
-          "detail": "The run-command output block (lines 637-640) consistently uses `print(...)`. The new production-environment warning switches to `click.secho(...)`, mixing two output styles in the same function. Either convert to `print` for consistency, or document a deliberate reason for the difference (e.g., to allow color output for the warning).",
-          "confidence": 0.8
-        },
-        {
-          "agent": "correctness",
           "file": "flask/app.py",
           "line_range": [
-            814,
-            816
+            795,
+            808
           ],
           "severity": "minor",
-          "title": "`_set_debug_value` triggers early Jinja environment creation before config files are loaded",
-          "detail": "In `_set_debug_value` (line 816), accessing `self.jinja_env.auto_reload` triggers the `locked_cached_property` to build and permanently cache the Jinja2 environment. If `_set_debug_value` is called early (e.g. from `ScriptInfo.load_app` via `app.debug = debug` before `app.config.from_*` runs), the Jinja env is created and cached with whatever `templates_auto_reload` evaluates to at that moment. Any subsequent change to `TEMPLATES_AUTO_RELOAD` or `DEBUG` via a config file will not affect the already-cached `jinja_env.auto_reload`. The deleted `_reconfigure_for_run_debug` docstring explicitly acknowledged this ordering concern; the new code is subject to the same problem but without any documentation warning.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/helpers.py",
-          "line_range": [
-            58,
-            72
-          ],
-          "severity": "minor",
-          "title": "`get_debug_flag()` interaction when both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set is not tested",
-          "detail": "When `FLASK_DEBUG` is explicitly set, `get_debug_flag()` returns based on that value and ignores `FLASK_ENV`. However, there is no test covering the scenario where both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set simultaneously. This scenario is important to confirm that an explicit `FLASK_DEBUG=0` correctly overrides the `FLASK_ENV=development` implied-debug behavior.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "style",
-          "file": "docs/server.rst",
-          "line_range": [
-            35,
-            35
-          ],
-          "severity": "nit",
-          "title": "Grammar: 'On older Flask version' should be 'On older Flask versions'",
-          "detail": "Line 35 reads \"On older Flask version (before 1.0)\" \u2014 `version` should be plural: `versions`.",
-          "confidence": 0.95
+          "title": "debug property uses verbose module-level helper pattern instead of @property/@setter decorators",
+          "detail": "The debug attribute is implemented with module-level _get_debug, _set_debug, and _set_debug_value functions followed by `debug = property(_get_debug, _set_debug)` and `del _get_debug, _set_debug`. This is inconsistent with the env = ConfigAttribute('ENV') attribute just above it and with standard Python style. The conventional approach inside a class body is the @property / @debug.setter decorator pair, which eliminates the need for the del trick and the extra _set_debug_value indirection (the setter body is only two lines and can live inline).",
+          "confidence": 0.85
         },
         {
           "agent": "style",
@@ -752,60 +556,84 @@
             127,
             128
           ],
-          "severity": "nit",
-          "title": "Awkward grammar: 'The other default environment which is known is'",
-          "detail": "The sentence \"The other default environment which is known is `development`.\" is grammatically awkward. Consider: \"The other recognised environment is `development`.\"",
-          "confidence": 0.9
+          "severity": "minor",
+          "title": "Awkward phrasing in cli.rst",
+          "detail": "Lines 127-128 contain awkward phrasing that harms readability. The exact text was not fully reproduced in the raw finding, but the reviewer flagged it as a prose-quality issue that should be rewritten for clarity before merge.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "test_coverage",
+          "file": "flask/cli.py",
+          "line_range": [
+            631,
+            657
+          ],
+          "severity": "minor",
+          "title": "New 'Env' banner line and updated shell banner format not covered by tests",
+          "detail": "Two new output changes in cli.py have no test coverage:\n1. Line 631 adds `print(' * Env %s' % get_env())` to run_command output. No test in test_cli.py asserts this line appears or checks that the correct environment name is interpolated.\n2. The shell_command banner was changed to embed app.env (e.g. '[development]') rather than '[debug]'. No test checks the new banner format.\nWithout assertions on these output strings, formatting regressions or wrong values will go undetected.",
+          "confidence": 0.79
+        },
+        {
+          "agent": "correctness",
+          "file": "flask/helpers.py",
+          "line_range": [
+            59,
+            63
+          ],
+          "severity": "minor",
+          "title": "get_env() treats empty string FLASK_ENV='' the same as unset, silently falling back to 'production'",
+          "detail": "The check `if not val` returns True for both an unset variable (None) and an empty string (''). A user who sets FLASK_ENV='' by mistake gets production behaviour without any warning. The conventional pattern `if val is None` would only fall back when the variable is truly absent, making misconfiguration visible. This applies symmetrically to get_debug_flag() where the same `if not val` idiom is used for FLASK_DEBUG.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "security",
+          "file": "flask/cli.py",
+          "line_range": [
+            631,
+            631
+          ],
+          "severity": "minor",
+          "title": "Raw FLASK_ENV value printed to console without validation, allowing ANSI injection",
+          "detail": "print(' * Env %s' % get_env()) writes the raw FLASK_ENV environment variable value to stdout with no length limit, whitelist check, or sanitisation. An attacker with the ability to set process environment variables can inject terminal escape sequences (ANSI injection) to alter the terminal display or, on vulnerable terminals, execute terminal commands. The value should be validated against a known-good whitelist (['production', 'development', 'testing']) or at minimum stripped of control characters before being printed.",
+          "confidence": 0.65
         },
         {
           "agent": "style",
-          "file": "flask/app.py",
+          "file": "flask/helpers.py",
           "line_range": [
-            795,
-            798
+            59,
+            63
           ],
           "severity": "nit",
-          "title": "Missing blank line between `_get_debug` and `_set_debug` method definitions",
-          "detail": "The `_get_debug` and `_set_debug` methods are defined back-to-back without a blank line between them. The surrounding code in the file consistently separates method definitions with a blank line. Add one blank line between the two defs to match the existing convention.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "style",
-          "file": "flask/app.py",
-          "line_range": [
-            788,
-            793
-          ],
-          "severity": "nit",
-          "title": "`env` ConfigAttribute placed in the middle of the class body rather than near the other class-level attributes",
-          "detail": "The `env` `ConfigAttribute` and its `#:` docblock are placed in the middle of where the old `_reconfigure_for_run_debug` method was. The existing style places class-level `ConfigAttribute` declarations together near the top of the class (alongside `testing`, etc.). Moving `env` to that section would be more consistent with the rest of the class layout.",
-          "confidence": 0.75
+          "title": "Verbose two-step if/reassign pattern in get_env() instead of a one-liner",
+          "detail": "The current implementation:\n```python\nval = os.environ.get('FLASK_ENV')\nif not val:\n    val = 'production'\nreturn val\n```\ncan be expressed more concisely and idiomatically as:\n```python\nreturn os.environ.get('FLASK_ENV') or 'production'\n```\nThis matches the surrounding style in the file and reduces noise.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "flask/cli.py",
           "line_range": [
-            638,
-            638
+            631,
+            631
           ],
           "severity": "nit",
-          "title": "Env print label is unusually terse compared to sibling lines",
-          "detail": "Line 638 prints `' * Env %s'` while adjacent lines use more descriptive labels like `' * Serving Flask app \"%s\"'` and `' * Forcing debug mode %s'`. Consider using `'Environment: %s'` or `'Env: %s'` (with a colon) for readability and consistency with server startup output style.",
-          "confidence": 0.7
+          "title": "'* Env %s' startup message format is inconsistent with sibling messages",
+          "detail": "The new line `' * Env %s'` is neither a verb-based phrase nor a 'Key: value' form, unlike the surrounding print statements. A label like '* Environment: %s' would be clearer, more descriptive, and more consistent with a label-colon-value convention. The docs example in docs/cli.rst (line 143) shows '* Env production' without a colon, but that example should be updated together with any change here.",
+          "confidence": 0.75
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 6079,
-      "tokens_out": 4038,
-      "cost_usd": 0.078807,
-      "duration_s": 73.65652916696854,
+      "tokens_in": 13457,
+      "tokens_out": 6906,
+      "cost_usd": 0.143961,
+      "duration_s": 129.11102145793848,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 349439,
-    "tokens_out": 11475,
-    "cost_usd": 1.220442,
-    "duration_s": 233.9
+    "tokens_in": 375351,
+    "tokens_out": 12767,
+    "cost_usd": 1.317558,
+    "duration_s": 252.2
   }
 }

@@ -5,80 +5,26 @@ ground_truth_matches:
   issue: A bare "except:" clause is almost never appropriate — it swallows SystemExit and KeyboardInterrupt;
     the exception type must be constrained.
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: bare `except:` is gone at daceb3e3 (only specific `except TypeError:` remain);
+    g1 was fixed in an earlier commit (3249ca3c)'
   matchable: false
 - ground_truth: g2
   issue: 'Pointless type checks: kwargs is always a dict and args is always a tuple in that code
     path, so the isinstance guards are dead weight.'
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: at daceb3e3 the jsonify path already uses dict(kwargs)/list(args) with no
+    isinstance guards; the ''pointless isinstance'' critique applied to an earlier revision'
   matchable: false
 - ground_truth: g3
   issue: The behavior change needs a proper versionchanged directive in the docstring rather than
     prose.
   matched_finding: null
-  note: added during review
+  note: 'NON-matchable: the versionchanged-directive concern was raised against a different commit
+    (a012e713); not the flagged prose state here'
   matchable: false
 finding_validity:
 - finding: 0
-  title: jsonify(*l) with a single-element list serializes to a scalar instead of an array
+  title: Single-argument passthrough creates arg-count-dependent shape inconsistency and unpacking
+    trap
   valid: true
-  note: crispest statement of the single-element asymmetry
-- finding: 1
-  title: No test for the TypeError raised when both positional args and kwargs are passed to jsonify()
-  valid: true
-  note: ''
-- finding: 2
-  title: Top-level JSON array serialization is unconditional, re-opening JSON hijacking for legacy
-    clients
-  valid: true
-  note: ''
-- finding: 3
-  title: 'Cross-reference label mismatch: :ref:`json_security` (underscore) vs .. _json-security:
-    (hyphen)'
-  valid: true
-  note: ''
-- finding: 4
-  title: Docstring numbered list continuation lines not properly indented for RST
-  valid: true
-  note: ''
-- finding: 5
-  title: No tests for zero-argument jsonify() or simple two-argument cases
-  valid: true
-  note: ''
-- finding: 6
-  title: Single-arg path silently serializes arbitrary types previously rejected by jsonify()
-  valid: true
-  note: ''
-- finding: 7
-  title: Missing test coverage for single-arg edge cases in jsonify()
-  valid: true
-  note: overlaps finding 5; still a fair gap
-- finding: 8
-  title: 'Changelog entry uses incorrect preposition: ''to serializing'' should be ''for serializing'''
-  valid: true
-  note: ''
-- finding: 9
-  title: Docstring uses 'throw' instead of 'raise'
-  valid: true
-  note: ''
-- finding: 10
-  title: Variable name `l` is visually ambiguous with digit `1`
-  valid: true
-  note: ''
-- finding: 11
-  title: 'Missing spaces inside dict literals: `{''test'':''dict''}` should be `{''test'': ''dict''}`'
-  valid: true
-  note: ''
-- finding: 12
-  title: Inline comments inconsistent with surrounding code style
-  valid: true
-  note: ''
-- finding: 13
-  title: Overly personal multi-line comment explaining why pytest.mark.parametrize was not used
-  valid: true
-  note: ''
-- finding: 14
-  title: Verify AUTHORS list alphabetical ordering after de-duplication and reordering
-  valid: false
-  note: vague 'verify ordering' request, not a concrete issue; no evidence of a problem
+  note: 'real: single-arg passthrough creates arg-count-dependent output shape'

@@ -5,67 +5,62 @@ ground_truth_matches:
   issue: 'The Python 2 json path is broken: json.JSONDecodeError doesn''t exist on Python 2, so the
     except-clause handling falls over with an AttributeError (caught via failing CI during review).'
   matched_finding: null
-  note: fixed during review — compat.py sets JSONDecodeError = ValueError on py2 and models handles
-    both branches (discussion_r667104578)
-  matchable: false
+  note: 'PRESENT at review_sha: models.py:917 `except json.JSONDecodeError` fails on py2 where the
+    attr doesn''t exist (discussion_r667104578, CI-caught)'
+  matchable: true
 - ground_truth: g2
   issue: 'The new JSONDecodeError must fit the exception hierarchy: subclass the catch-all RequestException
     (so users can catch everything requests throws) and preserve/proxy the original underlying exception''s
     info.'
-  matched_finding: null
-  note: subclassing landed; the residual init gap (msg/doc/pos never set) was only caught by the
-    full run; baseline's finding 2 hedges about py2 where no issue exists
+  matched_finding: 0
+  note: 'PRESENT: `class JSONDecodeError(StandardJSONDecodeError, SimpleJSONDecodeError)` does not
+    subclass RequestException (discussion_r667095839)'
   matchable: true
 - ground_truth: g3
   issue: Unrelated changes bundled into the PR (formatting/spacing tweaks, doc edits) that reviewers
     repeatedly asked to revert as scope creep.
   matched_finding: null
-  note: reviewers' scope-creep complaint; some unrelated formatting still remains at the head (HISTORY
-    bullet restyle, compat.py blank-line removal, prepare_body re-indent); not raised
+  note: 'PRESENT: sigmavirus24 left 11 ''Please revert this'' comments on tangential formatting (models.py
+    180/187/231/315/391/446/509/785/843/957/961); no experiment flagged the changes as out-of-scope'
   matchable: true
 - ground_truth: g4
   issue: The simplejson/json resolution logic is duplicated across several files; JSONDecodeError
     should be resolved once in compat.py and imported from there.
   matched_finding: null
-  note: fixed during review — JSONDecodeError resolved once in compat.py (discussion_r671444604)
+  note: 'NON-matchable: the ''consolidate JSON-type resolution in compat.py'' concern (discussion_r671444604)
+    was raised against later commit 64b3f189; at 0045b835 the logic lives only in exceptions.py,
+    no cross-file duplication yet'
   matchable: false
 finding_validity:
 - finding: 0
-  title: JSONDecodeError from the fast-path (UTF-detected branch) is not caught and re-raised as
-    RequestsJSONDecodeError
+  title: JSONDecodeError does not inherit from RequestException
   valid: true
-  note: 'verified against the head: the guess_json_utf fast path only catches UnicodeDecodeError,
-    so raw json/simplejson JSONDecodeError escapes unwrapped — vindicated by the requests 2.27.0
-    changelog entry fixing exactly this'
+  note: 'g2: no RequestException in the MRO'
 - finding: 1
-  title: Python 2 branch uses `e.message` which is deprecated/unavailable for newer ValueError subclasses
-  valid: uncertain
-  note: deprecated-and-fragile is right; in practice .message works for the single-arg errors both
-    backends raise
+  title: JSON decode errors inside the UTF-detection branch are silently swallowed
+  valid: true
+  note: UTF-detection branch swallows json errors — real
 - finding: 2
-  title: MRO / __init__ conflict when CompatJSONDecodeError is ValueError (Python 2)
-  valid: uncertain
-  note: 'hedged speculation about the wrong Python: py2''s ValueError has no custom init, so the
-    interplay it worries about is fine; the real init gap is on py3'
+  title: 'Name clash: local parameter `json` shadows the imported `json` module'
+  valid: true
+  note: json param shadows the imported json module at models.py:476
 - finding: 3
-  title: New test only covers the fallback decode path, not the UTF-detected fast path
+  title: Integration tests make live HTTP network calls and require simplejson
   valid: true
-  note: factual, and connects the test's path to the unwrapped fast-path bug
+  note: live HTTP + requires simplejson
 - finding: 4
-  title: Test does not verify inheritance / backwards-compatibility catches
+  title: test_json_decode_failure_catch makes four separate network requests
   valid: true
-  note: 'factual: no inheritance assertions'
+  note: the failure test fires four live network requests — real, distinct point
 - finding: 5
-  title: simplejson's JSONDecodeError is used as the compat alias even though models.py no longer
-    uses simplejson for decoding
-  valid: false
-  note: describes intended catch-compatibility behavior and concludes it works; non-finding
-- finding: 6
-  title: JSONDecodeError imported from compat is unused in models.py after refactor (duplicate/redundant
-    import)
-  valid: false
-  note: 'self-refuting: the title says unused, the detail concedes it is used and correct'
-- finding: 7
-  title: 'PEP-8: inline comment should have two spaces before `#`'
+  title: simplejson.JSONDecodeError fallback to bare Exception is too broad
   valid: true
-  note: confirmed
+  note: simplejson fallback to bare Exception too broad
+- finding: 6
+  title: Python 2 compatibility comment is misleading
+  valid: uncertain
+  note: '''py2 compat comment misleading'' — subjective, unverified'
+- finding: 7
+  title: simplejson no longer imported in compat.py but json is still exported from there
+  valid: uncertain
+  note: compat export observation; adjacent to g4 but not framed as a defect

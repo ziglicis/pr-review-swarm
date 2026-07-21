@@ -1,0 +1,727 @@
+{
+  "case": "requests_3655",
+  "experiment": "full",
+  "pr_url": "https://github.com/psf/requests/pull/3655",
+  "head_sha": "522d37c9597882db3fbd5fb08804b27b5fd8be4d",
+  "sha_matches_dataset": true,
+  "timestamp": 1784179389,
+  "summary": "This PR adds body-rewind support for 307/308 redirects, introducing `UnrewindableBodyError`, a `rewind_body` utility, and `_body_position` tracking on `PreparedRequest`. The logic is broadly correct, but there are notable concerns around security (body forwarded to cross-origin redirect targets), unhandled exception propagation, and missing test coverage for several edge cases. A handful of style issues (typo, blank lines, unused variables) also need attention.",
+  "findings": [
+    {
+      "agent": "security",
+      "file": "requests/sessions.py",
+      "line_start": 167,
+      "line_end": 177,
+      "severity": "major",
+      "title": "Sensitive request body silently forwarded to cross-origin 307/308 redirect target",
+      "detail": "The rewind-and-resend logic does not check whether a redirect crosses a hostname boundary before rewinding and re-sending the body. `rebuild_auth` already strips the `Authorization` header on cross-host redirects (lines 206\u2013213), but the raw POST body \u2014 which may contain credentials, PII, or other sensitive data \u2014 is unconditionally rewound and forwarded to the new host. For 307/308 redirects this is technically compliant with RFC 7231, but a user POSTing sensitive data to host A and receiving a 307 redirect to a hostile host B will have their full body silently forwarded to B without warning or any opt-out. At minimum, body rewind on cross-origin redirects should be gated behind the same hostname-equality check used for the Authorization header, or the user should be warned and given the ability to reject body forwarding across hosts.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/sessions.py",
+      "line_start": 170,
+      "line_end": 177,
+      "severity": "major",
+      "title": "No integration test for 307/308 redirect with an unrewindable body propagating `UnrewindableBodyError` through the session",
+      "detail": "The PR adds unit tests that call `rewind_body` directly, but there is no end-to-end test going through `resolve_redirects` that verifies `UnrewindableBodyError` is correctly propagated when `rewind_body` fails during a real redirect (e.g. a body whose `tell()` fails). Without this test, a regression in the redirect-loop exception-handling path would go undetected.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "correctness, security",
+      "file": "requests/sessions.py",
+      "line_start": 167,
+      "line_end": 177,
+      "severity": "major",
+      "title": "Rewindable guard insufficient: missing `body is not None` check allows spurious `rewind_body` on null body",
+      "detail": "The `rewindable` flag is computed as `prepared_request._body_position is not None` AND (`Content-Length` or `Transfer-Encoding` in headers). For non-307/308 redirects the body is set to `None` (line 148) and the transfer headers are purged, so `rewindable` correctly becomes `False` in the normal flow. However, if any auth handler hook or subsequent middleware re-adds `Content-Length` or `Transfer-Encoding` to the headers between the purge and the `rewindable` check, `rewind_body` would be called on a `None` body, because `_body_position` is still non-None from the original prepare. `getattr(None, 'seek', None)` returns `None`, which falls into the `else` branch and raises `UnrewindableBodyError` erroneously. A defensive fix is to add `and prepared_request.body is not None` to the `rewindable` condition.",
+      "confidence": 0.78
+    },
+    {
+      "agent": "correctness, security",
+      "file": "requests/sessions.py",
+      "line_start": 170,
+      "line_end": 177,
+      "severity": "major",
+      "title": "UnrewindableBodyError from failed-tell bodies propagates unhandled through the redirect loop",
+      "detail": "When `tell()` fails during `prepare_body`, `_body_position` is set to a sentinel `object()` (not `None`). On a 307/308 redirect, `rewindable` evaluates to `True` (sentinel is not `None`, headers still contain `Content-Length`/`Transfer-Encoding`), so `rewind_body` is called. Inside `rewind_body`, `isinstance(object(), integer_types)` is `False`, so the `else` branch raises `UnrewindableBodyError`. This exception is not caught anywhere in `resolve_redirects` or `Session.send`, and propagates to the caller as an unhandled error. While failing loudly is preferable to silent corruption, this is undocumented and surprising \u2014 especially for stdin-like pipe bodies, where a user gets a hard crash instead of graceful degradation. The behavior should be explicitly documented; ideally `resolve_redirects` should catch `UnrewindableBodyError` and surface it as a descriptive top-level error.",
+      "confidence": 0.78
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/sessions.py",
+      "line_start": 170,
+      "line_end": 177,
+      "severity": "major",
+      "title": "No test verifying rewind is skipped when `_body_position` is set but transfer headers are absent",
+      "detail": "The `rewindable` condition requires both `_body_position is not None` AND the presence of `Content-Length` or `Transfer-Encoding` in headers. No test exercises the branch where `_body_position` is set but neither transfer header is present, confirming that `rewind_body` is correctly skipped in that case.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 322,
+      "line_end": 325,
+      "severity": "minor",
+      "title": "`_body_position` not asserted in `test_prepared_copy`",
+      "detail": "The existing `test_prepared_copy` test asserts equality only for `('method', 'url', 'headers', '_cookies', 'body', 'hooks')`. The new `_body_position` attribute introduced by this PR is now set and copied in `PreparedRequest.copy()`, but is not verified in that test, so a regression in copying `_body_position` would go undetected.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/sessions.py",
+      "line_start": 170,
+      "line_end": 177,
+      "severity": "minor",
+      "title": "No test for 308 Permanent Redirect body rewind (only 307 is exercised)",
+      "detail": "The `rewindable` condition applies equally to 307 and 308 redirects. The PR adds tests for 307 (`test_HTTP_307_ALLOW_REDIRECT_POST`, `test_HTTP_307_ALLOW_REDIRECT_POST_WITH_SEEKABLE`) but no test exercises a 308 redirect with a seekable body, leaving that branch uncovered.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/models.py",
+      "line_start": 453,
+      "line_end": 462,
+      "severity": "minor",
+      "title": "`tell` attribute check does not verify callability; non-callable `tell` attribute would raise `TypeError`",
+      "detail": "The check `if getattr(body, 'tell', None) is not None` passes for any object that has a `tell` attribute, even if it is not callable (e.g. `tell = 0`). A subsequent `body.tell()` call would then raise `TypeError`, which is not caught by the `except (IOError, OSError)` handler, so `_body_position` would remain `None` and the body would silently become non-rewindable without the sentinel `object()`. A more robust check is `if callable(getattr(body, 'tell', None))`.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/utils.py",
+      "line_start": 817,
+      "line_end": 829,
+      "severity": "minor",
+      "title": "No test for `rewind_body` called directly with `_body_position=None` (non-stream body)",
+      "detail": "When `_body_position` is `None`, the session's `rewindable` guard prevents `rewind_body` from being called. However, `rewind_body` itself has no such guard and would raise `UnrewindableBodyError` if called with `_body_position=None`. There is no test exercising this path directly, leaving the function's behavior for this input undocumented and untested.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/utils.py",
+      "line_start": 817,
+      "line_end": 829,
+      "severity": "minor",
+      "title": "`rewind_body` raises `UnrewindableBodyError` when called with a `None` body and `None` position",
+      "detail": "If `prepared_request.body` is `None` and `_body_position` is `None`, `body_seek` is `None` and `isinstance(None, integer_types)` is `False`, so the `else` branch raises `UnrewindableBodyError`. The `rewindable` guard in `sessions.py` is supposed to prevent this call, but correctness relies on the two pieces staying in sync. A defensive early-return in `rewind_body` when `body` is `None` (or `_body_position` is `None`) would make the function safer to call independently and reduce coupling with the caller-side guard.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "security",
+      "file": "requests/utils.py",
+      "line_start": 817,
+      "line_end": 829,
+      "severity": "minor",
+      "title": "`rewind_body` should validate `_body_position` is non-negative before calling `seek()`",
+      "detail": "`rewind_body` calls `body.seek(prepared_request._body_position)` with a caller-controlled integer. If an attacker or buggy code sets `_body_position` to a negative value, `seek()` is invoked with that value on the underlying file object. For normal file objects this raises an `OSError`, but for `mmap` or other special descriptors it could produce unexpected behavior. Adding a `>= 0` assertion or clamping to non-negative before calling `seek()` would eliminate this risk without affecting normal usage.",
+      "confidence": 0.55
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 453,
+      "line_end": 462,
+      "severity": "minor",
+      "title": "No test for `_body_position` sentinel when `tell()` raises `IOError` (only `OSError` is tested)",
+      "detail": "The code catches both `IOError` and `OSError` when `tell()` fails and stores `object()`. The test `test_rewind_body_failed_tell` only raises `OSError`. On Python 3 they are the same class, so this is low priority, but for symmetry with the `seek()` handling the `IOError` path is not explicitly exercised.",
+      "confidence": 0.5
+    },
+    {
+      "agent": "correctness, style",
+      "file": "requests/utils.py",
+      "line_start": 826,
+      "line_end": 826,
+      "severity": "nit",
+      "title": "Typo in error message: 'occured' should be 'occurred' (also echoed in test assertion)",
+      "detail": "The string `\"An error occured when rewinding request body for redirect.\"` contains a misspelling \u2014 'occured' should be 'occurred'. The same typo is repeated in the test assertion at `tests/test_requests.py` line 1482. Both should be corrected together to avoid a mismatch.",
+      "confidence": 0.99
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1404,
+      "line_end": 1408,
+      "severity": "nit",
+      "title": "Unused `Session` variable `s` in several new tests",
+      "detail": "`s = requests.Session()` is assigned but never used in multiple new test functions (e.g. lines 1404\u20131408, 1411\u20131412, 1425\u20131426, 1451, 1474, 1495). If the Session object is not needed, these assignments should be removed to avoid reader confusion.",
+      "confidence": 0.97
+    },
+    {
+      "agent": "style",
+      "file": "requests/exceptions.py",
+      "line_start": 103,
+      "line_end": 104,
+      "severity": "nit",
+      "title": "Missing blank line before `UnrewindableBodyError` class definition",
+      "detail": "Every other exception class in this file is separated from the preceding class by a blank line. `UnrewindableBodyError` immediately follows `RetryError` with no blank line between them, breaking the consistent spacing convention.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "style",
+      "file": "requests/utils.py",
+      "line_start": 817,
+      "line_end": 817,
+      "severity": "nit",
+      "title": "Missing second blank line before top-level function `rewind_body`",
+      "detail": "All other top-level functions in this file are preceded by two blank lines (PEP 8 convention). `rewind_body` is only preceded by one blank line after the previous function, deviating from this consistent style.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1169,
+      "line_end": 1169,
+      "severity": "nit",
+      "title": "Long line in `test_HTTP_307_ALLOW_REDIRECT_POST`",
+      "detail": "Line 1169 is notably longer than the typical line length in surrounding test code. Consider wrapping the `requests.post(...)` call across multiple lines for consistency with the project's style.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1440,
+      "line_end": 1458,
+      "severity": "nit",
+      "title": "Duplicate `BadFileObj` inner class defined separately in multiple tests",
+      "detail": "`BadFileObj` is defined independently inside `test_rewind_body_no_seek`, `test_rewind_body_failed_seek`, and `test_rewind_body_failed_tell`. Each definition is slightly different but they share a common pattern. Factoring the shared structure into a fixture or a parameterised helper would reduce duplication and visual noise, consistent with the DRY style visible elsewhere in the test file.",
+      "confidence": 0.7
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Rewind check inspects headers after they may have been purged for non-307/308 redirects",
+          "detail": "The `headers` local variable is assigned at line 150, after the block at lines 143\u2013148 that purges `Content-Length` and `Transfer-Encoding` from the headers for non-307/308 redirects (and also sets `prepared_request.body = None`). However, the `rewindable` check at lines 170\u2013173 is evaluated *after* `headers` is already bound (line 150 is *above* the new code, but the purge happens at lines 143\u2013148 which also precede line 150). So for non-307/308 redirects the body is already set to `None` and the transfer headers are already gone; the `rewindable` guard correctly avoids calling `rewind_body` in that case.\n\nHowever, the bigger problem is the opposite scenario: for 307/308 redirects the body is *not* purged, so `Content-Length` / `Transfer-Encoding` will still be present in `headers` and `rewind_body` is called correctly. But if a 307/308 redirect has a body with a `_body_position` of `object()` (failed `tell()`), `rewindable` is `True` (non-None position + header present), `rewind_body` is called, and it raises `UnrewindableBodyError` \u2014 that is the intended behavior and is correct.\n\nThe real correctness concern is a subtle race: for any redirect that is *not* 307/308, the body is set to `None` at line 148, but `_body_position` is still set from the original prepare. `rewindable` evaluates to `False` only because the headers were purged. If for any reason `Content-Length` or `Transfer-Encoding` survive into `headers` after the purge (e.g., an auth layer or hook adds them back between lines 148 and 164), `rewind_body` would be called on a `None` body, causing `getattr(None, 'seek', None)` to return `None`, which then raises `UnrewindableBodyError` erroneously even though there is no body to rewind. A safer check would also verify `prepared_request.body is not None`.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            173
+          ],
+          "severity": "major",
+          "title": "`rewindable` condition does not guard against `_body_position is object()` causing `UnrewindableBodyError` being raised as an unhandled exception during normal redirect flow",
+          "detail": "When `tell()` fails during `prepare_body`, `_body_position` is set to a fresh `object()` instance (not `None`, not an integer). In `rewindable`, `prepared_request._body_position is not None` evaluates to `True` for this sentinel, and if the redirect is a 307/308 (so headers still contain `Content-Length` or `Transfer-Encoding`), `rewindable` becomes `True`. `rewind_body` is then called, and since `isinstance(object(), integer_types)` is `False`, it falls into the `else` branch and raises `UnrewindableBodyError`. This is intentional per the comment, but this exception is *not caught anywhere* in `resolve_redirects` or its callers in `Session.send`. The exception will propagate up to the user as an unhandled error. While raising is better than hanging, callers have no opportunity to handle it gracefully. This should be documented or caught and re-raised as a more descriptive top-level error.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "minor",
+          "title": "`tell` attribute check uses `is not None` but callable check is missing",
+          "detail": "The check `if getattr(body, 'tell', None) is not None` passes for any object that has a `tell` *attribute*, even if it is not callable (e.g. `tell = 0`). A subsequent `body.tell()` call would then raise `TypeError`, which is not caught in the `except (IOError, OSError)` handler, so `_body_position` would remain `None` and the body silently becomes non-rewindable without the sentinel `object()`. A more robust check would be `if callable(getattr(body, 'tell', None))`.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/utils.py",
+          "line_range": [
+            821,
+            822
+          ],
+          "severity": "minor",
+          "title": "`rewind_body` silently succeeds when body is `None` and `_body_position` is `None`",
+          "detail": "If `prepared_request.body` is `None` and `_body_position` is `None`, `body_seek` is `None` and `isinstance(None, integer_types)` is `False`, so the `else` branch raises `UnrewindableBodyError`. This means calling `rewind_body` on a request with no body at all raises an error. The `rewindable` guard in `sessions.py` is supposed to prevent this, but since correctness relies on the two pieces being in sync, a defensive early-return in `rewind_body` when `body` is `None` would be safer.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1482,
+            1482
+          ],
+          "severity": "minor",
+          "title": "Test assertion string does not match actual exception message casing",
+          "detail": "The assertion at line 1482 checks for `'error occured when rewinding request body'` (lowercase `e`), but the exception message raised in `utils.py` line 826 is `'An error occured when rewinding request body for redirect.'` (capital `A`). The `str(e)` of a `pytest.ExceptionInfo` includes the repr, so the check may still pass, but the lowercase fragment `'error occured'` is present in both the message and the repr. However, for robustness this should match the actual message exactly.",
+          "confidence": 0.5
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 44766,
+      "tokens_out": 1913,
+      "cost_usd": 0.162993,
+      "duration_s": 38.0479811669793,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "security",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Sensitive request body replayed to cross-origin redirect target",
+          "detail": "The rewind-and-resend logic in `resolve_redirects` does not check whether the redirect crosses a hostname boundary before rewinding and re-sending the body. The existing `rebuild_auth` method strips the `Authorization` header on cross-host redirects (line 206-213), but the raw body (which may contain credentials, PII, or other sensitive POST data) is unconditionally rewound and forwarded to the new host. For 307/308 redirects this is technically correct per RFC 7231, but from a security standpoint a user who POSTs sensitive data to host A and receives a 307 redirect to a hostile host B will have their full body silently forwarded to B without any warning or opt-out mechanism. At minimum, body rewind on cross-origin redirects should be gated behind the same hostname-equality check used for the Authorization header, or the user should be warned/given the ability to reject body forwarding across hosts.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "security",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            173
+          ],
+          "severity": "minor",
+          "title": "Rewindable check uses request headers that may have been mutated for non-307/308 redirects",
+          "detail": "The `rewindable` flag is computed after `rebuild_method` and the header-purging block (lines 143-148) execute. For non-307/308 redirects `prepare_body` is not called again and `prepared_request.body` is set to `None` (line 148). At that point `Content-Length` and `Transfer-Encoding` are also removed from `headers`, so `rewindable` correctly becomes `False`. However, because `_body_position` is still non-None on the copied request object, any subsequent mutation that re-adds `Content-Length` (e.g. from an auth handler hook) could trigger a spurious `rewind_body` call on a `None` body, potentially exposing unexpected behavior. The guard `prepared_request._body_position is not None` alone is insufficient to ensure `body` is still a seekable stream; a `body is not None` check should also be included.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "security",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "`rewind_body` is public API that accepts arbitrary prepared requests, enabling external SSRF-amplification misuse",
+          "detail": "The `rewind_body` function is exported from `requests.utils` (and imported in tests directly as `requests.utils.rewind_body`). It takes a `PreparedRequest` and calls `body.seek(prepared_request._body_position)` with a caller-controlled integer. If an attacker can influence `_body_position` (it is a public-ish attribute since the leading underscore is a convention, not enforced), they can cause `seek()` to be called with an arbitrary integer on the underlying file object. This is low severity in normal use but becomes a path-traversal risk if the body happens to be a `mmap` object or similar special file descriptor. `_body_position` should be validated to be non-negative before use.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "minor",
+          "title": "Failed `tell()` sentinel (`object()`) bypasses position validation but still triggers rewind attempt",
+          "detail": "When `body.tell()` raises an `IOError`/`OSError`, `_body_position` is set to a bare `object()` instance (line 462). In `rewind_body`, the `isinstance(..., integer_types)` check correctly excludes this sentinel so the `else` branch raises `UnrewindableBodyError`. However, because `object()` is truthy and `_body_position is not None`, the `rewindable` flag in `sessions.py` (line 170-173) evaluates to `True`, meaning `rewind_body` will always be called and will always raise an exception for such bodies \u2014 even on the very first redirect attempt. The exception propagates to the caller, effectively preventing any redirect from occurring for file-like objects whose `tell()` fails. This may be the intended behavior but it is not documented and could surprise users whose bodies are stdin-like pipes, causing an unhandled `UnrewindableBodyError` rather than a graceful degradation.",
+          "confidence": 0.75
+        }
+      ],
+      "tool_calls": 3,
+      "tokens_in": 64952,
+      "tokens_out": 1344,
+      "cost_usd": 0.215016,
+      "duration_s": 30.83135083387606,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            103,
+            104
+          ],
+          "severity": "minor",
+          "title": "Missing blank line before new exception class",
+          "detail": "Every other exception class in this file is separated from the preceding class by a blank line (e.g. `RetryError` is preceded by one). `UnrewindableBodyError` immediately follows `RetryError` with no blank line between them, breaking the consistent spacing convention.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "Missing blank line before top-level function `rewind_body`",
+          "detail": "All other top-level functions in this file (e.g. `urldefragauth`, `super_len`, `dict_to_sequence`) are preceded by two blank lines. `rewind_body` is only preceded by one blank line after `urldefragauth`, deviating from this consistent convention.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/utils.py",
+          "line_range": [
+            826,
+            826
+          ],
+          "severity": "nit",
+          "title": "Typo in error message: 'occured' should be 'occurred'",
+          "detail": "The string `\"An error occured when rewinding request \"` contains a misspelling. The same typo is echoed in the test at `tests/test_requests.py` line 1482. Should be 'occurred'.",
+          "confidence": 0.99
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1404,
+            1408
+          ],
+          "severity": "nit",
+          "title": "Unused variable `s` (Session) in `test_prepare_body_position_non_stream`",
+          "detail": "`s = requests.Session()` is assigned but never used. The same pattern appears in several of the new tests (lines 1411-1412, 1425-1426, 1451, 1474, 1495). If the Session is not used, it should be removed to avoid reader confusion.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1169,
+            1169
+          ],
+          "severity": "nit",
+          "title": "Long line in `test_HTTP_307_ALLOW_REDIRECT_POST`",
+          "detail": "Line 1169 (`r = requests.post(httpbin('redirect-to'), data='test', params={'url': 'post', 'status_code': 307})`) is notably longer than the typical line length seen in the surrounding test code. Consider wrapping it for consistency.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1440,
+            1458
+          ],
+          "severity": "nit",
+          "title": "Duplicate inner class `BadFileObj` defined across multiple tests",
+          "detail": "`BadFileObj` is defined independently inside `test_rewind_body_no_seek`, `test_rewind_body_failed_seek`, and `test_rewind_body_failed_tell`. Each definition is slightly different, but the pattern of defining a throwaway class per test rather than factoring shared structure out (e.g. as a fixture or a parameterised helper) deviates from the DRY style visible elsewhere in the test file and adds visual noise.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 10596,
+      "tokens_out": 852,
+      "cost_usd": 0.044568,
+      "duration_s": 16.018349665915594,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "major",
+          "title": "No test for `_body_position` set to `object()` when `tell()` raises IOError (vs OSError)",
+          "detail": "The code catches both `IOError` and `OSError` when `tell()` fails and stores `object()`. The existing test `test_rewind_body_failed_tell` only raises `OSError`. There is no test exercising the `IOError` branch specifically (though on Python 3 they are aliases, on Python 2 they are distinct). Coverage is not a concern on Py3, but the symmetry with `seek()` (which similarly catches both) means the `IOError` path in `prepare_body` is not explicitly exercised by any test.",
+          "confidence": 0.4
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "major",
+          "title": "No test for `rewindable` being False \u2014 rewind NOT triggered when body is present but no Content-Length/Transfer-Encoding header",
+          "detail": "The `rewindable` guard requires both `_body_position is not None` AND (`Content-Length` or `Transfer-Encoding` in headers). There is no test that verifies `rewind_body` is NOT called (i.e., rewind is skipped) when headers lack both `Content-Length` and `Transfer-Encoding` even though `_body_position` is set. This edge-case branch is untested.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "major",
+          "title": "No integration test for 307/308 redirect with a file-like body that cannot be rewound raising UnrewindableBodyError",
+          "detail": "The PR adds `UnrewindableBodyError` to be raised during redirect handling when `rewind_body` fails (e.g. object with `tell` but no `seek`, or a failed `seek`). The unit tests for `rewind_body` directly call the utility, but there is no end-to-end test going through `resolve_redirects` that verifies the error is actually propagated correctly through the session redirect loop when `rewind_body` raises.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            322,
+            325
+          ],
+          "severity": "minor",
+          "title": "`_body_position` not covered in `test_prepared_copy`",
+          "detail": "The existing `test_prepared_copy` test (bottom of file) asserts equality only for `('method', 'url', 'headers', '_cookies', 'body', 'hooks')`. The new `_body_position` attribute that is now copied in `PreparedRequest.copy()` is not asserted in that test, so a regression in copying `_body_position` would go undetected.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "No test for `rewind_body` when body has neither `tell` nor `seek` (body_position is None)",
+          "detail": "When `_body_position` is `None` (non-stream body), `rewind_body` is not called by the session code (due to the `rewindable` guard). However `rewind_body` itself does not guard against `_body_position is None` \u2014 it would fall to the `else` branch and raise `UnrewindableBodyError`. There is no test calling `rewind_body` directly with a request whose `_body_position` is `None` (i.e., a non-seekable, non-stream body) to confirm that path.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "minor",
+          "title": "No test for 308 redirect rewind (only 307 is exercised)",
+          "detail": "The `rewindable` condition applies to all redirect responses that preserve the method (307 and 308). Only 307 is tested via `test_HTTP_307_ALLOW_REDIRECT_POST` and `test_HTTP_307_ALLOW_REDIRECT_POST_WITH_SEEKABLE`. A 308 Permanent Redirect is equally affected by this logic but has no corresponding test.",
+          "confidence": 0.8
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 27997,
+      "tokens_out": 1105,
+      "cost_usd": 0.100566,
+      "duration_s": 21.41100287484005,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "security",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Sensitive request body silently forwarded to cross-origin 307/308 redirect target",
+          "detail": "The rewind-and-resend logic does not check whether a redirect crosses a hostname boundary before rewinding and re-sending the body. `rebuild_auth` already strips the `Authorization` header on cross-host redirects (lines 206\u2013213), but the raw POST body \u2014 which may contain credentials, PII, or other sensitive data \u2014 is unconditionally rewound and forwarded to the new host. For 307/308 redirects this is technically compliant with RFC 7231, but a user POSTing sensitive data to host A and receiving a 307 redirect to a hostile host B will have their full body silently forwarded to B without warning or any opt-out. At minimum, body rewind on cross-origin redirects should be gated behind the same hostname-equality check used for the Authorization header, or the user should be warned and given the ability to reject body forwarding across hosts.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "major",
+          "title": "No integration test for 307/308 redirect with an unrewindable body propagating `UnrewindableBodyError` through the session",
+          "detail": "The PR adds unit tests that call `rewind_body` directly, but there is no end-to-end test going through `resolve_redirects` that verifies `UnrewindableBodyError` is correctly propagated when `rewind_body` fails during a real redirect (e.g. a body whose `tell()` fails). Without this test, a regression in the redirect-loop exception-handling path would go undetected.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness, security",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Rewindable guard insufficient: missing `body is not None` check allows spurious `rewind_body` on null body",
+          "detail": "The `rewindable` flag is computed as `prepared_request._body_position is not None` AND (`Content-Length` or `Transfer-Encoding` in headers). For non-307/308 redirects the body is set to `None` (line 148) and the transfer headers are purged, so `rewindable` correctly becomes `False` in the normal flow. However, if any auth handler hook or subsequent middleware re-adds `Content-Length` or `Transfer-Encoding` to the headers between the purge and the `rewindable` check, `rewind_body` would be called on a `None` body, because `_body_position` is still non-None from the original prepare. `getattr(None, 'seek', None)` returns `None`, which falls into the `else` branch and raises `UnrewindableBodyError` erroneously. A defensive fix is to add `and prepared_request.body is not None` to the `rewindable` condition.",
+          "confidence": 0.78
+        },
+        {
+          "agent": "correctness, security",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "major",
+          "title": "UnrewindableBodyError from failed-tell bodies propagates unhandled through the redirect loop",
+          "detail": "When `tell()` fails during `prepare_body`, `_body_position` is set to a sentinel `object()` (not `None`). On a 307/308 redirect, `rewindable` evaluates to `True` (sentinel is not `None`, headers still contain `Content-Length`/`Transfer-Encoding`), so `rewind_body` is called. Inside `rewind_body`, `isinstance(object(), integer_types)` is `False`, so the `else` branch raises `UnrewindableBodyError`. This exception is not caught anywhere in `resolve_redirects` or `Session.send`, and propagates to the caller as an unhandled error. While failing loudly is preferable to silent corruption, this is undocumented and surprising \u2014 especially for stdin-like pipe bodies, where a user gets a hard crash instead of graceful degradation. The behavior should be explicitly documented; ideally `resolve_redirects` should catch `UnrewindableBodyError` and surface it as a descriptive top-level error.",
+          "confidence": 0.78
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "major",
+          "title": "No test verifying rewind is skipped when `_body_position` is set but transfer headers are absent",
+          "detail": "The `rewindable` condition requires both `_body_position is not None` AND the presence of `Content-Length` or `Transfer-Encoding` in headers. No test exercises the branch where `_body_position` is set but neither transfer header is present, confirming that `rewind_body` is correctly skipped in that case.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            322,
+            325
+          ],
+          "severity": "minor",
+          "title": "`_body_position` not asserted in `test_prepared_copy`",
+          "detail": "The existing `test_prepared_copy` test asserts equality only for `('method', 'url', 'headers', '_cookies', 'body', 'hooks')`. The new `_body_position` attribute introduced by this PR is now set and copied in `PreparedRequest.copy()`, but is not verified in that test, so a regression in copying `_body_position` would go undetected.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            177
+          ],
+          "severity": "minor",
+          "title": "No test for 308 Permanent Redirect body rewind (only 307 is exercised)",
+          "detail": "The `rewindable` condition applies equally to 307 and 308 redirects. The PR adds tests for 307 (`test_HTTP_307_ALLOW_REDIRECT_POST`, `test_HTTP_307_ALLOW_REDIRECT_POST_WITH_SEEKABLE`) but no test exercises a 308 redirect with a seekable body, leaving that branch uncovered.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "minor",
+          "title": "`tell` attribute check does not verify callability; non-callable `tell` attribute would raise `TypeError`",
+          "detail": "The check `if getattr(body, 'tell', None) is not None` passes for any object that has a `tell` attribute, even if it is not callable (e.g. `tell = 0`). A subsequent `body.tell()` call would then raise `TypeError`, which is not caught by the `except (IOError, OSError)` handler, so `_body_position` would remain `None` and the body would silently become non-rewindable without the sentinel `object()`. A more robust check is `if callable(getattr(body, 'tell', None))`.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "No test for `rewind_body` called directly with `_body_position=None` (non-stream body)",
+          "detail": "When `_body_position` is `None`, the session's `rewindable` guard prevents `rewind_body` from being called. However, `rewind_body` itself has no such guard and would raise `UnrewindableBodyError` if called with `_body_position=None`. There is no test exercising this path directly, leaving the function's behavior for this input undocumented and untested.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "`rewind_body` raises `UnrewindableBodyError` when called with a `None` body and `None` position",
+          "detail": "If `prepared_request.body` is `None` and `_body_position` is `None`, `body_seek` is `None` and `isinstance(None, integer_types)` is `False`, so the `else` branch raises `UnrewindableBodyError`. The `rewindable` guard in `sessions.py` is supposed to prevent this call, but correctness relies on the two pieces staying in sync. A defensive early-return in `rewind_body` when `body` is `None` (or `_body_position` is `None`) would make the function safer to call independently and reduce coupling with the caller-side guard.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "security",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "`rewind_body` should validate `_body_position` is non-negative before calling `seek()`",
+          "detail": "`rewind_body` calls `body.seek(prepared_request._body_position)` with a caller-controlled integer. If an attacker or buggy code sets `_body_position` to a negative value, `seek()` is invoked with that value on the underlying file object. For normal file objects this raises an `OSError`, but for `mmap` or other special descriptors it could produce unexpected behavior. Adding a `>= 0` assertion or clamping to non-negative before calling `seek()` would eliminate this risk without affecting normal usage.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "minor",
+          "title": "No test for `_body_position` sentinel when `tell()` raises `IOError` (only `OSError` is tested)",
+          "detail": "The code catches both `IOError` and `OSError` when `tell()` fails and stores `object()`. The test `test_rewind_body_failed_tell` only raises `OSError`. On Python 3 they are the same class, so this is low priority, but for symmetry with the `seek()` handling the `IOError` path is not explicitly exercised.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "correctness, style",
+          "file": "requests/utils.py",
+          "line_range": [
+            826,
+            826
+          ],
+          "severity": "nit",
+          "title": "Typo in error message: 'occured' should be 'occurred' (also echoed in test assertion)",
+          "detail": "The string `\"An error occured when rewinding request body for redirect.\"` contains a misspelling \u2014 'occured' should be 'occurred'. The same typo is repeated in the test assertion at `tests/test_requests.py` line 1482. Both should be corrected together to avoid a mismatch.",
+          "confidence": 0.99
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1404,
+            1408
+          ],
+          "severity": "nit",
+          "title": "Unused `Session` variable `s` in several new tests",
+          "detail": "`s = requests.Session()` is assigned but never used in multiple new test functions (e.g. lines 1404\u20131408, 1411\u20131412, 1425\u20131426, 1451, 1474, 1495). If the Session object is not needed, these assignments should be removed to avoid reader confusion.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            103,
+            104
+          ],
+          "severity": "nit",
+          "title": "Missing blank line before `UnrewindableBodyError` class definition",
+          "detail": "Every other exception class in this file is separated from the preceding class by a blank line. `UnrewindableBodyError` immediately follows `RetryError` with no blank line between them, breaking the consistent spacing convention.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            817
+          ],
+          "severity": "nit",
+          "title": "Missing second blank line before top-level function `rewind_body`",
+          "detail": "All other top-level functions in this file are preceded by two blank lines (PEP 8 convention). `rewind_body` is only preceded by one blank line after the previous function, deviating from this consistent style.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1169,
+            1169
+          ],
+          "severity": "nit",
+          "title": "Long line in `test_HTTP_307_ALLOW_REDIRECT_POST`",
+          "detail": "Line 1169 is notably longer than the typical line length in surrounding test code. Consider wrapping the `requests.post(...)` call across multiple lines for consistency with the project's style.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1440,
+            1458
+          ],
+          "severity": "nit",
+          "title": "Duplicate `BadFileObj` inner class defined separately in multiple tests",
+          "detail": "`BadFileObj` is defined independently inside `test_rewind_body_no_seek`, `test_rewind_body_failed_seek`, and `test_rewind_body_failed_tell`. Each definition is slightly different but they share a common pattern. Factoring the shared structure into a fixture or a parameterised helper would reduce duplication and visual noise, consistent with the DRY style visible elsewhere in the test file.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 14392,
+      "tokens_out": 7135,
+      "cost_usd": 0.150201,
+      "duration_s": 119.64142729202285,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 162703,
+    "tokens_out": 12349,
+    "cost_usd": 0.673344,
+    "duration_s": 226.0
+  }
+}

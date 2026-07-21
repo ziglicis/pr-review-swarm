@@ -3,6 +3,11 @@ repo: encode/httpx
 pr: 1197
 title: Issue warning on unclosed AsyncClient
 pre_merge_sha: c01e78896c28c1a2302e9e5733ef0e54848ad3b1
+# reviewed SHA: earliest commit a reviewer commented on (the initial
+# proposed change, before review fixes). Ground truth is verified present
+# at this commit during judging; items raised against later commits are
+# marked non-matchable.
+review_sha: 350ae77688bdb197446c2d44052cc8a2c84f575e
 changed_lines: 143
 selected_because: >
   Client lifecycle change with review feedback on API design, idempotency,

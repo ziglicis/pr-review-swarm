@@ -6,56 +6,61 @@ ground_truth_matches:
     libraries do implement __fspath__ on older Pythons, and the review converges on the PEP 519 protocol-check
     variant rather than either extreme.'
   matched_finding: null
-  note: resolved during review — the reviewed head contains the exact PEP protocol-check one-liner
-    the thread converged on (discussion_r245371019)
-  matchable: false
+  note: 'PRESENT: the full os.fspath backport (TypeError-raising, str/bytes check) is at _compat.py:106
+    — reviewers debated simplifying to the PEP-519 protocol check (discussion_r245371019); unmatched'
+  matchable: true
 - ground_truth: g2
   issue: send_file arguments can be file-like objects, so they must not be blindly passed through
     fspath(); an explicit __fspath__ hasattr check is required on that path.
   matched_finding: null
-  note: resolved during review — the hasattr __fspath__ guard mattrobenolt required is present at
-    the head (discussion_r245182635); notably the system argues *against* it (redundancy findings),
-    judged invalid
+  note: 'NON-matchable: the hasattr(__fspath__) guard is already in send_file at review_sha (line
+    545), satisfying g2 (discussion_r245182635); findings arguing it''s redundant are false'
   matchable: false
 finding_validity:
 - finding: 0
-  title: Fallback fspath() silently accepts arbitrary non-path objects instead of raising TypeError
-  valid: uncertain
-  note: factually accurate deviation from os.fspath semantics, but it is the verbatim PEP 519 backport
-    the reviewers converged on; differences only manifest on Python <3.6
+  title: '`get_send_file_max_age` receives raw PathLike object before `fspath` conversion in `send_static_file`'
+  valid: true
+  note: 'real: send_static_file passes a raw PathLike to get_send_file_max_age before conversion'
 - finding: 1
-  title: Return value of fspath() not validated before safe_join() traversal checks
-  valid: uncertain
-  note: technically plausible (normpath and startswith are overridable on a str subclass, and os.fspath
-    admits str subclasses) but the threat model requires the developer to pass attacker-constructed
-    objects
+  title: Custom `fspath` fallback has no direct unit tests
+  valid: true
+  note: 'coverage gap: fspath fallback has no direct unit test'
 - finding: 2
-  title: 'Typo in changelog entry: "as describe" should be "as described"'
+  title: Bytes-returning PathLike objects bypass `safe_join` path-traversal checks
   valid: true
-  note: typo confirmed in the diff
+  note: 'real: bytes-returning PathLike flows into str-based safe_join'
 - finding: 3
-  title: Redundant and inconsistent hasattr guard before calling fspath() in send_file
-  valid: false
-  note: 'not redundant: on Python 3.6+ fspath is os.fspath, which raises TypeError on file-like objects
-    — the guard is exactly what reviewer mattrobenolt required (g2, discussion_r245182635)'
+  title: Changelog entry has typo, missing PR link, and capitalisation inconsistency
+  valid: true
+  note: CHANGES typo confirmed
 - finding: 4
-  title: PathLike path in send_file is not tested with as_attachment, x-sendfile, or absolute paths
-  valid: true
-  note: only the basic relative-path case is tested; the three named branches are unexercised
+  title: Redundant and inconsistent PathLike detection in `send_file` — use `fspath` unconditionally
+  valid: false
+  note: 'guard is required: the backport raises TypeError on file-like objects, so unconditional
+    fspath would break send_file(fp)'
 - finding: 5
-  title: send_from_directory PathLike test only covers both-arguments-as-PathLike; partial combinations
-    untested
-  valid: true
-  note: factual; marginal but defensible
-- finding: 6
-  title: Docstring versionchanged note uses single backtick instead of double backtick for PathLike
-  valid: true
-  note: single backticks confirmed in diff; surrounding docstrings use double
-- finding: 7
-  title: Docstring backtick grouping wraps 'PathLike object' instead of just 'PathLike'
-  valid: true
-  note: confirmed in diff; wraps 'PathLike object' as one literal
-- finding: 8
-  title: Fallback fspath function body should be expanded to multi-line style per surrounding conventions
+  title: Compat `fspath` shim silently accepts bytes paths that are not safely handled downstream
   valid: uncertain
-  note: 'subjective: the one-liner is the exact form the review thread itself converged on'
+  note: bytes-path 'not safely handled' overlaps the safe_join finding; hedged
+- finding: 6
+  title: '`send_file` PathLike test only covers relative path; absolute path and flag combinations
+    untested'
+  valid: true
+  note: 'coverage gap: only relative-path PathLike tested'
+- finding: 7
+  title: '`send_from_directory`: only both-PathLike case tested; mixed str/PathLike combinations
+    untested'
+  valid: true
+  note: 'coverage gap: mixed str/PathLike in send_from_directory untested'
+- finding: 8
+  title: '`send_static_file` with PathLike only tested with non-default cache age'
+  valid: true
+  note: 'coverage gap: send_static_file PathLike only via cache-age'
+- finding: 9
+  title: Docstring uses plain backtick markup instead of RST `:class:` role for `PathLike`
+  valid: true
+  note: 'docstring uses single backtick instead of :class: role — factual'
+- finding: 10
+  title: '`FakePath` docstring has awkward double-backtick markup'
+  valid: true
+  note: FakePath docstring markup — factual

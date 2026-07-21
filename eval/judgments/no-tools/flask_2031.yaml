@@ -5,72 +5,55 @@ ground_truth_matches:
   issue: File handles must be closed on the error/exception paths (e.g. RequestedRangeNotSatisfiable)
     regardless of whether send_file opened the file or received it — the initial patch leaked the
     handle in some cases.
-  matched_finding: null
-  note: finding 0 flags the crash inside the close handler but not the reviewer's close-on-all-error-paths
-    leak concern; no leak finding present
+  matched_finding: 1
+  note: 'PRESENT at review_sha: 416 handler file.close() on error paths; reviewer flagged the leak
+    (discussion_r80032416)'
   matchable: true
 - ground_truth: g2
   issue: Feature detection for werkzeug range support is too broad; it should be a werkzeug version
     check or an existence check of the specific function, not a blanket try/except.
-  matched_finding: null
-  note: fixed during review — the reviewed head already uses the existence check the reviewer asked
-    for
-  matchable: false
+  matched_finding: 0
+  note: 'PRESENT: range support detected via broad `try/except TypeError` around make_conditional
+    (discussion_r80204974)'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: AttributeError when RequestedRangeNotSatisfiable is raised on the X-Sendfile path (file
-    is None)
+  title: TypeError catch is too broad and the fallback path is untested
   valid: true
-  note: 'confirmed: x-sendfile + filename path has file=None, so the 416 handler raises AttributeError'
+  note: 'g2: TypeError catch too broad + fallback untested'
 - finding: 1
-  title: Range requests incorrectly advertised and attempted when fsize is None (file-object path)
+  title: 'File resource not properly released on 416: rv.close() should be used instead of file.close()'
   valid: true
-  note: 'confirmed against werkzeug 0.12 source: Accept-Ranges is advertised while range processing
-    is silently skipped when complete_length is None'
+  note: 'g1: file not released on 416 (rv.close vs file.close)'
 - finding: 2
-  title: No test for range requests when a file-object (fp) is passed instead of a filename
+  title: Range request with a file-object (not filename string) not tested
   valid: true
-  note: no range test passes a file object; both the 206 and 416 paths are untested for that input
+  note: file-object range input untested
 - finding: 3
-  title: Version-detection expression duplicated between helpers.py and tests
-  valid: true
-  note: verbatim duplication confirmed in both files; extracting a shared flag is a defensible ask,
-    though independent skipif detection is also idiomatic
+  title: close_on_416 flag is fragile and redundant; prefer direct condition or clarifying comment
+  valid: uncertain
+  note: close_on_416 redundant — subjective
 - finding: 4
-  title: X-Sendfile + Range request interaction not tested
+  title: Range request with conditional=False not tested
   valid: true
-  note: no test combines use_x_sendfile with a Range header
+  note: conditional=False untested
 - finding: 5
-  title: Range request tests do not assert Content-Range or Accept-Ranges response headers
+  title: X-Sendfile path combined with range requests is untested
   valid: true
-  note: 206 tests assert status and body only, never Content-Range/Accept-Ranges
+  note: X-Sendfile+range untested
 - finding: 6
-  title: Fallback branch (old werkzeug without Range support) not tested
+  title: 304 x-sendfile header removal not re-tested after refactor
   valid: true
-  note: conditional=True appears only inside the skipif-guarded test, so the fallback branch is never
-    exercised
+  note: 304 x-sendfile removal untested
 - finding: 7
-  title: x-sendfile header not removed for 206 Partial Content (and potentially 416) responses
-  valid: true
-  note: 'same real gap as the x-sendfile/206 interaction: header not stripped for partial-content
-    statuses, front-server-dependent'
-- finding: 8
-  title: 304 x-sendfile header removal not tested through the new range-aware code path
-  valid: true
-  note: no test at the reviewed head triggers a 304 at all
-- finding: 9
-  title: 'Typo in skip reason: "not implement" should be "not implemented"'
+  title: Typo in skip reason string
   valid: true
   note: typo confirmed
-- finding: 10
-  title: Chained method calls across lines are hard to read
+- finding: 8
+  title: Long expression split across lines inconsistently
   valid: true
-  note: the three-line method chain is genuinely awkward
-- finding: 11
-  title: Backslash line continuation inconsistent with existing import style
+  note: multi-line expression inconsistent — factual
+- finding: 9
+  title: Import continuation style inconsistent with existing code
   valid: true
-  note: parentheses are the standard recommendation; minor but defensible
-- finding: 12
-  title: Redundant inline comment restates the condition
-  valid: false
-  note: the comment explains what the duck-typing check detects — informative, not redundant
+  note: import continuation deviates from style

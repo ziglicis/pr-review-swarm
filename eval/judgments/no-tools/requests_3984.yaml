@@ -5,59 +5,76 @@ ground_truth_matches:
   issue: If the body ends with a CRLF split at a chunk boundary, the chunk becomes empty after stripping,
     splitlines() returns [], and lines[-1] raises IndexError.
   matched_finding: null
-  note: 'fixed during review — the `if not chunk: continue` guard is at the reviewed head (discussion_r112750569)'
+  note: 'NON-matchable: the empty-chunk `if not chunk: continue` guard is present at review_sha;
+    no IndexError (discussion_r112750569) — and no experiment falsely flags one here'
   matchable: false
 - ground_truth: g2
   issue: Chunks like ['...\r', '\n', '\nmore'] strip two newline characters instead of emitting the
     empty line — the CR flag must be reset after consuming one LF.
-  matched_finding: null
-  note: 'fixed during review — the flag is reassigned every chunk and the [b''a\r'', b''\n'', b''\nb'']
-    test case landed (discussion_r112929801); note a residual none of the experiments found: an empty
-    chunk between ''\r'' and ''\n'' resets the flag and yields a spurious empty line'
-  matchable: false
+  matched_finding: 0
+  note: 'PRESENT: the last_chunk_ends_with_cr flag-reset logic (discussion_r112929801) is under review
+    here; all three experiments flag it'
+  matchable: true
 - ground_truth: g3
   issue: New tests use unprefixed string literals that are intended to be unicode; they must carry
     the u'' prefix to pass on Python 2.
   matched_finding: null
-  note: fixed during review — tests carry u'' prefixes (discussion_r112804923)
+  note: 'NON-matchable: the py2 u'''' -prefix test-literal concern (discussion_r112804923) is a py2
+    detail; the tests already carry prefixes here'
   matchable: false
 - ground_truth: g4
   issue: The chunk/flag handling should be restructured for readability (named condition variables,
     single assignment site) rather than the doubled-up inline conditions.
   matched_finding: null
-  note: addressed during review — named condition variable and single assignment site (discussion_r113172022)
+  note: 'NON-matchable: named condition variables (carriage_return/line_feed) already exist at review_sha,
+    satisfying the readability ask (discussion_r113172022)'
   matchable: false
 finding_validity:
 - finding: 0
-  title: No test for the `continue` path when the `\n`-only chunk is the last chunk in the stream
+  title: '`last_chunk_ends_with_cr` not reset to `False` when chunk becomes empty after stripping
+    leading `\n`'
   valid: true
-  note: 'factual: a lone ''\n'' as the final chunk is untested'
+  note: 'g2: last_chunk_ends_with_cr not reset to False when chunk becomes empty'
 - finding: 1
-  title: No test for multiple consecutive CR+LF splits across more than two chunk boundaries
-  valid: true
-  note: 'factual: no case splits CRLF at more than one consecutive boundary'
+  title: Behaviour with an empty intermediate chunk between CR-ending and LF-starting chunks is undocumented
+    and untested
+  valid: uncertain
+  note: empty intermediate chunk between CR and LF — the subtle residual case
 - finding: 2
-  title: No test for `iter_lines` with `decode_unicode=False` and a non-CRLF delimiter
-  valid: uncertain
-  note: delimiter path skips the new logic entirely
+  title: Parametrized test case does not exercise the `continue`-path bug (chunk becomes empty after
+    strip)
+  valid: true
+  note: 'coverage gap: continue-path bug not exercised by a test'
 - finding: 3
-  title: Comment/block order for `decode_unicode=True` vs `None` is reversed relative to the sibling
-    test function
-  valid: false
-  note: trivial ordering noise between two test functions
+  title: No test for `decode_unicode=False` (explicit) path in the refactored `carriage_return`/`line_feed`
+    logic
+  valid: true
+  note: 'coverage gap: no explicit decode_unicode=False test'
 - finding: 4
-  title: Long assertion line should be split for consistency with surrounding style
+  title: Interaction between `pending` prepend and `last_chunk_ends_with_cr` deserves a comment
   valid: uncertain
-  note: weak line-length nit
+  note: pending-prepend + flag interaction — coverage-ish
 - finding: 5
-  title: 'Inline comment on `if not chunk: continue` duplicates the block comment above'
-  valid: false
-  note: the inline comment explains a non-obvious guard; not a duplicate
+  title: Missing space after comma inside tuple literal in parametrize list
+  valid: true
+  note: missing space after comma — factual
 - finding: 6
-  title: 'Minor style: single-use variables and verbose constant names'
-  valid: false
-  note: argues to inline skip_first_char — the reviewer explicitly asked for the named variable (g4)
+  title: Comment on `last_chunk_ends_with_cr` assignment is redundant — states the obvious
+  valid: uncertain
+  note: comment restates the code — subjective
 - finding: 7
-  title: Mixed use of `def` and `lambda` for mock callables in the same test file
-  valid: false
-  note: self-described as 'purely a consistency nit rather than a real issue'
+  title: Inline comment does not start with a capital letter (inconsistent style)
+  valid: uncertain
+  note: comment not capitalized — subjective
+- finding: 8
+  title: Repeated `decode_unicode` condition in two consecutive assignments; consider tuple unpacking
+  valid: uncertain
+  note: '''repeated decode_unicode condition'' contradicts the named-vars preference'
+- finding: 9
+  title: Overly long line on assertion in test
+  valid: uncertain
+  note: long line — subjective
+- finding: 10
+  title: Incidental `lambda`→`def` conversion is inconsistent with the rest of the test file
+  valid: uncertain
+  note: lambda→def inconsistency — subjective

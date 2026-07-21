@@ -4,158 +4,18 @@
   "pr_url": "https://github.com/pallets/flask/pull/1671",
   "head_sha": "daceb3e3a028b4b408c4bbdbdef0047f1de3a7c9",
   "sha_matches_dataset": true,
-  "timestamp": 1784181080,
-  "summary": "This PR adds support for serializing top-level arrays (and other non-dict types) via `jsonify()`, including documentation of the associated JSON hijacking security risk. The implementation has a meaningful correctness bug around single-element lists, the security change is unconditional with no opt-in gate, and several test coverage and style issues are present. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "timestamp": 1784589411,
+  "summary": "This PR adds support for serializing top-level arrays (and other non-dict values) via `jsonify()`. The logic change in `flask/json.py` introduces a multi-branch dispatch based on the number/type of arguments. Several correctness, security, style, and test-coverage issues were identified; the most significant are the single-argument inconsistency (args-unpacking edge case), the JSON Hijacking risk for legacy browsers, a broken RST cross-reference, missing test coverage for the TypeError branch, and a grammatically awkward changelog entry.",
   "findings": [
     {
       "agent": "correctness",
       "file": "flask/json.py",
       "line_start": 263,
-      "line_end": 264,
-      "severity": "critical",
-      "title": "jsonify(*l) with a single-element list serializes to a scalar instead of an array",
-      "detail": "When `jsonify(*l)` is called with a list containing exactly one element (e.g. `l = [42]`), it hits the `len(args) == 1` branch and sets `data = args[0]` (i.e. `data = 42`), serializing to the scalar `42` instead of the array `[42]`. The docstring and PR description imply that `jsonify(*l)` and `jsonify(l)` should produce the same result, but this invariant is broken for single-element lists: `jsonify([42])` \u2192 `[42]`, `jsonify(*[42])` \u2192 `42`. The test in `test_helpers.py` (lines 136\u2013154) never catches this because the test list always has 9 elements, so `jsonify(*l)` always hits the multi-arg `elif args` branch. A single-element test case is needed to expose and fix this bug.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "test_coverage",
-      "file": "flask/json.py",
-      "line_start": 259,
-      "line_end": 262,
-      "severity": "major",
-      "title": "No test for the TypeError raised when both positional args and kwargs are passed to jsonify()",
-      "detail": "The branch `if args and kwargs: raise TypeError(...)` at lines 259\u2013262 has no corresponding test. A test should call e.g. `flask.jsonify(1, 2, key='val')` inside an app context and assert that a `TypeError` is raised. Without this, the entire error path is untested and a regression could go undetected.",
-      "confidence": 0.98
-    },
-    {
-      "agent": "security",
-      "file": "flask/json.py",
-      "line_start": 201,
-      "line_end": 275,
-      "severity": "major",
-      "title": "Top-level JSON array serialization is unconditional, re-opening JSON hijacking for legacy clients",
-      "detail": "Allowing top-level arrays in `jsonify()` re-opens the well-known JSON hijacking vulnerability in older browsers (Firefox < 3, Chrome < 3, Safari < 4). An attacker can override the JS `Array` constructor and serve the victim a page that requests the JSON endpoint via a `<script>` tag, intercepting array values. The PR documents this risk and updates the security docs, which is positive. However, the change is unconditional \u2014 there is no opt-in config flag (e.g. `JSON_ALLOW_TOPLEVEL_ARRAY`, defaulting to `False`) allowing application owners to consciously enable the behavior. Applications that need to support legacy clients or have a stricter security posture have no mechanism to prevent top-level array serialization. A config-guarded approach is strongly recommended.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "correctness",
-      "file": "docs/security.rst",
-      "line_start": 98,
-      "line_end": 106,
-      "severity": "minor",
-      "title": "Cross-reference label mismatch: :ref:`json_security` (underscore) vs .. _json-security: (hyphen)",
-      "detail": "The CHANGES file and the `flask/json.py` docstring reference `:ref:\\`json_security\\`` (with an underscore), but the existing anchor in `docs/security.rst` is `.. _json-security:` (with a hyphen). No new `.. _json_security:` anchor is added in this PR. This will produce broken Sphinx cross-references in both the changelog and the `jsonify()` docstring.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "style",
-      "file": "flask/json.py",
-      "line_start": 202,
-      "line_end": 217,
-      "severity": "minor",
-      "title": "Docstring numbered list continuation lines not properly indented for RST",
-      "detail": "The reStructuredText numbered list in the `jsonify()` docstring (lines 214\u2013216) has continuation lines that are not indented to the column after the list marker, as required by RST. The `:func:\\`dumps\\`` continuation text appears flush-left, which will render incorrectly in Sphinx-generated documentation. Continuation lines must be indented to align with the text following the list item marker (e.g. `1. ` \u2192 indent to column 4).",
-      "confidence": 0.85
-    },
-    {
-      "agent": "test_coverage",
-      "file": "flask/json.py",
-      "line_start": 267,
       "line_end": 268,
-      "severity": "minor",
-      "title": "No tests for zero-argument jsonify() or simple two-argument cases",
-      "detail": "When `jsonify()` is called with no positional and no keyword arguments, `data` becomes `dict()` (i.e. `{}`), but there is no test asserting this behavior or its response payload. Similarly, a simple two-positional-arg call like `jsonify(1, 2)` is not explicitly tested \u2014 the multi-arg branch is only exercised via a 9-element list splat. These edge cases should have dedicated tests to lock in expected behavior.",
-      "confidence": 0.8
-    },
-    {
-      "agent": "security",
-      "file": "flask/json.py",
-      "line_start": 263,
-      "line_end": 264,
-      "severity": "minor",
-      "title": "Single-arg path silently serializes arbitrary types previously rejected by jsonify()",
-      "detail": "With the new `elif len(args) == 1: data = args[0]` branch, any Python object \u2014 including lists, strings, integers, or user-controlled data (e.g. `jsonify(request.json)`) \u2014 now reaches `dumps()` as a top-level value. Previously these would have been rejected or wrapped. While `dumps()` handles most types safely, callers who previously relied on `jsonify` rejecting non-dict top-level values may now silently serialize unintended types. Application code that passes user-controlled data to `jsonify` should be audited to confirm input is validated before reaching this call.",
-      "confidence": 0.65
-    },
-    {
-      "agent": "test_coverage",
-      "file": "tests/test_helpers.py",
-      "line_start": 136,
-      "line_end": 154,
-      "severity": "minor",
-      "title": "Missing test coverage for single-arg edge cases in jsonify()",
-      "detail": "The `elif len(args) == 1` branch is not fully covered: passing `None`, `False`, or a single positional dict (as distinct from `**kwargs`) are not explicitly tested in `test_jsonify_arrays`. These singleton and edge-case inputs should be added to `test_jsonify_basic_types` or a dedicated test to ensure the branch behaves correctly for all expected input types.",
-      "confidence": 0.55
-    },
-    {
-      "agent": "style",
-      "file": "CHANGES",
-      "line_start": 11,
-      "line_end": 13,
-      "severity": "nit",
-      "title": "Changelog entry uses incorrect preposition: 'to serializing' should be 'for serializing'",
-      "detail": "Line 11 reads \"Added support to serializing top-level arrays\". The correct phrasing is \"Added support for serializing top-level arrays\", consistent with other entries in the same changelog (e.g. \"Added support for returning tuples\", \"Added support for explicit root paths\").",
-      "confidence": 0.98
-    },
-    {
-      "agent": "style",
-      "file": "flask/json.py",
-      "line_start": 217,
-      "line_end": 217,
-      "severity": "nit",
-      "title": "Docstring uses 'throw' instead of 'raise'",
-      "detail": "Line 217 reads \"will throw an exception\". The Python convention, and the convention used throughout Flask's docstrings (e.g. \"raise a :exc:`TypeError`\"), is \"raise\". Please change to \"will raise an exception\" for consistency.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "style",
-      "file": "tests/test_helpers.py",
-      "line_start": 138,
-      "line_end": 138,
-      "severity": "nit",
-      "title": "Variable name `l` is visually ambiguous with digit `1`",
-      "detail": "PEP 8 explicitly discourages the use of lowercase `l` as a variable name because it is visually indistinguishable from the digit `1` in many fonts. Consider renaming to `lst` or `test_list` for clarity.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "style",
-      "file": "tests/test_helpers.py",
-      "line_start": 119,
-      "line_end": 141,
-      "severity": "nit",
-      "title": "Missing spaces inside dict literals: `{'test':'dict'}` should be `{'test': 'dict'}`",
-      "detail": "Lines 122 and 141 both use `{'test':'dict'}` with no space after the colon and no spaces inside braces. The surrounding test file and Flask's style guidelines use spaces around colons in dict literals. Both occurrences should be corrected to `{'test': 'dict'}`.",
+      "severity": "major",
+      "title": "Single-argument passthrough creates arg-count-dependent shape inconsistency and unpacking trap",
+      "detail": "Two related correctness issues stem from the `len(args) == 1` \u2192 `data = args[0]` branch:\n\n1. **Unpacking inconsistency**: `jsonify(*[42])` (one element unpacked) takes the `len(args)==1` branch and produces the scalar `42`, while `jsonify(*[42, 43])` (two elements unpacked) takes the `list(args)` branch and produces `[42, 43]`. A caller who does `jsonify(*l)` where `l` is a dynamically-sized list will get different output shapes depending on whether the list happens to have exactly one element \u2014 a silent, hard-to-debug correctness trap.\n\n2. **Argument-count changes output shape**: `jsonify(42)` returns the scalar `42`, but `jsonify(42, 43)` returns the array `[42, 43]`. While this is partially documented, it means dynamically building argument lists and splatting them into `jsonify` can silently change the JSON structure. The documented contract (",
       "confidence": 0.9
-    },
-    {
-      "agent": "style",
-      "file": "flask/json.py",
-      "line_start": 263,
-      "line_end": 267,
-      "severity": "nit",
-      "title": "Inline comments inconsistent with surrounding code style",
-      "detail": "The comments on lines 263, 265, and 267 (`# single args are passed directly to dumps()`, `# convert multiple args into an array`, `# convert kwargs to a dict`) are trailing inline comments. The rest of the file uses standalone comment lines above the relevant code. Move these to their own lines above each branch to match the existing style.",
-      "confidence": 0.75
-    },
-    {
-      "agent": "style",
-      "file": "tests/test_helpers.py",
-      "line_start": 103,
-      "line_end": 106,
-      "severity": "nit",
-      "title": "Overly personal multi-line comment explaining why pytest.mark.parametrize was not used",
-      "detail": "Lines 103\u2013105 contain a comment explaining the author could not get `pytest.mark.parametrize` to work, including a URL. This reads as a personal note rather than useful documentation and is inconsistent with the style of the rest of the test file. Replace with a brief `# TODO: use pytest.mark.parametrize` or remove entirely.",
-      "confidence": 0.7
-    },
-    {
-      "agent": "style",
-      "file": "AUTHORS",
-      "line_start": 18,
-      "line_end": 22,
-      "severity": "nit",
-      "title": "Verify AUTHORS list alphabetical ordering after de-duplication and reordering",
-      "detail": "A previously trailing entry (`David Lord @davidism`) appears to have been moved earlier in the file. Confirm the final AUTHORS list is correctly sorted alphabetically by first name and that no duplicate or mis-ordered entries remain after the de-duplication.",
-      "confidence": 0.6
     }
   ],
   "agent_runs": [
@@ -167,56 +27,44 @@
           "agent": "correctness",
           "file": "flask/json.py",
           "line_range": [
-            259,
+            263,
             268
           ],
           "severity": "major",
-          "title": "jsonify() with no arguments silently returns serialized empty dict instead of raising an error",
-          "detail": "When `jsonify()` is called with no arguments (neither args nor kwargs), the code falls through to `data = dict(kwargs)` which produces `{}`. Previously calling `jsonify()` with no arguments would at least fail at `dumps(dict())` but now it silently serializes to `{}`. More importantly, the empty-kwargs branch also handles the case where `kwargs` is genuinely empty, which is correct, but the problem is there is no way to distinguish `jsonify()` (no args at all) from `jsonify(**{})`. This is a pre-existing behavior, but should be noted. More critically: `jsonify(0)` works (single arg), but `jsonify(None)` also works, and `jsonify(False)` works \u2014 these all pass `len(args) == 1` and go to `data = args[0]`. However, `jsonify(0, None)` produces `[0, None]` rather than an error, which is valid per the new design. No actual bug here, just noting the design is correct for these cases.",
-          "confidence": 0.3
+          "title": "jsonify() with no arguments raises IndexError instead of serializing empty dict/object",
+          "detail": "When `jsonify()` is called with no positional args and no keyword args, the code falls through to the `else` branch at line 267 and sets `data = dict(kwargs)` which is `{}`. That is actually fine. However, the case `jsonify()` \u2014 zero args, zero kwargs \u2014 hits `else` and returns `{}`. That is a behaviour change from before (previously `dict()` would also be `{}`), so this is acceptable. BUT there is a different problem: `len(args) == 1` check at line 263 is evaluated only after the `args and kwargs` guard. When `args` is empty and `kwargs` is empty, `len(args) == 1` is False, `args` (line 265) is falsy, so it goes to `else` and produces `{}`. This is fine.\n\nThe real issue is: `jsonify(*l)` where `l` is a list. This unpacks the list as positional args. If `l` has more than one element, `data = list(args)` (line 266) produces the full list \u2014 that works. But if `l` has **exactly one element**, e.g. `jsonify(*[42])`, then `len(args) == 1` is True and `data = args[0]` gives `42`, not `[42]`. So `jsonify(*[42])` \u2192 `42` but `jsonify([42])` \u2192 `[42]`. This is an inconsistency: the documented claim that `jsonify(1,2,3)` and `jsonify([1,2,3])` serialize the same is only partially true. More critically, `jsonify(*l)` where `l` is a single-element list will NOT round-trip correctly \u2014 the caller would expect `[42]` but gets `42`.",
+          "confidence": 0.9
         },
         {
           "agent": "correctness",
           "file": "flask/json.py",
           "line_range": [
-            259,
-            268
-          ],
-          "severity": "critical",
-          "title": "jsonify(*l) where l is a list with one element produces a scalar, not a single-element array",
-          "detail": "When `flask.jsonify(*l)` is called with a list containing exactly one element (e.g., `l = [42]`), it hits the `len(args) == 1` branch and sets `data = args[0]` (i.e., `data = 42`), serializing to `42` instead of `[42]`. The docstring and PR description claim that `jsonify(*l)` and `jsonify(l)` should serialize to the same array, but this invariant is broken for single-element lists. `jsonify([42])` correctly produces `[42]`, but `jsonify(*[42])` == `jsonify(42)` produces `42`. This is a correctness bug that the test misses because the test list `l` has more than one element.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "correctness",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            136,
-            154
+            263,
+            264
           ],
           "severity": "major",
-          "title": "test_jsonify_arrays does not test single-element list case, missing coverage of broken invariant",
-          "detail": "The test list `l` always has multiple elements (9 elements), so `jsonify(*l)` hits the `elif args:` branch and correctly becomes `list(args)`. A single-element list like `[42]` would cause `jsonify(*[42])` to return `42` (scalar) while `jsonify([42])` returns `[42]` (array), violating the stated equivalence. The test never exercises this edge case.",
-          "confidence": 0.95
+          "title": "Single-arg jsonify loses list wrapping \u2014 breaks documented behavior",
+          "detail": "The docstring (line 206-207) explicitly states: \"both `jsonify(1,2,3)` and `jsonify([1,2,3])` serialize to `[1,2,3]`\". However, when `jsonify([1,2,3])` is called, `len(args) == 1` is True (there is one argument, the list), and `data = args[0]` gives the list `[1,2,3]`. That does serialize to `[1,2,3]`.\n\nBut for `jsonify(42)` (a single non-list scalar), the code equally takes the `len(args) == 1` branch and passes `42` directly to `dumps`. That is actually intentional per the documented behavior (\"Single argument: Passed straight through to :func:`dumps`\"), but this means `jsonify(42)` returns the JSON scalar `42`, while `jsonify(42, 43)` returns `[42, 43]`. This asymmetry means the number of arguments changes the output shape, which is a correctness trap for callers who dynamically build argument lists.",
+          "confidence": 0.75
         },
         {
           "agent": "correctness",
           "file": "docs/security.rst",
           "line_range": [
             98,
-            106
+            99
           ],
           "severity": "minor",
-          "title": "Cross-reference label mismatch: :ref:`json_security` vs .. _json-security:",
-          "detail": "The CHANGES file (line 13) and flask/json.py docstring (line 240) reference `:ref:\\`json_security\\`` (underscore), but the existing anchor in docs/security.rst is `.. _json-security:` (hyphen, line 93 in old file, still present in new file). The new text in security.rst does not add a new `.. _json_security:` anchor. This means the cross-references in CHANGES and the jsonify docstring will result in broken Sphinx references.",
-          "confidence": 0.85
+          "title": "Broken cross-reference: :ref:`json_security` vs anchor :ref:`json-security`",
+          "detail": "The old anchor defined in the RST was `.. _json-security:` (line 93, with a hyphen). The CHANGES file (line 13) and the docstring in flask/json.py (line 240) both reference `:ref:\\`json_security\\`` (with an underscore). Sphinx treats hyphens and underscores as different label identifiers, so the reference will result in a broken link at build time. All new references should use the hyphen form `:ref:\\`json-security\\`` to match the existing anchor, or the anchor should be changed consistently everywhere.",
+          "confidence": 0.95
         }
       ],
       "tool_calls": 0,
       "tokens_in": 11529,
-      "tokens_out": 956,
-      "cost_usd": 0.048927,
-      "duration_s": 18.870794834103435,
+      "tokens_out": 1046,
+      "cost_usd": 0.050277,
+      "duration_s": 21.302906917175278,
       "skip_or_error_reason": null
     },
     {
@@ -227,12 +75,12 @@
           "agent": "security",
           "file": "flask/json.py",
           "line_range": [
-            201,
+            202,
             275
           ],
           "severity": "major",
-          "title": "Top-level JSON array serialization enables JSON hijacking in legacy browsers",
-          "detail": "Allowing top-level arrays in `jsonify()` re-opens a well-known JSON hijacking vulnerability that affects older browsers (notably Firefox < 3, Chrome < 3, Safari < 4). An attacker can override the JavaScript `Array` constructor and serve the victim a page that requests the JSON endpoint via a `<script>` tag, allowing the attacker's code to intercept the array values. The PR documents this risk and updates the security docs, which is good, but the change is unconditional \u2014 there is no opt-in gate (e.g. a `JSON_ALLOW_TOPLEVEL_ARRAY` config flag) for applications that still need to support legacy clients or have a stricter security posture. Recommend adding a config flag defaulting to `False` (safe) so application owners must consciously enable it, and update the security docs to be very explicit about the attack.",
+          "title": "Top-level JSON array enables JSON Hijacking in older browsers",
+          "detail": "Allowing top-level arrays in `jsonify()` responses re-opens the classic JSON Hijacking vulnerability (CVE-class). In browsers that override `Array` constructor or use `<script src>` against the endpoint, an attacker on a different origin can steal authenticated JSON array responses. The PR itself acknowledges this risk in the changelog and docs, but the mitigation is entirely documentation-only \u2014 there is no opt-in flag, no X-Content-Type-Options header added automatically, and no CSRF-token guard enforced at the framework level. Any Flask app that upgrades and starts returning top-level arrays is silently exposed unless the developer reads the security note. Consider: (1) requiring an explicit opt-in config flag (e.g. `JSONIFY_ALLOW_ARRAY=True`) so the safe default remains dict-only, or (2) automatically injecting `)]}',\\n` prefix (like Angular does) when returning arrays, or (3) at minimum setting `X-Content-Type-Options: nosniff` in the response. The risk is real for apps that must support IE \u2264 5, Firefox \u2264 2, or other legacy clients that honour the Array constructor override trick.",
           "confidence": 0.9
         },
         {
@@ -243,34 +91,22 @@
             264
           ],
           "severity": "minor",
-          "title": "Single-arg path passes arbitrary types directly to `dumps()`, including user-controlled data",
-          "detail": "When exactly one positional argument is given (`len(args) == 1`), it is passed unchanged to `dumps()`. This means any Python object \u2014 including ones constructed from user-supplied input, e.g. `jsonify(request.json)` \u2014 can now reach `dumps()` as a top-level value that was previously rejected (lists, strings, integers, etc.). While `dumps()` will handle most types safely, callers who previously relied on `jsonify` raising or wrapping non-dict arguments now get silent serialization of those values as top-level primitives or arrays. If upstream code passes user-controlled data without validation, this expands the surface area for unintended data disclosure (e.g., serializing a bare user-controlled list). This is a lower-severity concern but worth flagging for callers of `jsonify` throughout the application to confirm input is always validated before being passed.",
-          "confidence": 0.65
+          "title": "Single-argument passthrough allows arbitrary scalar/primitive top-level values with no warning",
+          "detail": "With `len(args) == 1`, any value \u2014 including `None`, a raw integer, a boolean, or a string \u2014 is passed directly to `dumps()` and returned as a top-level JSON value. While RFC 8259 allows this, older JSON parsers and some security scanners reject non-object/non-array top-level values, and returning `true`/`false`/`null`/a bare number as a full HTTP response body is almost always unintentional. An attacker-controlled value that reaches `jsonify()` as a single argument could produce unexpected output (e.g. injecting a crafted string that happens to be valid JSON of a different type). There is no type-checking or allowlist guard here. At minimum, document the behaviour clearly in the security note.",
+          "confidence": 0.6
         }
       ],
       "tool_calls": 0,
       "tokens_in": 4604,
-      "tokens_out": 556,
-      "cost_usd": 0.022152,
-      "duration_s": 14.28287437488325,
+      "tokens_out": 607,
+      "cost_usd": 0.022917,
+      "duration_s": 15.0830271251034,
       "skip_or_error_reason": null
     },
     {
       "agent": "style",
       "status": "ok",
       "findings": [
-        {
-          "agent": "style",
-          "file": "AUTHORS",
-          "line_range": [
-            18,
-            22
-          ],
-          "severity": "minor",
-          "title": "New AUTHORS entries break alphabetical ordering",
-          "detail": "The existing list is sorted alphabetically by first name. 'David Lord' (D) should appear before 'Edmond Burnett' (E) \u2014 which the new line does correctly \u2014 but 'Jeff Widman' (J) is inserted between 'Georg Brandl' (G) and 'Justin Quick' (J), skipping past entries that start with letters between G and J (e.g. nothing here, so that's fine), yet 'David Lord' was previously at the very bottom and has been moved up. The real issue is that the removed trailing entry (`- David Lord @davidism` at line 36) is now duplicated at line 18, so if the bottom entry is being removed it means it was already in the list. This looks like a de-duplication, which is fine, but double-check the final sort order covers all names consistently.",
-          "confidence": 0.6
-        },
         {
           "agent": "style",
           "file": "flask/json.py",
@@ -280,8 +116,8 @@
           ],
           "severity": "nit",
           "title": "Inline comment style inconsistent with surrounding code",
-          "detail": "The existing code in the file uses comments on their own lines, not trailing inline comments. The comment `# single args are passed directly to dumps()` on line 263 and `# convert multiple args into an array` on line 265 and `# convert kwargs to a dict` on line 267 are all trailing inline comments. Prefer a standalone comment line above each branch, consistent with the style used throughout the rest of the file (e.g. lines 20\u201321, 28\u201329).",
-          "confidence": 0.75
+          "detail": "The inline comments on the `elif`/`else` branches (e.g. `# single args are passed directly to dumps()`, `# convert multiple args into an array`, `# convert kwargs to a dict`) are written as trailing inline comments. The rest of the file uses standalone comment lines above the relevant code. Consider moving these to their own lines above each branch, consistent with the style used elsewhere (e.g. the `# Note that we add '\\n' ...` comment just below).",
+          "confidence": 0.7
         },
         {
           "agent": "style",
@@ -291,8 +127,8 @@
             217
           ],
           "severity": "minor",
-          "title": "Docstring numbered list items not indented to continuation level required by RST",
-          "detail": "Lines 214\u2013216 contain a reStructuredText numbered list where continuation lines (the `:func:`dumps`` text) are not indented to align under the list item text. In RST, the content of a list item must be indented at least to the column after the list marker; otherwise it will render incorrectly. Compare the indentation of `2. Multiple arguments: Converted to an array before being passed to` with `   :func:`dumps`.` \u2014 the latter is flush-left, breaking the list. This also deviates from the careful RST formatting used elsewhere in the docstrings of this file.",
+          "title": "Docstring numbered list items not properly indented for RST",
+          "detail": "Lines 213-217 contain a RST numbered list, but items 2, 3, and 4 have their continuation text (`':func:`dumps`.'`) at column 0 instead of being indented to align under the text of the list item. In RST this breaks the list formatting. The existing docstrings in the file use properly-formatted RST. Each continuation should be indented to column 4 relative to the list marker, e.g.:\n\n    2. Multiple arguments: Converted to an array before being passed to\n       :func:`dumps`.",
           "confidence": 0.85
         },
         {
@@ -303,20 +139,8 @@
             217
           ],
           "severity": "nit",
-          "title": "Docstring says 'throw' instead of 'raise'",
-          "detail": "Line 217 reads \"will throw an exception\". The Python convention (and the convention used throughout Flask's docstrings) is \"raise an exception\" (e.g. JSONEncoder docstring line 63: \"raise a :exc:`TypeError`\"). Prefer \"raise\" for consistency.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            119,
-            122
-          ],
-          "severity": "nit",
-          "title": "Missing spaces inside dict literal braces \u2014 inconsistent with surrounding style",
-          "detail": "Line 122 has `{'test':'dict'}` with no spaces around the colon and no spaces inside the braces, while the rest of the test file and the existing code style uses spaces around colons in dict literals (e.g. line 141 also has `{'test':'dict'}`). Existing code in the file uses `dict(foo=bar)` constructor style or spaced literals. Both occurrences (lines 122 and 141) should be `{'test': 'dict'}` for consistency.",
+          "title": "Vague/inconsistent wording: 'throw an exception' vs 'raise'",
+          "detail": "The docstring says 'will throw an exception'. Python convention (and the style in the rest of Flask's docs/docstrings) is to say 'raises a :exc:`TypeError`' (or similar). 'Throw' is Java/C++ terminology.",
           "confidence": 0.9
         },
         {
@@ -324,12 +148,24 @@
           "file": "tests/test_helpers.py",
           "line_range": [
             103,
-            106
+            105
           ],
           "severity": "nit",
-          "title": "Multi-line comment inside test could be a shorter note or removed",
-          "detail": "Lines 103\u2013105 contain a comment that spans multiple lines explaining why `pytest.mark.parametrize` was not used, including a URL. While informative, the existing test style in the file does not include such explanatory 'I couldn't figure it out' comments. This comment is more of a personal note than useful documentation and should either be removed or replaced with a brief `# TODO: use pytest.mark.parametrize` note.",
-          "confidence": 0.7
+          "title": "TODO comment referencing an external URL left in production test code",
+          "detail": "Lines 103-105 contain a comment block explaining that pytest parametrize was not figured out, including a link to pytest docs. This is a personal note/TODO and is inconsistent with the style of other test methods in the file which have no such notes. It should be removed or resolved before merging.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            121,
+            122
+          ],
+          "severity": "nit",
+          "title": "Missing spaces inside dict literals (inconsistent formatting)",
+          "detail": "In `test_jsonify_dicts` and `test_jsonify_arrays`, dict literals like `{'test':'dict'}` are missing spaces around the colon. The rest of the file and Flask codebase consistently uses `{'test': 'dict'}` (PEP 8 / surrounding style).",
+          "confidence": 0.9
         },
         {
           "agent": "style",
@@ -339,9 +175,21 @@
             138
           ],
           "severity": "nit",
-          "title": "Single-letter variable name `l` is easily confused with `1`",
-          "detail": "Line 138 uses `l` as a variable name for the test list. PEP 8 explicitly discourages the use of lowercase `l` as a variable name because it is visually indistinguishable from the digit `1` in many fonts. The existing test uses `d` for dict (line 118) which is fine, but `l` for list is a known anti-pattern. Consider `lst` or `test_list` for clarity.",
+          "title": "Variable name `l` is easily confused with `1`",
+          "detail": "`l` is on Python's list of names to avoid (PEP 8: 'never use the characters 'l' (lowercase letter el)... as single character variable names'). The surrounding test file uses descriptive names like `test_data`, `d`, etc. Consider `lst` or `test_data` to match the `test_data` name used in `test_jsonify_basic_types`.",
           "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "AUTHORS",
+          "line_range": [
+            18,
+            22
+          ],
+          "severity": "minor",
+          "title": "AUTHORS list is not in alphabetical order after the move",
+          "detail": "The existing AUTHORS list is sorted alphabetically by first name. 'David Lord' (line 18) and 'Jeff Widman' (line 22) have been inserted, but 'David Lord' was previously at the bottom (line 36) and is now placed between 'Daniel Neuh\u00e4user' and 'Edmond Burnett' \u2014 which is correct alphabetically. However, 'Jeff Widman' at line 22 is placed between 'Georg Brandl' and 'Justin Quick', which is also correct. The removed duplicate of 'David Lord' at the old line 36 position is fine. No actual ordering issue \u2014 this finding can be disregarded. (Retracting.)",
+          "confidence": 0.2
         },
         {
           "agent": "style",
@@ -351,16 +199,16 @@
             13
           ],
           "severity": "nit",
-          "title": "Changelog entry says 'to serializing' instead of 'for serializing'",
-          "detail": "Line 11 reads \"Added support to serializing top-level arrays\". The correct preposition here is \"for\": \"Added support for serializing top-level arrays\", consistent with the phrasing used in other entries in the same file (e.g. line 25: \"Added support for returning tuples\", line 33: \"Added support for explicit root paths\").",
-          "confidence": 0.98
+          "title": "Changelog entry wording 'Added support to serializing' is grammatically awkward",
+          "detail": "The entry reads 'Added support to serializing top-level arrays'. The pattern used throughout the rest of CHANGES is 'Added support for ...', e.g. 'Added support for returning tuples...', 'Added support for explicit root paths...'. Should be 'Added support for serializing top-level arrays to :func:`flask.jsonify`.'",
+          "confidence": 0.95
         }
       ],
       "tool_calls": 0,
       "tokens_in": 10193,
-      "tokens_out": 1434,
-      "cost_usd": 0.052089,
-      "duration_s": 28.951115041971207,
+      "tokens_out": 1299,
+      "cost_usd": 0.050064,
+      "duration_s": 27.034704332938418,
       "skip_or_error_reason": null
     },
     {
@@ -375,21 +223,9 @@
             262
           ],
           "severity": "major",
-          "title": "No test for jsonify() raising TypeError when both args and kwargs are passed",
-          "detail": "The new branch `if args and kwargs: raise TypeError(...)` at line 259-262 has no corresponding test. A test should call e.g. `flask.jsonify(1, 2, key='val')` and assert that a `TypeError` is raised. Without this, the error path is entirely untested.",
-          "confidence": 0.98
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/json.py",
-          "line_range": [
-            263,
-            264
-          ],
-          "severity": "minor",
-          "title": "No test for jsonify() with a single non-list, non-dict scalar passed as a keyword-free positional arg via the new branch",
-          "detail": "The `elif len(args) == 1` branch is exercised by `test_jsonify_basic_types`, but that test only calls `flask.jsonify(x)` where x is a primitive. A single-arg list (e.g. `jsonify([1,2,3])`) is covered by `test_jsonify_arrays`. However, passing a single dict positionally (e.g. `jsonify({'a':1})`) as a single positional arg\u2014distinct from `**kwargs`\u2014is covered by `test_jsonify_dicts` (`/dict` route). Coverage appears present, but None (NoneType) and other edge-case singletons are not tested.",
-          "confidence": 0.55
+          "title": "No test for TypeError when both args and kwargs are passed to jsonify()",
+          "detail": "The new branch at lines 259-262 raises a TypeError when `jsonify()` is called with both positional args and keyword args (e.g. `jsonify(1, foo='bar')`). There is no test case exercising this code path \u2014 neither verifying the exception is raised nor checking the message. A test like `pytest.raises(TypeError, flask.jsonify, 1, foo='bar')` should be added.",
+          "confidence": 0.97
         },
         {
           "agent": "test_coverage",
@@ -399,28 +235,28 @@
             266
           ],
           "severity": "minor",
-          "title": "No test for jsonify() with exactly two positional args (multiple-args branch)",
-          "detail": "The `elif args` branch (multiple args \u2192 list) is only exercised by `test_jsonify_arrays` via `jsonify(*l)` where `l` has 9 elements. A simpler case like `jsonify(1, 2)` is not explicitly tested, though functionally the branch is the same. More importantly, edge cases like `jsonify()` (zero args, zero kwargs) are not tested \u2014 it falls into the `else` branch and produces an empty dict `{}`, but there is no test asserting that behavior.",
-          "confidence": 0.7
+          "title": "No test for jsonify() called with zero arguments",
+          "detail": "When `jsonify()` is called with no args and no kwargs, the code falls through to `data = dict(kwargs)` (line 268), producing `{}`. There is no test covering this edge case (an empty call). It's worth confirming the behavior is intentional and tested.",
+          "confidence": 0.75
         },
         {
           "agent": "test_coverage",
           "file": "flask/json.py",
           "line_range": [
-            267,
-            268
+            265,
+            266
           ],
           "severity": "minor",
-          "title": "No test for jsonify() called with no arguments producing an empty dict",
-          "detail": "When `jsonify()` is called with no positional args and no keyword args, `data` becomes `dict()` (i.e. `{}`). There is no test exercising this zero-argument edge case to verify the response is `{}` with the correct mimetype.",
-          "confidence": 0.85
+          "title": "No test for jsonify() with a single-element tuple or generator passed as a single arg",
+          "detail": "The `len(args) == 1` branch (line 263) passes the single argument straight through to `dumps()`. While lists and scalars are tested, there is no coverage for other iterables (e.g. a tuple, a generator expression, or `None`) passed as the sole positional argument.",
+          "confidence": 0.6
         }
       ],
       "tool_calls": 0,
       "tokens_in": 13793,
-      "tokens_out": 713,
-      "cost_usd": 0.052074,
-      "duration_s": 15.038613291922957,
+      "tokens_out": 451,
+      "cost_usd": 0.048144,
+      "duration_s": 9.50393904093653,
       "skip_or_error_reason": null
     },
     {
@@ -432,194 +268,26 @@
           "file": "flask/json.py",
           "line_range": [
             263,
-            264
-          ],
-          "severity": "critical",
-          "title": "jsonify(*l) with a single-element list serializes to a scalar instead of an array",
-          "detail": "When `jsonify(*l)` is called with a list containing exactly one element (e.g. `l = [42]`), it hits the `len(args) == 1` branch and sets `data = args[0]` (i.e. `data = 42`), serializing to the scalar `42` instead of the array `[42]`. The docstring and PR description imply that `jsonify(*l)` and `jsonify(l)` should produce the same result, but this invariant is broken for single-element lists: `jsonify([42])` \u2192 `[42]`, `jsonify(*[42])` \u2192 `42`. The test in `test_helpers.py` (lines 136\u2013154) never catches this because the test list always has 9 elements, so `jsonify(*l)` always hits the multi-arg `elif args` branch. A single-element test case is needed to expose and fix this bug.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/json.py",
-          "line_range": [
-            259,
-            262
-          ],
-          "severity": "major",
-          "title": "No test for the TypeError raised when both positional args and kwargs are passed to jsonify()",
-          "detail": "The branch `if args and kwargs: raise TypeError(...)` at lines 259\u2013262 has no corresponding test. A test should call e.g. `flask.jsonify(1, 2, key='val')` inside an app context and assert that a `TypeError` is raised. Without this, the entire error path is untested and a regression could go undetected.",
-          "confidence": 0.98
-        },
-        {
-          "agent": "security",
-          "file": "flask/json.py",
-          "line_range": [
-            201,
-            275
-          ],
-          "severity": "major",
-          "title": "Top-level JSON array serialization is unconditional, re-opening JSON hijacking for legacy clients",
-          "detail": "Allowing top-level arrays in `jsonify()` re-opens the well-known JSON hijacking vulnerability in older browsers (Firefox < 3, Chrome < 3, Safari < 4). An attacker can override the JS `Array` constructor and serve the victim a page that requests the JSON endpoint via a `<script>` tag, intercepting array values. The PR documents this risk and updates the security docs, which is positive. However, the change is unconditional \u2014 there is no opt-in config flag (e.g. `JSON_ALLOW_TOPLEVEL_ARRAY`, defaulting to `False`) allowing application owners to consciously enable the behavior. Applications that need to support legacy clients or have a stricter security posture have no mechanism to prevent top-level array serialization. A config-guarded approach is strongly recommended.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "correctness",
-          "file": "docs/security.rst",
-          "line_range": [
-            98,
-            106
-          ],
-          "severity": "minor",
-          "title": "Cross-reference label mismatch: :ref:`json_security` (underscore) vs .. _json-security: (hyphen)",
-          "detail": "The CHANGES file and the `flask/json.py` docstring reference `:ref:\\`json_security\\`` (with an underscore), but the existing anchor in `docs/security.rst` is `.. _json-security:` (with a hyphen). No new `.. _json_security:` anchor is added in this PR. This will produce broken Sphinx cross-references in both the changelog and the `jsonify()` docstring.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "style",
-          "file": "flask/json.py",
-          "line_range": [
-            202,
-            217
-          ],
-          "severity": "minor",
-          "title": "Docstring numbered list continuation lines not properly indented for RST",
-          "detail": "The reStructuredText numbered list in the `jsonify()` docstring (lines 214\u2013216) has continuation lines that are not indented to the column after the list marker, as required by RST. The `:func:\\`dumps\\`` continuation text appears flush-left, which will render incorrectly in Sphinx-generated documentation. Continuation lines must be indented to align with the text following the list item marker (e.g. `1. ` \u2192 indent to column 4).",
-          "confidence": 0.85
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/json.py",
-          "line_range": [
-            267,
             268
           ],
-          "severity": "minor",
-          "title": "No tests for zero-argument jsonify() or simple two-argument cases",
-          "detail": "When `jsonify()` is called with no positional and no keyword arguments, `data` becomes `dict()` (i.e. `{}`), but there is no test asserting this behavior or its response payload. Similarly, a simple two-positional-arg call like `jsonify(1, 2)` is not explicitly tested \u2014 the multi-arg branch is only exercised via a 9-element list splat. These edge cases should have dedicated tests to lock in expected behavior.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "security",
-          "file": "flask/json.py",
-          "line_range": [
-            263,
-            264
-          ],
-          "severity": "minor",
-          "title": "Single-arg path silently serializes arbitrary types previously rejected by jsonify()",
-          "detail": "With the new `elif len(args) == 1: data = args[0]` branch, any Python object \u2014 including lists, strings, integers, or user-controlled data (e.g. `jsonify(request.json)`) \u2014 now reaches `dumps()` as a top-level value. Previously these would have been rejected or wrapped. While `dumps()` handles most types safely, callers who previously relied on `jsonify` rejecting non-dict top-level values may now silently serialize unintended types. Application code that passes user-controlled data to `jsonify` should be audited to confirm input is validated before reaching this call.",
-          "confidence": 0.65
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            136,
-            154
-          ],
-          "severity": "minor",
-          "title": "Missing test coverage for single-arg edge cases in jsonify()",
-          "detail": "The `elif len(args) == 1` branch is not fully covered: passing `None`, `False`, or a single positional dict (as distinct from `**kwargs`) are not explicitly tested in `test_jsonify_arrays`. These singleton and edge-case inputs should be added to `test_jsonify_basic_types` or a dedicated test to ensure the branch behaves correctly for all expected input types.",
-          "confidence": 0.55
-        },
-        {
-          "agent": "style",
-          "file": "CHANGES",
-          "line_range": [
-            11,
-            13
-          ],
-          "severity": "nit",
-          "title": "Changelog entry uses incorrect preposition: 'to serializing' should be 'for serializing'",
-          "detail": "Line 11 reads \"Added support to serializing top-level arrays\". The correct phrasing is \"Added support for serializing top-level arrays\", consistent with other entries in the same changelog (e.g. \"Added support for returning tuples\", \"Added support for explicit root paths\").",
-          "confidence": 0.98
-        },
-        {
-          "agent": "style",
-          "file": "flask/json.py",
-          "line_range": [
-            217,
-            217
-          ],
-          "severity": "nit",
-          "title": "Docstring uses 'throw' instead of 'raise'",
-          "detail": "Line 217 reads \"will throw an exception\". The Python convention, and the convention used throughout Flask's docstrings (e.g. \"raise a :exc:`TypeError`\"), is \"raise\". Please change to \"will raise an exception\" for consistency.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            138,
-            138
-          ],
-          "severity": "nit",
-          "title": "Variable name `l` is visually ambiguous with digit `1`",
-          "detail": "PEP 8 explicitly discourages the use of lowercase `l` as a variable name because it is visually indistinguishable from the digit `1` in many fonts. Consider renaming to `lst` or `test_list` for clarity.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            119,
-            141
-          ],
-          "severity": "nit",
-          "title": "Missing spaces inside dict literals: `{'test':'dict'}` should be `{'test': 'dict'}`",
-          "detail": "Lines 122 and 141 both use `{'test':'dict'}` with no space after the colon and no spaces inside braces. The surrounding test file and Flask's style guidelines use spaces around colons in dict literals. Both occurrences should be corrected to `{'test': 'dict'}`.",
+          "severity": "major",
+          "title": "Single-argument passthrough creates arg-count-dependent shape inconsistency and unpacking trap",
+          "detail": "Two related correctness issues stem from the `len(args) == 1` \u2192 `data = args[0]` branch:\n\n1. **Unpacking inconsistency**: `jsonify(*[42])` (one element unpacked) takes the `len(args)==1` branch and produces the scalar `42`, while `jsonify(*[42, 43])` (two elements unpacked) takes the `list(args)` branch and produces `[42, 43]`. A caller who does `jsonify(*l)` where `l` is a dynamically-sized list will get different output shapes depending on whether the list happens to have exactly one element \u2014 a silent, hard-to-debug correctness trap.\n\n2. **Argument-count changes output shape**: `jsonify(42)` returns the scalar `42`, but `jsonify(42, 43)` returns the array `[42, 43]`. While this is partially documented, it means dynamically building argument lists and splatting them into `jsonify` can silently change the JSON structure. The documented contract (",
           "confidence": 0.9
-        },
-        {
-          "agent": "style",
-          "file": "flask/json.py",
-          "line_range": [
-            263,
-            267
-          ],
-          "severity": "nit",
-          "title": "Inline comments inconsistent with surrounding code style",
-          "detail": "The comments on lines 263, 265, and 267 (`# single args are passed directly to dumps()`, `# convert multiple args into an array`, `# convert kwargs to a dict`) are trailing inline comments. The rest of the file uses standalone comment lines above the relevant code. Move these to their own lines above each branch to match the existing style.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_helpers.py",
-          "line_range": [
-            103,
-            106
-          ],
-          "severity": "nit",
-          "title": "Overly personal multi-line comment explaining why pytest.mark.parametrize was not used",
-          "detail": "Lines 103\u2013105 contain a comment explaining the author could not get `pytest.mark.parametrize` to work, including a URL. This reads as a personal note rather than useful documentation and is inconsistent with the style of the rest of the test file. Replace with a brief `# TODO: use pytest.mark.parametrize` or remove entirely.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "style",
-          "file": "AUTHORS",
-          "line_range": [
-            18,
-            22
-          ],
-          "severity": "nit",
-          "title": "Verify AUTHORS list alphabetical ordering after de-duplication and reordering",
-          "detail": "A previously trailing entry (`David Lord @davidism`) appears to have been moved earlier in the file. Confirm the final AUTHORS list is correctly sorted alphabetically by first name and that no duplicate or mis-ordered entries remain after the de-duplication.",
-          "confidence": 0.6
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4375,
-      "tokens_out": 2843,
-      "cost_usd": 0.05577,
-      "duration_s": 52.14189179101959,
+      "tokens_in": 4131,
+      "tokens_out": 503,
+      "cost_usd": 0.019938,
+      "duration_s": 12.43328387499787,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 44494,
-    "tokens_out": 6502,
-    "cost_usd": 0.231012,
-    "duration_s": 129.3
+    "tokens_in": 44250,
+    "tokens_out": 3906,
+    "cost_usd": 0.19134,
+    "duration_s": 85.4
   }
 }

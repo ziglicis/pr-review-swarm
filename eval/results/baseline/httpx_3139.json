@@ -2,120 +2,100 @@
   "case": "httpx_3139",
   "experiment": "baseline",
   "pr_url": "https://github.com/encode/httpx/pull/3139",
-  "head_sha": "7a2f185334b599451961115cc4f69df336f26632",
+  "head_sha": "01b4c6d1176e3c84a37445632fb9980aebbb5ffa",
   "sha_matches_dataset": true,
-  "timestamp": 1784180613,
+  "timestamp": 1784572140,
   "summary": "",
   "findings": [
     {
       "agent": "baseline",
-      "file": "httpx/_decoders.py",
-      "line_start": 161,
-      "line_end": 172,
+      "file": "tests/test_decoders.py",
+      "line_start": 149,
+      "line_end": 157,
       "severity": "major",
-      "title": "`ZStandardDecoder.decode` can silently drop data when a skippable frame is the *last* frame",
-      "detail": "The multi-frame loop condition is `while self.decompressor.eof and self.decompressor.unused_data`. If the zstd stream ends with a skippable frame that itself is followed by no further data, `unused_data` will be non-empty but after reassigning `self.decompressor` and calling `decompress(unused_data)` on it, the skippable frame may be consumed and the NEW decompressor will have `eof=False` (it saw a skippable frame, not a full zstd stream end). On the next iteration the loop exits, and `flush()` will then see `eof=False` and raise `DecodingError`. This exact edge case is partly masked by `# pragma: no cover` on the `flush` raise. The existing `test_zstd_multiframe` test only covers the case where a skippable frame appears *between* two regular frames. A test with a trailing skippable frame is missing and the behaviour is unspecified.",
-      "confidence": 0.7
+      "title": "`test_empty_content` and `test_decoders_empty_cases` do not include zstd",
+      "detail": "Lines 149 and 160: both `@pytest.mark.parametrize` lists cover `b\"deflate\", b\"gzip\", b\"br\", b\"identity\"` but not `b\"zstd\"`. The `ZStandardDecoder.flush()` will raise `DecodingError` on an empty body (since `eof` will be False), so this is both a missing test and evidence of a real bug.",
+      "confidence": 0.95
     },
     {
       "agent": "baseline",
       "file": "httpx/_decoders.py",
-      "line_start": 174,
-      "line_end": 178,
+      "line_start": 171,
+      "line_end": 175,
       "severity": "major",
-      "title": "`ZStandardDecoder.flush` incorrectly rejects valid streams that end with a skippable frame",
-      "detail": "`flush()` checks `if not self.decompressor.eof` and raises `DecodingError(\"Zstandard data is incomplete\")`. After processing a multi-frame stream in `decode()`, `self.decompressor` points to the *last* freshly-created decompressor that consumed `unused_data`. If that unused_data was a skippable frame, its decompressor's `eof` will be `False` (a skippable frame is not a complete zstd stream), causing a spurious error. The `# pragma: no cover` comment hides this from the test suite.",
-      "confidence": 0.7
+      "title": "flush() raises DecodingError on empty/no-data response for zstd",
+      "detail": "When no data has been received at all (e.g. a 204 No Content with `Content-Encoding: zstd`), `self.decompressor.eof` will be False (no stream has been started) and `flush()` will raise `DecodingError(\"Zstandard data is incomplete\")`. Compare with `BrotliDecoder.flush()` which has an explicit `if not self.seen_data: return b\"\"` guard. The existing `test_empty_content` test does not include `b\"zstd\"` in its parametrize list, which confirms this case is untested and broken.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_decoders.py",
+      "line_start": 163,
+      "line_end": 166,
+      "severity": "major",
+      "title": "Multi-frame zstd decoding loop may be incorrect when data is chunked across frames",
+      "detail": "The loop `while self.decompressor.eof and self.decompressor.unused_data` re-creates a new decompressor for additional frames in the `unused_data`. However, if `decompress()` is called with data that only partially covers a second frame (i.e. the second frame isn't complete in this chunk), `self.decompressor.eof` will be False and `unused_data` will be empty. The remaining partial bytes are lost \u2014 they are neither stored nor handled. In practice, multi-frame zstd responses will rarely be encountered, but for responses streamed in small chunks, this will silently corrupt or truncate data. The correct approach (as done in urllib3) is to track remaining/unused bytes across `decode()` calls so that they are prepended to the next chunk.",
+      "confidence": 0.8
     },
     {
       "agent": "baseline",
       "file": "httpx/_decoders.py",
       "line_start": 153,
-      "line_end": 157,
+      "line_end": 156,
       "severity": "minor",
-      "title": "Truncated / placeholder error message in `ZStandardDecoder.__init__`",
-      "detail": "The `ImportError` message reads `\"Using 'ZStandardDecoder', ...\"` where `...` is a literal ellipsis. Compare with the analogous `BrotliDecoder` message which explains the problem clearly: `\"Using 'BrotliDecoder', but neither of the 'brotlicffi' or 'brotli' packages have been installed.\"`. The zstd message appears to be an unfinished draft and will be confusing to users who haven't installed `zstandard`.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_decoders.py",
-      "line_start": 185,
-      "line_end": 200,
-      "severity": "minor",
-      "title": "`test_empty_content` and `test_decoders_empty_cases` parametrizations do not include `zstd`",
-      "detail": "The parametrized tests on lines 185 and 196 only include `b\"deflate\"`, `b\"gzip\"`, `b\"br\"`, and `b\"identity\"`. The new `zstd` decoder is not included, so empty-body behaviour and empty-decode behaviour for zstd are untested. `ZStandardDecoder.decode(b\"\")` and `ZStandardDecoder.flush()` on a never-decoded stream are not exercised.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "baseline",
-      "file": "httpx/_compat.py",
-      "line_start": 63,
-      "line_end": 63,
-      "severity": "minor",
-      "title": "`zstd` missing from `__all__`",
-      "detail": "`__all__` at the bottom of `_compat.py` only lists `[\"brotli\", \"set_minimum_tls_version_1_2\"]`. The newly added `zstd` symbol is imported by `_decoders.py` via `from ._compat import brotli, zstd`, so the omission from `__all__` doesn't break anything at runtime, but it is inconsistent with the pattern used for `brotli` and could confuse future readers/tools.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "baseline",
-      "file": "httpx/_decoders.py",
-      "line_start": 174,
-      "line_end": 178,
-      "severity": "minor",
-      "title": "`ZStandardDecoder.flush` returns `bytes(ret)` where `ret` is already `bytes`",
-      "detail": "`self.decompressor.flush()` returns `bytes` (it's a no-op, documented to return `b\"\"`). Wrapping it again in `bytes(ret)` is redundant. Returning `ret` directly (or just `b\"\"`) is cleaner and avoids a needless copy.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_decoders.py",
-      "line_start": 203,
-      "line_end": 212,
-      "severity": "minor",
-      "title": "`test_decoding_errors` parametrization does not include `zstd`",
-      "detail": "The parametrized decoding-error test only covers `deflate`, `gzip`, and `br`. Adding `b\"zstd\"` would verify that `DecodingError` is raised consistently from `ZStandardDecoder`, which is the pattern established by the existing `test_zstd_decoding_error` test but through a different code-path (the streaming one used by `test_decoding_errors`).",
-      "confidence": 0.85
-    },
-    {
-      "agent": "baseline",
-      "file": "httpx/_compat.py",
-      "line_start": 27,
-      "line_end": 27,
-      "severity": "minor",
-      "title": "Catching `AttributeError` and `ValueError` on `import zstandard` is over-broad",
-      "detail": "`except (AttributeError, ImportError, ValueError)` \u2014 catching `AttributeError` and `ValueError` during an import statement is unusual. A bare `import` can only raise `ImportError` (or a subclass such as `ModuleNotFoundError`). The extra exception types copied from urllib3's implementation may make sense there because they guard additional code, but here the try-block only contains `import zstandard as zstd`, so the extra catches are never triggered and only add noise. If the intent is defensive, a comment explaining *when* these could fire would help.",
-      "confidence": 0.8
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_decoders.py",
-      "line_start": 92,
-      "line_end": 100,
-      "severity": "minor",
-      "title": "`test_zstd_decoding_error` passes a `str` as `content`, not invalid zstd bytes",
-      "detail": "`compressed_body = \"this_is_not_zstd_compressed_data\"` is a plain `str`, not `bytes`. httpx's `Response(content=...)` accepts `str` as a content type? Checking `_content.py` would confirm, but if it does it may encode it as UTF-8 and that UTF-8 encoding might coincidentally fail zstd decompression for the wrong reason, or the test might be relying on an incidental codepath. The test should use `b\"this_is_not_zstd_compressed_data\"` (a bytes literal) to clearly express intent and avoid any accidental pass-through.",
-      "confidence": 0.75
-    },
-    {
-      "agent": "baseline",
-      "file": "CHANGELOG.md",
-      "line_start": 9,
-      "line_end": 9,
-      "severity": "nit",
-      "title": "CHANGELOG `## Added` section is missing `###` prefix",
-      "detail": "The existing CHANGELOG headings use three-hash `###` (e.g., `### Fixed`, `### Added`, `### Deprecated`), but the new entry uses two-hash `## Added`. This breaks the section hierarchy.",
+      "title": "Incomplete error message in ZStandardDecoder.__init__",
+      "detail": "The ImportError message reads `\"Using 'ZStandardDecoder', ...\"`. The `...` truncation leaves out the explanation of the problem (the package is not installed or is too old). Compare with the BrotliDecoder message which is complete. This should say something like \"Using 'ZStandardDecoder', but the 'zstandard' package (>= 0.18.0) is not installed.\"",
       "confidence": 0.95
     },
     {
       "agent": "baseline",
       "file": "httpx/_decoders.py",
-      "line_start": 162,
-      "line_end": 162,
-      "severity": "nit",
-      "title": "Redundant `assert zstd is not None` in `decode`",
-      "detail": "`__init__` already raises `ImportError` if `zstd is None`, so by the time `decode` is ever called, `zstd` is guaranteed to be non-None. The assert is misleading because it implies `decode` could be reached with `zstd=None`. Remove it or replace with a comment.",
+      "line_start": 365,
+      "line_end": 366,
+      "severity": "minor",
+      "title": "Missing conditional removal of 'zstd' from SUPPORTED_DECODERS when zstd is unavailable",
+      "detail": "After `SUPPORTED_DECODERS` is defined, there is a guard `if brotli is None: SUPPORTED_DECODERS.pop('br')`. There is no analogous `if zstd is False: SUPPORTED_DECODERS.pop('zstd')`. Without it, if the zstandard library is absent or too old, a request with `Content-Encoding: zstd` will attempt to instantiate `ZStandardDecoder`, which will raise an `ImportError` rather than gracefully falling back to identity decoding. The brotli pattern should be followed.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_decoders.py",
+      "line_start": 167,
+      "line_end": 173,
+      "severity": "minor",
+      "title": "`test_decoding_errors` does not include zstd",
+      "detail": "Line 167: `@pytest.mark.parametrize(\"header_value\", (b\"deflate\", b\"gzip\", b\"br\"))` does not include `b\"zstd\"`. A test verifying that invalid zstd-encoded bytes raise `httpx.DecodingError` is missing.",
       "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_compat.py",
+      "line_start": 24,
+      "line_end": 25,
+      "severity": "minor",
+      "title": "zstd sentinel value uses False instead of None for consistency",
+      "detail": "For brotli, the sentinel for 'not available' is `None`. For zstd it is `False`. This inconsistency means `_decoders.py` checks `if zstd is False` while brotli checks `if brotli is None`. The mixed convention increases cognitive load and could cause bugs if code like `if not zstd` is introduced later (since `None` and `False` both evaluate falsy, but `if zstd is None` would not catch `False`). Using `None` would be consistent with the brotli pattern and safer.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_compat.py",
+      "line_start": 60,
+      "line_end": 60,
+      "severity": "minor",
+      "title": "`zstd` not added to `__all__`",
+      "detail": "`__all__` currently only exports `['brotli', 'set_minimum_tls_version_1_2']`. The new `zstd` symbol is imported in `_decoders.py` as `from ._compat import brotli, zstd`, so it works, but omitting it from `__all__` is inconsistent and could cause confusion about the public API of the module.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_compat.py",
+      "line_start": 31,
+      "line_end": 35,
+      "severity": "minor",
+      "title": "Version check regex could fail if __version__ has no minor component",
+      "detail": "`re.search(r\"^([0-9]+)\\.([0-9]+)\", zstd.__version__)` will return `None` if `__version__` somehow has no dot (e.g. `\"1\"`), causing a `NoneType has no attribute 'groups'` AttributeError on line 32. While unlikely for a real release, the `# type: ignore[union-attr]` suppresses the warning rather than handling it. A guard like `if m is None: zstd = False` would be safer. (urllib3 has the same pattern, so this is low priority.)",
+      "confidence": 0.6
     }
   ],
   "agent_runs": [
@@ -125,149 +105,125 @@
       "findings": [
         {
           "agent": "baseline",
-          "file": "httpx/_decoders.py",
+          "file": "tests/test_decoders.py",
           "line_range": [
-            161,
-            172
+            149,
+            157
           ],
           "severity": "major",
-          "title": "`ZStandardDecoder.decode` can silently drop data when a skippable frame is the *last* frame",
-          "detail": "The multi-frame loop condition is `while self.decompressor.eof and self.decompressor.unused_data`. If the zstd stream ends with a skippable frame that itself is followed by no further data, `unused_data` will be non-empty but after reassigning `self.decompressor` and calling `decompress(unused_data)` on it, the skippable frame may be consumed and the NEW decompressor will have `eof=False` (it saw a skippable frame, not a full zstd stream end). On the next iteration the loop exits, and `flush()` will then see `eof=False` and raise `DecodingError`. This exact edge case is partly masked by `# pragma: no cover` on the `flush` raise. The existing `test_zstd_multiframe` test only covers the case where a skippable frame appears *between* two regular frames. A test with a trailing skippable frame is missing and the behaviour is unspecified.",
-          "confidence": 0.7
+          "title": "`test_empty_content` and `test_decoders_empty_cases` do not include zstd",
+          "detail": "Lines 149 and 160: both `@pytest.mark.parametrize` lists cover `b\"deflate\", b\"gzip\", b\"br\", b\"identity\"` but not `b\"zstd\"`. The `ZStandardDecoder.flush()` will raise `DecodingError` on an empty body (since `eof` will be False), so this is both a missing test and evidence of a real bug.",
+          "confidence": 0.95
         },
         {
           "agent": "baseline",
           "file": "httpx/_decoders.py",
           "line_range": [
-            174,
-            178
+            171,
+            175
           ],
           "severity": "major",
-          "title": "`ZStandardDecoder.flush` incorrectly rejects valid streams that end with a skippable frame",
-          "detail": "`flush()` checks `if not self.decompressor.eof` and raises `DecodingError(\"Zstandard data is incomplete\")`. After processing a multi-frame stream in `decode()`, `self.decompressor` points to the *last* freshly-created decompressor that consumed `unused_data`. If that unused_data was a skippable frame, its decompressor's `eof` will be `False` (a skippable frame is not a complete zstd stream), causing a spurious error. The `# pragma: no cover` comment hides this from the test suite.",
-          "confidence": 0.7
+          "title": "flush() raises DecodingError on empty/no-data response for zstd",
+          "detail": "When no data has been received at all (e.g. a 204 No Content with `Content-Encoding: zstd`), `self.decompressor.eof` will be False (no stream has been started) and `flush()` will raise `DecodingError(\"Zstandard data is incomplete\")`. Compare with `BrotliDecoder.flush()` which has an explicit `if not self.seen_data: return b\"\"` guard. The existing `test_empty_content` test does not include `b\"zstd\"` in its parametrize list, which confirms this case is untested and broken.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            163,
+            166
+          ],
+          "severity": "major",
+          "title": "Multi-frame zstd decoding loop may be incorrect when data is chunked across frames",
+          "detail": "The loop `while self.decompressor.eof and self.decompressor.unused_data` re-creates a new decompressor for additional frames in the `unused_data`. However, if `decompress()` is called with data that only partially covers a second frame (i.e. the second frame isn't complete in this chunk), `self.decompressor.eof` will be False and `unused_data` will be empty. The remaining partial bytes are lost \u2014 they are neither stored nor handled. In practice, multi-frame zstd responses will rarely be encountered, but for responses streamed in small chunks, this will silently corrupt or truncate data. The correct approach (as done in urllib3) is to track remaining/unused bytes across `decode()` calls so that they are prepended to the next chunk.",
+          "confidence": 0.8
         },
         {
           "agent": "baseline",
           "file": "httpx/_decoders.py",
           "line_range": [
             153,
-            157
+            156
           ],
           "severity": "minor",
-          "title": "Truncated / placeholder error message in `ZStandardDecoder.__init__`",
-          "detail": "The `ImportError` message reads `\"Using 'ZStandardDecoder', ...\"` where `...` is a literal ellipsis. Compare with the analogous `BrotliDecoder` message which explains the problem clearly: `\"Using 'BrotliDecoder', but neither of the 'brotlicffi' or 'brotli' packages have been installed.\"`. The zstd message appears to be an unfinished draft and will be confusing to users who haven't installed `zstandard`.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_decoders.py",
-          "line_range": [
-            185,
-            200
-          ],
-          "severity": "minor",
-          "title": "`test_empty_content` and `test_decoders_empty_cases` parametrizations do not include `zstd`",
-          "detail": "The parametrized tests on lines 185 and 196 only include `b\"deflate\"`, `b\"gzip\"`, `b\"br\"`, and `b\"identity\"`. The new `zstd` decoder is not included, so empty-body behaviour and empty-decode behaviour for zstd are untested. `ZStandardDecoder.decode(b\"\")` and `ZStandardDecoder.flush()` on a never-decoded stream are not exercised.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "baseline",
-          "file": "httpx/_compat.py",
-          "line_range": [
-            63,
-            63
-          ],
-          "severity": "minor",
-          "title": "`zstd` missing from `__all__`",
-          "detail": "`__all__` at the bottom of `_compat.py` only lists `[\"brotli\", \"set_minimum_tls_version_1_2\"]`. The newly added `zstd` symbol is imported by `_decoders.py` via `from ._compat import brotli, zstd`, so the omission from `__all__` doesn't break anything at runtime, but it is inconsistent with the pattern used for `brotli` and could confuse future readers/tools.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "baseline",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            174,
-            178
-          ],
-          "severity": "minor",
-          "title": "`ZStandardDecoder.flush` returns `bytes(ret)` where `ret` is already `bytes`",
-          "detail": "`self.decompressor.flush()` returns `bytes` (it's a no-op, documented to return `b\"\"`). Wrapping it again in `bytes(ret)` is redundant. Returning `ret` directly (or just `b\"\"`) is cleaner and avoids a needless copy.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_decoders.py",
-          "line_range": [
-            203,
-            212
-          ],
-          "severity": "minor",
-          "title": "`test_decoding_errors` parametrization does not include `zstd`",
-          "detail": "The parametrized decoding-error test only covers `deflate`, `gzip`, and `br`. Adding `b\"zstd\"` would verify that `DecodingError` is raised consistently from `ZStandardDecoder`, which is the pattern established by the existing `test_zstd_decoding_error` test but through a different code-path (the streaming one used by `test_decoding_errors`).",
-          "confidence": 0.85
-        },
-        {
-          "agent": "baseline",
-          "file": "httpx/_compat.py",
-          "line_range": [
-            27,
-            27
-          ],
-          "severity": "minor",
-          "title": "Catching `AttributeError` and `ValueError` on `import zstandard` is over-broad",
-          "detail": "`except (AttributeError, ImportError, ValueError)` \u2014 catching `AttributeError` and `ValueError` during an import statement is unusual. A bare `import` can only raise `ImportError` (or a subclass such as `ModuleNotFoundError`). The extra exception types copied from urllib3's implementation may make sense there because they guard additional code, but here the try-block only contains `import zstandard as zstd`, so the extra catches are never triggered and only add noise. If the intent is defensive, a comment explaining *when* these could fire would help.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_decoders.py",
-          "line_range": [
-            92,
-            100
-          ],
-          "severity": "minor",
-          "title": "`test_zstd_decoding_error` passes a `str` as `content`, not invalid zstd bytes",
-          "detail": "`compressed_body = \"this_is_not_zstd_compressed_data\"` is a plain `str`, not `bytes`. httpx's `Response(content=...)` accepts `str` as a content type? Checking `_content.py` would confirm, but if it does it may encode it as UTF-8 and that UTF-8 encoding might coincidentally fail zstd decompression for the wrong reason, or the test might be relying on an incidental codepath. The test should use `b\"this_is_not_zstd_compressed_data\"` (a bytes literal) to clearly express intent and avoid any accidental pass-through.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "baseline",
-          "file": "CHANGELOG.md",
-          "line_range": [
-            9,
-            9
-          ],
-          "severity": "nit",
-          "title": "CHANGELOG `## Added` section is missing `###` prefix",
-          "detail": "The existing CHANGELOG headings use three-hash `###` (e.g., `### Fixed`, `### Added`, `### Deprecated`), but the new entry uses two-hash `## Added`. This breaks the section hierarchy.",
+          "title": "Incomplete error message in ZStandardDecoder.__init__",
+          "detail": "The ImportError message reads `\"Using 'ZStandardDecoder', ...\"`. The `...` truncation leaves out the explanation of the problem (the package is not installed or is too old). Compare with the BrotliDecoder message which is complete. This should say something like \"Using 'ZStandardDecoder', but the 'zstandard' package (>= 0.18.0) is not installed.\"",
           "confidence": 0.95
         },
         {
           "agent": "baseline",
           "file": "httpx/_decoders.py",
           "line_range": [
-            162,
-            162
+            365,
+            366
           ],
-          "severity": "nit",
-          "title": "Redundant `assert zstd is not None` in `decode`",
-          "detail": "`__init__` already raises `ImportError` if `zstd is None`, so by the time `decode` is ever called, `zstd` is guaranteed to be non-None. The assert is misleading because it implies `decode` could be reached with `zstd=None`. Remove it or replace with a comment.",
+          "severity": "minor",
+          "title": "Missing conditional removal of 'zstd' from SUPPORTED_DECODERS when zstd is unavailable",
+          "detail": "After `SUPPORTED_DECODERS` is defined, there is a guard `if brotli is None: SUPPORTED_DECODERS.pop('br')`. There is no analogous `if zstd is False: SUPPORTED_DECODERS.pop('zstd')`. Without it, if the zstandard library is absent or too old, a request with `Content-Encoding: zstd` will attempt to instantiate `ZStandardDecoder`, which will raise an `ImportError` rather than gracefully falling back to identity decoding. The brotli pattern should be followed.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            167,
+            173
+          ],
+          "severity": "minor",
+          "title": "`test_decoding_errors` does not include zstd",
+          "detail": "Line 167: `@pytest.mark.parametrize(\"header_value\", (b\"deflate\", b\"gzip\", b\"br\"))` does not include `b\"zstd\"`. A test verifying that invalid zstd-encoded bytes raise `httpx.DecodingError` is missing.",
           "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            24,
+            25
+          ],
+          "severity": "minor",
+          "title": "zstd sentinel value uses False instead of None for consistency",
+          "detail": "For brotli, the sentinel for 'not available' is `None`. For zstd it is `False`. This inconsistency means `_decoders.py` checks `if zstd is False` while brotli checks `if brotli is None`. The mixed convention increases cognitive load and could cause bugs if code like `if not zstd` is introduced later (since `None` and `False` both evaluate falsy, but `if zstd is None` would not catch `False`). Using `None` would be consistent with the brotli pattern and safer.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            60,
+            60
+          ],
+          "severity": "minor",
+          "title": "`zstd` not added to `__all__`",
+          "detail": "`__all__` currently only exports `['brotli', 'set_minimum_tls_version_1_2']`. The new `zstd` symbol is imported in `_decoders.py` as `from ._compat import brotli, zstd`, so it works, but omitting it from `__all__` is inconsistent and could cause confusion about the public API of the module.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            31,
+            35
+          ],
+          "severity": "minor",
+          "title": "Version check regex could fail if __version__ has no minor component",
+          "detail": "`re.search(r\"^([0-9]+)\\.([0-9]+)\", zstd.__version__)` will return `None` if `__version__` somehow has no dot (e.g. `\"1\"`), causing a `NoneType has no attribute 'groups'` AttributeError on line 32. While unlikely for a real release, the `# type: ignore[union-attr]` suppresses the warning rather than handling it. A guard like `if m is None: zstd = False` would be safer. (urllib3 has the same pattern, so this is low priority.)",
+          "confidence": 0.6
         }
       ],
       "tool_calls": 4,
-      "tokens_in": 121475,
-      "tokens_out": 2346,
-      "cost_usd": 0.399615,
-      "duration_s": 50.79409049986862,
+      "tokens_in": 115448,
+      "tokens_out": 1966,
+      "cost_usd": 0.375834,
+      "duration_s": 39.38888520793989,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 121475,
-    "tokens_out": 2346,
-    "cost_usd": 0.399615,
-    "duration_s": 50.8
+    "tokens_in": 115448,
+    "tokens_out": 1966,
+    "cost_usd": 0.375834,
+    "duration_s": 39.4
   }
 }

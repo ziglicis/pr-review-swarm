@@ -2,50 +2,70 @@
   "case": "requests_2523",
   "experiment": "no-tools",
   "pr_url": "https://github.com/psf/requests/pull/2523",
-  "head_sha": "5a69137ac871c38f4597b574e93de07d9ff9655f",
+  "head_sha": "36dea434065fa174105ac220152d94f7a39827b5",
   "sha_matches_dataset": true,
-  "timestamp": 1784181850,
-  "summary": "This PR refactors HTTPDigestAuth to store per-request state in thread-local storage, making the class safe for concurrent use. While the overall approach is sound, there are several correctness and security issues with the initialization of thread-local state (particularly `num_401_calls` being set to `None` instead of `1`), gaps in test coverage, and minor style issues in both the implementation and tests.",
+  "timestamp": 1784589914,
+  "summary": "This PR refactors `HTTPDigestAuth` to use `threading.local` for per-thread state, making it safe for concurrent use. While the intent is sound, several correctness issues exist around uninitialized or mis-initialized thread-local state (particularly `num_401_calls` being set to `None` instead of `1`, and missing guards in hook handlers), the threaded test has structural weaknesses (silent skipping, incomplete assertions), and there are style/coverage gaps. The critical and major issues should be addressed before merging.",
   "findings": [
-    {
-      "agent": "correctness, security",
-      "file": "requests/auth.py",
-      "line_start": 78,
-      "line_end": 78,
-      "severity": "critical",
-      "title": "num_401_calls initialized to None \u2014 causes TypeError in handle_401 and bypasses 401-loop guard",
-      "detail": "In `init_per_thread_state()`, `self._thread_local.num_401_calls` is set to `None` (line 78). However, `handle_401()` at line 179 evaluates `self._thread_local.num_401_calls < 2` and at line 181 performs `+= 1`. In Python 3, `None < 2` raises a `TypeError`, crashing the request. In Python 2 it silently evaluates to `True`, bypassing the infinite-401-loop guard and potentially allowing a malicious server to drive the client into an unbounded authentication loop.\n\nAlthough `__call__` (line 220) resets `num_401_calls = 1` unconditionally, this happens *after* the response hooks are registered (lines 218\u2013219). Within a single synchronous thread this ordering is safe because the response fires after `__call__` completes \u2014 but `init_per_thread_state` is the entry point for brand-new threads, and any code path that reaches `handle_401` on a thread whose `__call__` has not yet executed will encounter the `None` value. The fix is straightforward: initialize `num_401_calls` to `1` (not `None`) in `init_per_thread_state()`, matching the behavior of `handle_redirect` and the assignment in `__call__`.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "test_coverage",
-      "file": "test_requests.py",
-      "line_start": 419,
-      "line_end": 433,
-      "severity": "major",
-      "title": "Threaded test silently skipped when ThreadPool unavailable, no status-code assertion, and no isolation of per-thread state verified",
-      "detail": "The entire threaded test body is wrapped in `if ThreadPool is not None:`, so in environments where `multiprocessing.pool.ThreadPool` is unavailable the test passes vacuously without executing any assertions \u2014 making CI green while providing zero coverage.\n\nAdditionally, the test only asserts on the `Authorization` header format (`'auth' in header`) but never asserts `r.status_code == 200`. An authentication failure (e.g., a 401 due to wrong credentials) would not be caught.\n\nFinally, the test does not verify the core thread-safety invariant: that separate threads maintain independent `num_401_calls` counters and that `init_per_thread_state` is truly idempotent within a thread and independent across threads. The redirect counter reset path (`handle_redirect`) also has no concurrent-request test coverage.\n\nRecommendations: use `@pytest.mark.skipif` / `unittest.skipUnless` for the ThreadPool guard; add `assert r.status_code == 200`; add a test that concurrently sends requests where one thread receives a 401 retry and another does not, and verify each thread's counter independently.",
-      "confidence": 0.88
-    },
     {
       "agent": "correctness, security",
       "file": "requests/auth.py",
       "line_start": 70,
       "line_end": 78,
-      "severity": "major",
-      "title": "Per-thread state initialized only once per thread \u2014 stale credentials/nonce may persist across requests in thread-pool scenarios",
-      "detail": "**Reviewer disagreement.** The `hasattr(self._thread_local, 'init')` guard in `init_per_thread_state()` means that on a thread which has already processed one digest-auth exchange, all subsequent calls (e.g. from a thread-pool worker handling a new unrelated request) will skip re-initialization of `last_nonce`, `chal`, `pos`, and `nonce_count`. These fields are permanently frozen to the first-ever values seen by that thread.\n\nWhile `num_401_calls` is safely reset in `__call__` (line 220), the other fields are not. This means a thread-pool thread could reuse a `chal` dict or nonce count from a completely different server session, potentially sending stale or incorrect credentials. The intent to support nonce reuse within a single session is reasonable, but the current implementation does not distinguish between reuse within a session and reuse across entirely different sessions/servers. At minimum, the design decision and its trade-offs should be clearly documented; ideally, `__call__` should reset `chal` and `last_nonce` per request.\n\nNote: one reviewer considered this an intentional nonce-reuse optimization (not a regression vs. the original code); the other flagged it as a logical security issue. Both agree the behavior is present \u2014 the disagreement is on severity.",
-      "confidence": 0.75
+      "severity": "critical",
+      "title": "num_401_calls initialized to None instead of 1, causing TypeError on comparison in handle_401",
+      "detail": "In `init_per_thread_state`, `self.tl.num_401_calls` is set to `None` (line 78). In `handle_401`, the code reads and compares this value with `< 2` (line 180) and later increments it with `+= 1` (line 182). If `handle_401` fires before `__call__` sets `num_401_calls = 1` (line 221) \u2014 or if the thread-local is initialized via `init_per_thread_state` but `__call__` hasn't run yet \u2014 the comparison `None < 2` raises a `TypeError` in Python 3 (and produces undefined ordering in Python 2), and `None += 1` raises a `TypeError` unconditionally. The original code defensively used `getattr(self, 'num_401_calls', 1)` precisely to guard against this; both that guard and the `__init__` default of `1` have been removed without an equivalent replacement. Fix: initialize `self.tl.num_401_calls = 1` (not `None`) in `init_per_thread_state`.",
+      "confidence": 0.92
     },
     {
-      "agent": "security",
+      "agent": "style, test_coverage",
+      "file": "test_requests.py",
+      "line_start": 430,
+      "line_end": 432,
+      "severity": "major",
+      "title": "Threaded test silently skips and never asserts HTTP 200 status",
+      "detail": "The entire test body is wrapped in `if ThreadPool is not None`, meaning the test always reports as passing even when `ThreadPool` is unavailable \u2014 giving a false sense of coverage. Other tests in the file that require optional infrastructure use `pytest.mark.skipif` or `unittest.skipIf` to produce an explicit skip signal. Additionally, the test only asserts that the `Authorization` header contains `\"auth\"` but never asserts `r.status_code == 200`, leaving the case where all threads actually receive 401 responses undetected. Fix: use a proper skip decorator for the `ThreadPool` guard and add a status code assertion.",
+      "confidence": 0.88
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/auth.py",
+      "line_start": 70,
+      "line_end": 78,
+      "severity": "major",
+      "title": "No unit-level test for init_per_thread_state or per-thread attribute initialization",
+      "detail": "The new `init_per_thread_state` method and the per-thread `tl` attributes are only exercised indirectly through integration tests hitting a live server. There is no isolated test that: (a) calls `init_per_thread_state()` directly and verifies the correct initial values (especially `num_401_calls = 1`, not `None`), (b) verifies a second call on the same thread does NOT reinitialize, and (c) verifies a new thread gets a fresh, independent set of attributes. These cases are the core invariants of the thread-safety fix.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "correctness, security",
+      "file": "requests/auth.py",
+      "line_start": 165,
+      "line_end": 177,
+      "severity": "major",
+      "title": "handle_redirect and handle_401 access thread-local attributes without ensuring init_per_thread_state was called",
+      "detail": "`handle_redirect` (lines 165\u2013168) directly assigns `self.tl.num_401_calls = 1` without calling `init_per_thread_state()`, leaving all other thread-local attributes (`pos`, `chal`, `last_nonce`, `nonce_count`) potentially absent. `handle_401` (lines 170\u2013177) accesses `self.tl.pos` and `self.tl.num_401_calls` without calling `init_per_thread_state()` either. In any scenario where these hooks fire on a thread that has never executed `__call__` (e.g. internal redirect handling on a worker thread, or async/executor patterns), the missing attributes will raise `AttributeError`. Additionally, `handle_redirect` does not reset `last_nonce` or `chal`, which could allow digest credentials from one host to be reused after a redirect to a different host. Fix: call `init_per_thread_state()` at the top of both `handle_redirect` and `handle_401`, and consider clearing nonce/challenge state on cross-host redirects.",
+      "confidence": 0.82
+    },
+    {
+      "agent": "test_coverage",
       "file": "requests/auth.py",
       "line_start": 165,
       "line_end": 168,
       "severity": "major",
-      "title": "handle_redirect writes num_401_calls without calling init_per_thread_state \u2014 other thread-local fields may be uninitialized",
-      "detail": "`handle_redirect` directly assigns `self._thread_local.num_401_calls = 1` without first calling `init_per_thread_state()`. If the redirect hook fires on a thread that has never executed `__call__` (possible if the hook is registered on one thread but dispatched on another), `self._thread_local` will not have `last_nonce`, `chal`, `pos`, or `nonce_count` set. Any subsequent call to `build_digest_header` or `handle_401` on that thread will raise an `AttributeError`. `handle_redirect` should call `init_per_thread_state()` at its entry point, just as `handle_401` and `__call__` should.",
-      "confidence": 0.7
+      "title": "handle_redirect resetting tl.num_401_calls is not covered by any test",
+      "detail": "The `handle_redirect` branch that resets `self.tl.num_401_calls = 1` is not exercised by any existing test \u2014 neither the threaded test nor the non-threaded digest tests follow a redirect through `handle_redirect`. There is no test that performs a redirect while using `HTTPDigestAuth` and asserts that `num_401_calls` is reset to `1` afterward.",
+      "confidence": 0.82
+    },
+    {
+      "agent": "style",
+      "file": "requests/auth.py",
+      "line_start": 68,
+      "line_end": 68,
+      "severity": "minor",
+      "title": "Opaque attribute name `tl` for thread-local storage",
+      "detail": "The new threading.local container is named `tl`, which is an unexplained abbreviation. The rest of the file uses full, descriptive attribute names. A name like `_thread_local` or `_local` would be more readable and self-documenting, and the leading underscore would signal that it is an implementation detail not intended for external access.",
+      "confidence": 0.9
     },
     {
       "agent": "style",
@@ -53,19 +73,39 @@
       "line_start": 70,
       "line_end": 78,
       "severity": "minor",
-      "title": "Sentinel attribute 'init' is too generic \u2014 prefer a more descriptive name",
-      "detail": "The attribute `self._thread_local.init` used as the initialization sentinel is vague and easy to confuse with Python's `__init__`. A more descriptive name such as `_initialized` would better communicate intent and is consistent with the project's convention of using underscores for private implementation details (e.g., `self._thread_local`).",
-      "confidence": 0.8
+      "title": "init_per_thread_state should be a private method (underscore prefix)",
+      "detail": "`init_per_thread_state` is a purely internal initialization helper with no intended public interface. Python convention signals implementation-detail methods with a leading underscore (e.g. `_init_per_thread_state`). Without it, the method appears to be part of the public API, which is inconsistent with the intent and could confuse downstream users who subclass `HTTPDigestAuth`.",
+      "confidence": 0.75
     },
     {
-      "agent": "correctness, test_coverage",
-      "file": "test_requests.py",
-      "line_start": 419,
-      "line_end": 433,
+      "agent": "test_coverage",
+      "file": "requests/auth.py",
+      "line_start": 170,
+      "line_end": 221,
       "severity": "minor",
-      "title": "Threaded test missing coverage for file-body (pos) isolation and num_401_calls >= 2 branch in concurrent scenarios",
-      "detail": "The new `__call__` method tracks `self._thread_local.pos` from `r.body.tell()` for seekable bodies. No test exercises concurrent requests with file-like bodies to confirm `pos` is isolated per thread. Similarly, the `else` branch of `handle_401` (line 201), which fires when the server keeps returning 401 beyond the retry limit, is not tested in any multi-threaded scenario. These branches could interact with shared-auth-object state in subtle ways that would not be caught by the current test suite.",
+      "title": "Per-thread num_401_calls counter invariants lack threaded and sequential-reuse test coverage",
+      "detail": "Two important behavioral invariants of the per-thread counter have no test coverage: (1) two concurrent threads each independently reaching the `num_401_calls >= 2` guard (verifying isolation between threads, the core promise of the PR), and (2) sequential reuse of the same `HTTPDigestAuth` instance on the same thread after a failed auth left the counter above 1, verifying that `__call__` correctly resets it for the next request. The existing non-threaded `test_DIGESTAUTH_WRONG_HTTP_401_GET` only exercises the single-threaded path with the old instance-level attribute.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "security",
+      "file": "requests/auth.py",
+      "line_start": 70,
+      "line_end": 78,
+      "severity": "minor",
+      "title": "Thread-local init guard permanently suppresses re-initialization; stale nonce state carried over between sessions",
+      "detail": "The `hasattr(self.tl, 'init')` guard in `init_per_thread_state` is set once and never cleared, meaning re-initialization is permanently suppressed for the lifetime of the thread. When the same `HTTPDigestAuth` object is reused across different sessions on the same thread (a documented pattern), stale `last_nonce`, `chal`, or `nonce_count` values from a previous session are silently carried over. This could cause the client to skip the 401 handshake and send a digest built with a server-rejected nonce, potentially leaking credentials or enabling replay if the server accepts old nonces. Consider clearing or resetting relevant state at the start of each `__call__` invocation rather than relying solely on the once-per-thread guard.",
       "confidence": 0.7
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/auth.py",
+      "line_start": 219,
+      "line_end": 221,
+      "severity": "minor",
+      "title": "num_401_calls reset to 1 occurs after hook registration, subtle ordering difference from original",
+      "detail": "Every call to `__call__` registers fresh `handle_401` and `handle_redirect` hooks and then sets `self.tl.num_401_calls = 1`. In the original code, `num_401_calls` started at `1` from `__init__` and was reset there, so there was no window between hook registration and counter initialization. In the new code, if a hook somehow fires in the narrow window between hook registration (line 219) and the reset (line 221), it will see the stale counter value from the previous request. While this is unlikely under normal synchronous use, it is a subtle ordering difference worth documenting or fixing by moving the reset before hook registration.",
+      "confidence": 0.5
     },
     {
       "agent": "style",
@@ -73,39 +113,29 @@
       "line_start": 424,
       "line_end": 424,
       "severity": "nit",
-      "title": "Missing spaces around `=` in keyword argument",
-      "detail": "`session.auth=auth` should be `session.auth = auth` to conform to PEP 8 and match the surrounding code style, where assignment operators consistently have spaces on both sides.",
+      "title": "Missing spaces around `=` in keyword argument assignment",
+      "detail": "`session.auth=auth` is missing spaces around the `=`. PEP 8 and the surrounding test code use spaces for regular assignments: `session.auth = auth`.",
       "confidence": 0.95
     },
     {
       "agent": "style",
+      "file": "requests/auth.py",
+      "line_start": 72,
+      "line_end": 73,
+      "severity": "nit",
+      "title": "Sentinel attribute `tl.init` is not descriptive",
+      "detail": "The flag `self.tl.init = True` / `hasattr(self.tl, 'init')` used to guard re-initialization would be clearer as `self.tl.initialized` or `self.tl._initialized`, making the intent immediately apparent without requiring the reader to infer it from context.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "style",
       "file": "test_requests.py",
-      "line_start": 427,
+      "line_start": 429,
       "line_end": 429,
       "severity": "nit",
-      "title": "`do_request` returns literal `1` that is never used",
-      "detail": "`pool.map` collects return values but the result is discarded. The `return 1` statement is dead/misleading. The helper should simply return nothing (`return` or omit the statement entirely), consistent with other helper functions in the test suite.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "style",
-      "file": "test_requests.py",
-      "line_start": 419,
-      "line_end": 433,
-      "severity": "nit",
-      "title": "Test method style: missing blank line after `def`, and skip-guard should use a decorator rather than an inline conditional",
-      "detail": "Two style issues: (1) `test_DIGESTAUTH_THREADED` has no blank line between the `def` line and the first statement, unlike sibling tests (e.g., `test_DIGESTAUTH_QUOTES_QOP_VALUE`). (2) The `if ThreadPool is not None:` guard buries the actual assertions inside a conditional at the bottom of the method, making the skip condition invisible at a glance. Prefer `@pytest.mark.skipif` or `unittest.skipUnless` so the guard is declared at the function level and the test body stays flat.",
-      "confidence": 0.8
-    },
-    {
-      "agent": "style",
-      "file": "requests/auth.py",
-      "line_start": 67,
-      "line_end": 68,
-      "severity": "nit",
-      "title": "Comment phrasing differs from surrounding descriptive style",
-      "detail": "The comment `# Keep state in per-thread local storage` uses imperative phrasing. The surrounding inline comments in the file are descriptive (e.g., `# lambdas assume digest modules are imported at the top level`). Prefer `# State is kept in per-thread local storage` for consistency.",
-      "confidence": 0.5
+      "title": "Returning magic literal `1` from `do_request` serves no apparent purpose",
+      "detail": "`do_request` returns `1`, but the return value of `pool.map` is never used. This makes the reader wonder whether the constant has some significance. Either drop the `return` statement (implicitly returning `None` is fine for `pool.map`) or add a comment explaining why it exists.",
+      "confidence": 0.85
     }
   ],
   "agent_runs": [
@@ -117,56 +147,56 @@
           "agent": "correctness",
           "file": "requests/auth.py",
           "line_range": [
-            78,
-            78
+            177,
+            180
           ],
-          "severity": "major",
-          "title": "num_401_calls initialized to None instead of 1",
-          "detail": "In init_per_thread_state(), self._thread_local.num_401_calls is set to None (line 78). However, handle_401() at line 179 compares it with `< 2` and at line 181 increments it with `+= 1`. Both operations will raise a TypeError when num_401_calls is None. The original code initialized it to 1, and the new __call__ method correctly sets it to 1 at line 220, but init_per_thread_state() is the only initialization path for a new thread \u2014 if handle_401 or handle_redirect is somehow called before __call__ completes the assignment at line 220 (or if the state is checked before that point), this None value is dangerous. More critically, handle_redirect (line 168) sets num_401_calls = 1, not None, so the asymmetry is intentional \u2014 but the initial value of None in init_per_thread_state means that if handle_401 is triggered on a thread where __call__ has not yet reached line 220, it will attempt `None < 2` and crash. The initialization in init_per_thread_state should be 1, not None, to be safe.",
-          "confidence": 0.85
+          "severity": "critical",
+          "title": "num_401_calls is None when handle_401 is first entered, causing TypeError on comparison",
+          "detail": "In `init_per_thread_state`, `self.tl.num_401_calls` is initialized to `None` (line 78). In `__call__`, it is set to `1` at line 221 \u2014 but only AFTER `r.register_hook('response', self.handle_401)` is registered at line 219. The `handle_401` method reads `self.tl.num_401_calls` at line 177 and then compares it with `< 2` at line 180. If `handle_401` is somehow invoked on a thread before `__call__` sets it to `1` (e.g. a redirect hook fires before the assignment), the value will be `None` and `None < 2` raises a `TypeError` in Python 3. More importantly, the original code initialised `num_401_calls = 1` in `__init__` and used `getattr(self, 'num_401_calls', 1)` as a safety fallback; both safety nets are now gone. The fix is to initialize `self.tl.num_401_calls = 1` (not `None`) in `init_per_thread_state`, mirroring the original default.",
+          "confidence": 0.9
         },
         {
           "agent": "correctness",
           "file": "requests/auth.py",
           "line_range": [
-            70,
-            78
+            165,
+            168
           ],
           "severity": "major",
-          "title": "Per-thread state initialized only once per thread \u2014 never resets on reuse across requests",
-          "detail": "init_per_thread_state() guards all initialization behind `if not hasattr(self._thread_local, 'init')`, meaning state (last_nonce, nonce_count, chal, pos) is only ever initialized once per thread per auth object lifetime. If the same HTTPDigestAuth object is reused across many sequential requests on the same thread (which is the common case), the state from a previous request persists correctly \u2014 but crucially, if a thread pool reuses threads (which ThreadPool does), the `init` guard means a recycled thread will NOT reinitialize state. This is intentional for nonce reuse, but it means `chal` from a previous request on the same thread is used for the next request's initial call to build_digest_header (line 209), which may be stale or from a different realm/server. The original code reset chal={} only in __init__, so this is not a regression per se, but it's worth noting the 'init once' guard can mask reuse bugs. The more concrete issue: num_401_calls is set to 1 in __call__ (line 220) unconditionally, but last_nonce, nonce_count, chal, and pos are never reset per-request \u2014 this is correct for nonce reuse, but if `init` guard fires only once, a second request on the same thread that gets a new 401 challenge will operate on whatever chal was set from the previous request's 401 handling, which may be correct (handle_401 updates chal) but the flow relies on handle_401 always being called before build_digest_header on the auth retry path.",
-          "confidence": 0.5
+          "title": "handle_redirect accesses self.tl.num_401_calls without guaranteeing init_per_thread_state was called first",
+          "detail": "`handle_redirect` (line 165-168) directly writes `self.tl.num_401_calls = 1` without calling `init_per_thread_state()`. If a redirect response is processed on a thread that has never called `__call__` (and thus never called `init_per_thread_state`), the attribute will be set, but the other thread-local attributes (`pos`, `chal`, `last_nonce`, `nonce_count`) will be missing. A subsequent call to `handle_401` or `build_digest_header` on that same thread will then raise an `AttributeError`. `init_per_thread_state()` should be called at the top of both `handle_redirect` and `handle_401`.",
+          "confidence": 0.8
         },
         {
           "agent": "correctness",
           "file": "requests/auth.py",
           "line_range": [
-            206,
-            220
+            170,
+            177
           ],
           "severity": "major",
-          "title": "num_401_calls reset happens AFTER hooks are registered, not before \u2014 race window",
-          "detail": "In __call__, the hooks are registered at line 218-219 (`r.register_hook('response', self.handle_401)` and `r.register_hook('response', self.handle_redirect)`), and num_401_calls is only set to 1 at line 220, AFTER the hooks are registered. While in practice the response hooks are called after the request completes, in the threaded case the ordering within a single thread is: register hooks, set num_401_calls=1, send request. This is fine for the single-thread flow, but note that handle_redirect sets num_401_calls=1 (line 168) and init_per_thread_state sets it to None (line 78). If a redirect response arrives and handle_redirect fires on a thread where num_401_calls is still None (from init), before __call__ reaches line 220, then handle_401 could see num_401_calls=1 (set by handle_redirect) which is correct. However, if handle_401 fires before handle_redirect on a fresh thread (num_401_calls=None from init), `None < 2` raises TypeError. In practice, request sending is synchronous so this race does not exist within a single thread's __call__, but the None initialization is still dangerous.",
-          "confidence": 0.7
+          "title": "handle_401 accesses thread-local attributes without guaranteeing init_per_thread_state was called",
+          "detail": "Similarly to `handle_redirect`, `handle_401` directly accesses `self.tl.pos` (line 173) and `self.tl.num_401_calls` (line 177) without first calling `init_per_thread_state()`. In a scenario where a response hook fires on a different thread than the one that made the original request (possible with some async/executor patterns), these attributes will not exist and an `AttributeError` will be raised. The guard `init_per_thread_state` should be called at the beginning of `handle_401` as well.",
+          "confidence": 0.75
         },
         {
           "agent": "correctness",
-          "file": "test_requests.py",
+          "file": "requests/auth.py",
           "line_range": [
-            419,
-            433
+            219,
+            221
           ],
           "severity": "minor",
-          "title": "Threaded test silently skipped when ThreadPool is None and does not assert status codes",
-          "detail": "The test_DIGESTAUTH_THREADED test only asserts on the Authorization header format ('auth' in header) but does not assert r.status_code == 200, meaning authentication failures (e.g., 401) would not be caught. Additionally, the test body is silently skipped entirely when ThreadPool is None (line 430), so this test provides no coverage in environments where ThreadPool is unavailable. The do_request function returns 1 but pool.map results are not checked for exceptions \u2014 in Python's ThreadPool.map, exceptions in worker threads are re-raised in the main thread, so that part is fine.",
-          "confidence": 0.75
+          "title": "num_401_calls is reset to 1 unconditionally at the end of __call__, after hooks are already registered",
+          "detail": "Every time `__call__` runs, `self.tl.num_401_calls = 1` is set at line 221 \u2014 after the hooks are registered. Because hooks accumulate (each `__call__` registers an additional `handle_401` and `handle_redirect` hook on the prepared request), and `num_401_calls` is reset to 1 every time, a thread that reuses the auth object makes multiple calls and could trigger unexpected behavior. While this is consistent with the original design, it is worth noting the reset happens after hook registration in the new code, which is a subtle ordering difference from the original where `num_401_calls` started at 1 from `__init__`. No immediate bug under normal use, but could mask double-firing.",
+          "confidence": 0.5
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 9139,
-      "tokens_out": 1317,
-      "cost_usd": 0.047172,
-      "duration_s": 28.53390650008805,
+      "tokens_in": 9067,
+      "tokens_out": 1078,
+      "cost_usd": 0.043371,
+      "duration_s": 20.058098166948184,
       "skip_or_error_reason": null
     },
     {
@@ -177,25 +207,25 @@
           "agent": "security",
           "file": "requests/auth.py",
           "line_range": [
-            72,
-            78
+            177,
+            182
           ],
           "severity": "major",
-          "title": "Thread-local state initialised only once per thread, stale state persists across reuse",
-          "detail": "init_per_thread_state() guards all initialisation with `if not hasattr(self._thread_local, 'init')`. Once a thread has initialised state, every subsequent call from the same thread (e.g. a thread-pool thread handling a new request) will reuse the old values (last_nonce, chal, pos, nonce_count) from a previous authentication exchange. This means a thread that already completed one digest-auth round will skip the initialisation of num_401_calls and the other fields on its next request, potentially sending stale credentials or an incorrect nonce count. The `num_401_calls` field in particular is reset to 1 in `__call__` (line 220) outside of `init_per_thread_state`, so that one field is safe, but `last_nonce`, `chal`, `pos`, and `nonce_count` are permanently frozen to the first-ever values seen by each thread. This is a logical security issue because a thread could re-use a nonce or chal dict from a completely different server/session.",
-          "confidence": 0.8
+          "title": "Uninitialized num_401_calls can cause AttributeError or None arithmetic",
+          "detail": "In `handle_401`, `self.tl.num_401_calls` is read (line 177) and then incremented (`self.tl.num_401_calls += 1`, line 182) without any guarantee that `init_per_thread_state()` has been called first on this thread for *this particular response hook invocation*. If a thread somehow reaches the hook without having gone through `__call__` (e.g. the hook is registered on a redirected request spawned internally by requests on a different thread), `self.tl` will not have the `num_401_calls` attribute and the code will raise `AttributeError`. The previous code defensively used `getattr(self, 'num_401_calls', 1)` (removed at line 175) precisely for this reason. The new code removes that guard without adding an equivalent one for the thread-local case. Additionally, `init_per_thread_state` sets `self.tl.num_401_calls = None` (line 78), and if `__call__` is not reached before `handle_401`, the `None < 2` comparison will silently evaluate to True in Python 2 (unpredictable ordering) or raise a TypeError in Python 3.",
+          "confidence": 0.85
         },
         {
           "agent": "security",
           "file": "requests/auth.py",
           "line_range": [
-            179,
-            181
+            70,
+            78
           ],
-          "severity": "critical",
-          "title": "AttributeError / bypass of 401-loop guard when num_401_calls is None",
-          "detail": "`init_per_thread_state()` sets `self._thread_local.num_401_calls = None` (line 78). The value is only reset to 1 at line 220 (at the end of `__call__`). However, `handle_401` (line 179) does `self._thread_local.num_401_calls < 2` before `__call__` has a chance to set it to 1 if the hook fires between construction and the first `__call__`. More critically, if any code path reaches `handle_401` before `__call__` sets the value (e.g., `handle_401` registered by a previous call and fired on a new thread where `init_per_thread_state` ran but `__call__` hasn't completed yet), comparing `None < 2` raises a `TypeError` in Python 3. In Python 2 this silently evaluates to `True` (None < 2), so the guard that prevents infinite 401 loops is bypassed, potentially allowing a server to drive the client into an infinite authentication loop.",
-          "confidence": 0.75
+          "severity": "minor",
+          "title": "Thread-local init guard relies on a writable sentinel \u2014 not truly thread-safe for reuse across sessions",
+          "detail": "The `init_per_thread_state` method uses `hasattr(self.tl, 'init')` as a once-per-thread guard. Because `threading.local` storage is per-thread *and* per-object this is correct for a single `HTTPDigestAuth` instance, but `tl.init = True` permanently suppresses re-initialization for the lifetime of that thread. If the same `HTTPDigestAuth` object is reused across different sessions on the same thread (a documented usage pattern), stale `last_nonce`, `chal`, or `nonce_count` values from a previous session are silently carried over. This is not a direct security vulnerability, but stale nonce state could cause the client to skip the 401 handshake and send a digest built with a server-rejected nonce, potentially leaking credentials or enabling replay if the server accepts old nonces.",
+          "confidence": 0.7
         },
         {
           "agent": "security",
@@ -205,16 +235,16 @@
             168
           ],
           "severity": "minor",
-          "title": "handle_redirect resets num_401_calls without ensuring thread-local is initialised",
-          "detail": "`handle_redirect` directly writes `self._thread_local.num_401_calls = 1` without calling `init_per_thread_state()`. If the redirect hook fires on a thread that has never gone through `__call__` (e.g. the hook was registered in another thread but fires in this one), `self._thread_local` will not have its attributes set yet and the write to `num_401_calls` may be the only initialisation that happens, leaving all other fields (last_nonce, chal, pos, nonce_count) uninitialised. A subsequent read in `build_digest_header` or `handle_401` will raise `AttributeError`.",
-          "confidence": 0.7
+          "title": "handle_redirect resets num_401_calls without calling init_per_thread_state",
+          "detail": "`handle_redirect` writes directly to `self.tl.num_401_calls = 1` (line 168) without ensuring the thread-local namespace has been initialized. If this hook fires on a thread that has never executed `__call__` (unlikely but possible in edge cases involving internal redirect handling on worker threads), it will raise an `AttributeError`. More importantly, it does not reset other thread-local state such as `last_nonce` or `chal`, which could allow a redirect to a different host to reuse digest credentials from the previous host.",
+          "confidence": 0.65
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 3663,
-      "tokens_out": 878,
-      "cost_usd": 0.024159,
-      "duration_s": 18.456177042098716,
+      "tokens_in": 3622,
+      "tokens_out": 845,
+      "cost_usd": 0.023541,
+      "duration_s": 16.979933582944795,
       "skip_or_error_reason": null
     },
     {
@@ -223,50 +253,14 @@
       "findings": [
         {
           "agent": "style",
-          "file": "test_requests.py",
+          "file": "requests/auth.py",
           "line_range": [
-            424,
-            424
-          ],
-          "severity": "nit",
-          "title": "Missing space around `=` in keyword argument assignment",
-          "detail": "`session.auth=auth` should be `session.auth = auth` to match the surrounding code style, where assignment operators consistently have spaces on both sides.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "test_requests.py",
-          "line_range": [
-            419,
-            433
+            68,
+            68
           ],
           "severity": "minor",
-          "title": "Test method body not separated from `def` line by a blank line \u2014 inconsistent with sibling tests",
-          "detail": "Looking at the existing tests (e.g. `test_DIGESTAUTH_QUOTES_QOP_VALUE` at line 415, `test_POSTBIN_GET_POST_FILES` at line 434), there is a blank line between the `def` line and the first statement of the test body. `test_DIGESTAUTH_THREADED` jumps straight into `auth = \u2026` without that separating blank line.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "style",
-          "file": "test_requests.py",
-          "line_range": [
-            430,
-            432
-          ],
-          "severity": "minor",
-          "title": "`if ThreadPool is not None` block not indented as body of test \u2014 guard floats at top level of method",
-          "detail": "The `if ThreadPool is not None:` guard and the two lines under it are at the same indentation level as the `def do_request` definition, making the test silently do nothing when `ThreadPool` is unavailable. More importantly, the style elsewhere wraps the skip condition at the top with a decorator or a single early return/skip, not by burying the actual assertion work inside a conditional at the bottom. Consider using `@pytest.mark.skipif` or `unittest.skipUnless` so the guard is visible at a glance and the test body stays flat.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "style",
-          "file": "test_requests.py",
-          "line_range": [
-            427,
-            429
-          ],
-          "severity": "nit",
-          "title": "`do_request` returns a literal `1` that is never used",
-          "detail": "`pool.map` collects return values but the result is discarded. The `return 1` is dead/misleading; the helper could simply return nothing (`return` or omit the statement entirely), consistent with other hook-style helpers in the test suite.",
+          "title": "Abbreviated/opaque attribute name `tl` for thread-local storage",
+          "detail": "The existing code uses full, descriptive attribute names (`last_nonce`, `nonce_count`, `chal`, `pos`, `num_401_calls`). The new attribute that holds all per-thread state is named `tl`, which is an opaque abbreviation. A name like `_thread_local` or `_local` would be more readable and self-documenting, consistent with the descriptive naming convention visible throughout the file.",
           "confidence": 0.9
         },
         {
@@ -277,28 +271,64 @@
             78
           ],
           "severity": "minor",
-          "title": "Guard attribute named `init` is too generic and collides with the namespace without a leading underscore",
-          "detail": "Using `self._thread_local.init` as the sentinel attribute for \"has this thread been initialised?\" is vague. A more self-describing name like `_initialized` or `initialized` would make the intent clearer at a glance. The existing code uses leading underscores for private implementation details (e.g. `self._thread_local`), so `_initialized` would be consistent.",
-          "confidence": 0.8
+          "title": "`init_per_thread_state` is a public method that is really an implementation detail",
+          "detail": "All other helper methods in `HTTPDigestAuth` that are not part of the public API follow the convention used by the rest of the codebase (`handle_redirect`, `handle_401`, `build_digest_header`). A method purely for internal initialization of thread-local state would be more consistent with the Python convention of prefixing implementation-detail methods with an underscore (e.g. `_init_per_thread_state`), signalling that it is not part of the intended public interface.",
+          "confidence": 0.75
         },
         {
           "agent": "style",
           "file": "requests/auth.py",
           "line_range": [
-            67,
-            68
+            72,
+            73
           ],
           "severity": "nit",
-          "title": "Comment tense/style differs from surrounding docstring conventions",
-          "detail": "The comment `# Keep state in per-thread local storage` on line 67 uses imperative phrasing. The surrounding inline comments in the file (e.g. `# lambdas assume digest modules are imported at the top level`, `# XXX not implemented yet`) are descriptive. Prefer `# State is kept in per-thread local storage` for consistency.",
-          "confidence": 0.5
+          "title": "Sentinel attribute named `init` is not descriptive",
+          "detail": "`self.tl.init` is used as a flag to record that per-thread state has been initialized. A name like `self.tl.initialized` or `self.tl._initialized` would make the intent immediately clear without having to read the surrounding logic.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "test_requests.py",
+          "line_range": [
+            424,
+            424
+          ],
+          "severity": "nit",
+          "title": "Missing space around `=` in keyword argument assignment",
+          "detail": "`session.auth=auth` is missing spaces around the `=`. All other assignments in the surrounding test code (and PEP 8, which the rest of the file follows) use spaces around `=` for regular assignments: `session.auth = auth`.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "test_requests.py",
+          "line_range": [
+            429,
+            429
+          ],
+          "severity": "nit",
+          "title": "Returning a magic literal `1` from `do_request` serves no apparent purpose",
+          "detail": "`do_request` returns `1` but the return value of `pool.map` is never used. Returning a constant makes the reader wonder whether the value has some significance. Either drop the `return` statement entirely (the function implicitly returns `None`, which is fine for `pool.map`) or add a comment explaining why it is needed, to be consistent with the straightforward style of the other test helpers.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "test_requests.py",
+          "line_range": [
+            430,
+            432
+          ],
+          "severity": "minor",
+          "title": "`if ThreadPool is not None` guard silently skips the test body",
+          "detail": "Other tests in the file that require optional infrastructure either skip unconditionally or use `pytest.mark.skipif` / `unittest.skipIf` to give an explicit skip message. Wrapping the actual assertions in an `if` block means the test always reports as passing even when `ThreadPool` is unavailable, giving a false sense of coverage. Existing skipping conventions in the file (e.g. `try/except ImportError` at the top followed by a conditional decorator) would be more consistent.",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 5348,
-      "tokens_out": 911,
-      "cost_usd": 0.029709,
-      "duration_s": 17.87577045802027,
+      "tokens_in": 5307,
+      "tokens_out": 939,
+      "cost_usd": 0.030006,
+      "duration_s": 18.523631333140656,
       "skip_or_error_reason": null
     },
     {
@@ -313,8 +343,8 @@
             78
           ],
           "severity": "major",
-          "title": "init_per_thread_state not tested in isolation / unit-level",
-          "detail": "The new `init_per_thread_state` method initialises thread-local state only once per thread (guarded by `hasattr(self._thread_local, 'init')`). There is no unit test that verifies: (a) the method is idempotent (calling it twice from the same thread leaves state untouched), or (b) a fresh thread really does get its own independent state. The threaded integration test (`test_DIGESTAUTH_THREADED`) exercises the happy path but only asserts on the Authorization header \u2014 it never checks that separate counters are maintained, nor that re-calling `init_per_thread_state` from the same thread does NOT reset state mid-request.",
+          "title": "init_per_thread_state() has no unit-level test",
+          "detail": "The new `init_per_thread_state` method and the per-thread `tl` attributes (last_nonce, nonce_count, chal, pos, num_401_calls) are only exercised indirectly through integration tests that hit a live httpbin server. There is no isolated/unit test that directly calls `init_per_thread_state()` and verifies that (a) the attributes are created with the correct initial values, (b) a second call on the same thread does NOT reinitialise them (the `if not hasattr(self.tl, 'init')` guard), and (c) a new thread gets a fresh set of attributes.",
           "confidence": 0.85
         },
         {
@@ -325,52 +355,52 @@
             168
           ],
           "severity": "major",
-          "title": "handle_redirect resets num_401_calls \u2014 no thread-isolation test for redirect path",
-          "detail": "`handle_redirect` now resets `self._thread_local.num_401_calls = 1`. There is no test that exercises a redirect while concurrent digest-auth requests are in flight to confirm this reset remains isolated per thread. The existing redirect-related digest tests (`test_DIGEST_HTTP_200_OK_GET`) are all single-threaded, so the thread-local isolation of the redirect counter is completely uncovered.",
-          "confidence": 0.8
+          "title": "handle_redirect resetting tl.num_401_calls is not tested",
+          "detail": "`handle_redirect` now resets `self.tl.num_401_calls = 1` on redirects. The existing `test_DIGESTAUTH_THREADED` and other digest tests do not exercise a redirect that passes through `handle_redirect`. There is no test that follows a redirect while using `HTTPDigestAuth` and then verifies that `tl.num_401_calls` is reset to 1, meaning this branch is untested.",
+          "confidence": 0.82
         },
         {
           "agent": "test_coverage",
           "file": "test_requests.py",
           "line_range": [
             419,
-            432
+            433
           ],
           "severity": "major",
-          "title": "Threaded test skipped silently when ThreadPool unavailable \u2014 no assertion on HTTP status code",
-          "detail": "The entire threaded test body is wrapped in `if ThreadPool is not None:`, meaning on Python versions where `multiprocessing.pool.ThreadPool` is unavailable the test passes vacuously without executing any assertions. Additionally, the test only asserts on the Authorization header value (`'\"auth\"' in r.request.headers['Authorization']`) but never asserts `r.status_code == 200`, so a thread that authenticates with a correct header but receives a 4xx response would still be considered passing.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/auth.py",
-          "line_range": [
-            204,
-            220
-          ],
-          "severity": "minor",
-          "title": "__call__ with file-body (pos tracking) not tested in threaded context",
-          "detail": "The `__call__` method records `self._thread_local.pos` from `r.body.tell()`. Sharing an `HTTPDigestAuth` instance across threads where at least one request has a seekable body is a plausible use-case that would exercise the thread-local `pos` attribute. No test covers concurrent requests with file-like bodies to confirm `pos` isolation.",
-          "confidence": 0.7
+          "title": "Threaded test is silently skipped when ThreadPool is unavailable and does not assert HTTP 200",
+          "detail": "The entire thread-safety test body (`pool.map(...)`) is guarded by `if ThreadPool is not None`. If `ThreadPool` is unavailable, no assertion runs and the test passes vacuously. Additionally, the test only asserts that the `Authorization` header contains `\"auth\"` but never asserts `r.status_code == 200`, leaving the case where all threads actually receive 401 responses undetected.",
+          "confidence": 0.88
         },
         {
           "agent": "test_coverage",
           "file": "requests/auth.py",
           "line_range": [
             170,
-            201
+            203
           ],
           "severity": "minor",
-          "title": "handle_401 branch where num_401_calls >= 2 not tested in threaded context",
-          "detail": "The `else` branch of `handle_401` (line 201: `self._thread_local.num_401_calls = 1; return r`) executes when the server keeps returning 401 beyond the retry limit. In a multi-threaded scenario this could interact with per-thread state in subtle ways. There is no test \u2014 threaded or otherwise \u2014 that specifically validates this branch's behaviour when multiple threads share the same `HTTPDigestAuth` object.",
-          "confidence": 0.65
+          "title": "handle_401 branch when num_401_calls >= 2 (infinite-loop guard) has no threaded coverage",
+          "detail": "The existing non-threaded tests for the 401-loop guard (`test_DIGESTAUTH_WRONG_HTTP_401_GET`) exercise the single-threaded path. With the move to `threading.local`, the counter is now per-thread; there is no test verifying that two threads each independently trip (and reset) the `num_401_calls >= 2` guard, which is the core invariant the PR is trying to protect.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/auth.py",
+          "line_range": [
+            205,
+            221
+          ],
+          "severity": "minor",
+          "title": "__call__ sets tl.num_401_calls=1 at end; no test verifies it resets correctly between sequential reuses on the same thread",
+          "detail": "The `__call__` method now sets `self.tl.num_401_calls = 1` unconditionally at the end (line 221). If the same `HTTPDigestAuth` instance is reused sequentially on the same thread after a previous failed auth left `num_401_calls > 1`, this line resets it. There is no explicit test that reuses the same auth object across multiple sequential requests on the same thread and checks that `num_401_calls` is correctly reset each time.",
+          "confidence": 0.7
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 21483,
-      "tokens_out": 915,
-      "cost_usd": 0.078174,
-      "duration_s": 20.05567429214716,
+      "tokens_in": 21442,
+      "tokens_out": 945,
+      "cost_usd": 0.078501,
+      "duration_s": 19.312700791982934,
       "skip_or_error_reason": null
     },
     {
@@ -381,49 +411,73 @@
           "agent": "correctness, security",
           "file": "requests/auth.py",
           "line_range": [
-            78,
+            70,
             78
           ],
           "severity": "critical",
-          "title": "num_401_calls initialized to None \u2014 causes TypeError in handle_401 and bypasses 401-loop guard",
-          "detail": "In `init_per_thread_state()`, `self._thread_local.num_401_calls` is set to `None` (line 78). However, `handle_401()` at line 179 evaluates `self._thread_local.num_401_calls < 2` and at line 181 performs `+= 1`. In Python 3, `None < 2` raises a `TypeError`, crashing the request. In Python 2 it silently evaluates to `True`, bypassing the infinite-401-loop guard and potentially allowing a malicious server to drive the client into an unbounded authentication loop.\n\nAlthough `__call__` (line 220) resets `num_401_calls = 1` unconditionally, this happens *after* the response hooks are registered (lines 218\u2013219). Within a single synchronous thread this ordering is safe because the response fires after `__call__` completes \u2014 but `init_per_thread_state` is the entry point for brand-new threads, and any code path that reaches `handle_401` on a thread whose `__call__` has not yet executed will encounter the `None` value. The fix is straightforward: initialize `num_401_calls` to `1` (not `None`) in `init_per_thread_state()`, matching the behavior of `handle_redirect` and the assignment in `__call__`.",
-          "confidence": 0.9
+          "title": "num_401_calls initialized to None instead of 1, causing TypeError on comparison in handle_401",
+          "detail": "In `init_per_thread_state`, `self.tl.num_401_calls` is set to `None` (line 78). In `handle_401`, the code reads and compares this value with `< 2` (line 180) and later increments it with `+= 1` (line 182). If `handle_401` fires before `__call__` sets `num_401_calls = 1` (line 221) \u2014 or if the thread-local is initialized via `init_per_thread_state` but `__call__` hasn't run yet \u2014 the comparison `None < 2` raises a `TypeError` in Python 3 (and produces undefined ordering in Python 2), and `None += 1` raises a `TypeError` unconditionally. The original code defensively used `getattr(self, 'num_401_calls', 1)` precisely to guard against this; both that guard and the `__init__` default of `1` have been removed without an equivalent replacement. Fix: initialize `self.tl.num_401_calls = 1` (not `None`) in `init_per_thread_state`.",
+          "confidence": 0.92
         },
         {
-          "agent": "test_coverage",
+          "agent": "style, test_coverage",
           "file": "test_requests.py",
           "line_range": [
-            419,
-            433
+            430,
+            432
           ],
           "severity": "major",
-          "title": "Threaded test silently skipped when ThreadPool unavailable, no status-code assertion, and no isolation of per-thread state verified",
-          "detail": "The entire threaded test body is wrapped in `if ThreadPool is not None:`, so in environments where `multiprocessing.pool.ThreadPool` is unavailable the test passes vacuously without executing any assertions \u2014 making CI green while providing zero coverage.\n\nAdditionally, the test only asserts on the `Authorization` header format (`'auth' in header`) but never asserts `r.status_code == 200`. An authentication failure (e.g., a 401 due to wrong credentials) would not be caught.\n\nFinally, the test does not verify the core thread-safety invariant: that separate threads maintain independent `num_401_calls` counters and that `init_per_thread_state` is truly idempotent within a thread and independent across threads. The redirect counter reset path (`handle_redirect`) also has no concurrent-request test coverage.\n\nRecommendations: use `@pytest.mark.skipif` / `unittest.skipUnless` for the ThreadPool guard; add `assert r.status_code == 200`; add a test that concurrently sends requests where one thread receives a 401 retry and another does not, and verify each thread's counter independently.",
+          "title": "Threaded test silently skips and never asserts HTTP 200 status",
+          "detail": "The entire test body is wrapped in `if ThreadPool is not None`, meaning the test always reports as passing even when `ThreadPool` is unavailable \u2014 giving a false sense of coverage. Other tests in the file that require optional infrastructure use `pytest.mark.skipif` or `unittest.skipIf` to produce an explicit skip signal. Additionally, the test only asserts that the `Authorization` header contains `\"auth\"` but never asserts `r.status_code == 200`, leaving the case where all threads actually receive 401 responses undetected. Fix: use a proper skip decorator for the `ThreadPool` guard and add a status code assertion.",
           "confidence": 0.88
         },
         {
-          "agent": "correctness, security",
+          "agent": "test_coverage",
           "file": "requests/auth.py",
           "line_range": [
             70,
             78
           ],
           "severity": "major",
-          "title": "Per-thread state initialized only once per thread \u2014 stale credentials/nonce may persist across requests in thread-pool scenarios",
-          "detail": "**Reviewer disagreement.** The `hasattr(self._thread_local, 'init')` guard in `init_per_thread_state()` means that on a thread which has already processed one digest-auth exchange, all subsequent calls (e.g. from a thread-pool worker handling a new unrelated request) will skip re-initialization of `last_nonce`, `chal`, `pos`, and `nonce_count`. These fields are permanently frozen to the first-ever values seen by that thread.\n\nWhile `num_401_calls` is safely reset in `__call__` (line 220), the other fields are not. This means a thread-pool thread could reuse a `chal` dict or nonce count from a completely different server session, potentially sending stale or incorrect credentials. The intent to support nonce reuse within a single session is reasonable, but the current implementation does not distinguish between reuse within a session and reuse across entirely different sessions/servers. At minimum, the design decision and its trade-offs should be clearly documented; ideally, `__call__` should reset `chal` and `last_nonce` per request.\n\nNote: one reviewer considered this an intentional nonce-reuse optimization (not a regression vs. the original code); the other flagged it as a logical security issue. Both agree the behavior is present \u2014 the disagreement is on severity.",
-          "confidence": 0.75
+          "title": "No unit-level test for init_per_thread_state or per-thread attribute initialization",
+          "detail": "The new `init_per_thread_state` method and the per-thread `tl` attributes are only exercised indirectly through integration tests hitting a live server. There is no isolated test that: (a) calls `init_per_thread_state()` directly and verifies the correct initial values (especially `num_401_calls = 1`, not `None`), (b) verifies a second call on the same thread does NOT reinitialize, and (c) verifies a new thread gets a fresh, independent set of attributes. These cases are the core invariants of the thread-safety fix.",
+          "confidence": 0.85
         },
         {
-          "agent": "security",
+          "agent": "correctness, security",
+          "file": "requests/auth.py",
+          "line_range": [
+            165,
+            177
+          ],
+          "severity": "major",
+          "title": "handle_redirect and handle_401 access thread-local attributes without ensuring init_per_thread_state was called",
+          "detail": "`handle_redirect` (lines 165\u2013168) directly assigns `self.tl.num_401_calls = 1` without calling `init_per_thread_state()`, leaving all other thread-local attributes (`pos`, `chal`, `last_nonce`, `nonce_count`) potentially absent. `handle_401` (lines 170\u2013177) accesses `self.tl.pos` and `self.tl.num_401_calls` without calling `init_per_thread_state()` either. In any scenario where these hooks fire on a thread that has never executed `__call__` (e.g. internal redirect handling on a worker thread, or async/executor patterns), the missing attributes will raise `AttributeError`. Additionally, `handle_redirect` does not reset `last_nonce` or `chal`, which could allow digest credentials from one host to be reused after a redirect to a different host. Fix: call `init_per_thread_state()` at the top of both `handle_redirect` and `handle_401`, and consider clearing nonce/challenge state on cross-host redirects.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "test_coverage",
           "file": "requests/auth.py",
           "line_range": [
             165,
             168
           ],
           "severity": "major",
-          "title": "handle_redirect writes num_401_calls without calling init_per_thread_state \u2014 other thread-local fields may be uninitialized",
-          "detail": "`handle_redirect` directly assigns `self._thread_local.num_401_calls = 1` without first calling `init_per_thread_state()`. If the redirect hook fires on a thread that has never executed `__call__` (possible if the hook is registered on one thread but dispatched on another), `self._thread_local` will not have `last_nonce`, `chal`, `pos`, or `nonce_count` set. Any subsequent call to `build_digest_header` or `handle_401` on that thread will raise an `AttributeError`. `handle_redirect` should call `init_per_thread_state()` at its entry point, just as `handle_401` and `__call__` should.",
-          "confidence": 0.7
+          "title": "handle_redirect resetting tl.num_401_calls is not covered by any test",
+          "detail": "The `handle_redirect` branch that resets `self.tl.num_401_calls = 1` is not exercised by any existing test \u2014 neither the threaded test nor the non-threaded digest tests follow a redirect through `handle_redirect`. There is no test that performs a redirect while using `HTTPDigestAuth` and asserts that `num_401_calls` is reset to `1` afterward.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "style",
+          "file": "requests/auth.py",
+          "line_range": [
+            68,
+            68
+          ],
+          "severity": "minor",
+          "title": "Opaque attribute name `tl` for thread-local storage",
+          "detail": "The new threading.local container is named `tl`, which is an unexplained abbreviation. The rest of the file uses full, descriptive attribute names. A name like `_thread_local` or `_local` would be more readable and self-documenting, and the leading underscore would signal that it is an implementation detail not intended for external access.",
+          "confidence": 0.9
         },
         {
           "agent": "style",
@@ -433,21 +487,45 @@
             78
           ],
           "severity": "minor",
-          "title": "Sentinel attribute 'init' is too generic \u2014 prefer a more descriptive name",
-          "detail": "The attribute `self._thread_local.init` used as the initialization sentinel is vague and easy to confuse with Python's `__init__`. A more descriptive name such as `_initialized` would better communicate intent and is consistent with the project's convention of using underscores for private implementation details (e.g., `self._thread_local`).",
-          "confidence": 0.8
+          "title": "init_per_thread_state should be a private method (underscore prefix)",
+          "detail": "`init_per_thread_state` is a purely internal initialization helper with no intended public interface. Python convention signals implementation-detail methods with a leading underscore (e.g. `_init_per_thread_state`). Without it, the method appears to be part of the public API, which is inconsistent with the intent and could confuse downstream users who subclass `HTTPDigestAuth`.",
+          "confidence": 0.75
         },
         {
-          "agent": "correctness, test_coverage",
-          "file": "test_requests.py",
+          "agent": "test_coverage",
+          "file": "requests/auth.py",
           "line_range": [
-            419,
-            433
+            170,
+            221
           ],
           "severity": "minor",
-          "title": "Threaded test missing coverage for file-body (pos) isolation and num_401_calls >= 2 branch in concurrent scenarios",
-          "detail": "The new `__call__` method tracks `self._thread_local.pos` from `r.body.tell()` for seekable bodies. No test exercises concurrent requests with file-like bodies to confirm `pos` is isolated per thread. Similarly, the `else` branch of `handle_401` (line 201), which fires when the server keeps returning 401 beyond the retry limit, is not tested in any multi-threaded scenario. These branches could interact with shared-auth-object state in subtle ways that would not be caught by the current test suite.",
+          "title": "Per-thread num_401_calls counter invariants lack threaded and sequential-reuse test coverage",
+          "detail": "Two important behavioral invariants of the per-thread counter have no test coverage: (1) two concurrent threads each independently reaching the `num_401_calls >= 2` guard (verifying isolation between threads, the core promise of the PR), and (2) sequential reuse of the same `HTTPDigestAuth` instance on the same thread after a failed auth left the counter above 1, verifying that `__call__` correctly resets it for the next request. The existing non-threaded `test_DIGESTAUTH_WRONG_HTTP_401_GET` only exercises the single-threaded path with the old instance-level attribute.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "security",
+          "file": "requests/auth.py",
+          "line_range": [
+            70,
+            78
+          ],
+          "severity": "minor",
+          "title": "Thread-local init guard permanently suppresses re-initialization; stale nonce state carried over between sessions",
+          "detail": "The `hasattr(self.tl, 'init')` guard in `init_per_thread_state` is set once and never cleared, meaning re-initialization is permanently suppressed for the lifetime of the thread. When the same `HTTPDigestAuth` object is reused across different sessions on the same thread (a documented pattern), stale `last_nonce`, `chal`, or `nonce_count` values from a previous session are silently carried over. This could cause the client to skip the 401 handshake and send a digest built with a server-rejected nonce, potentially leaking credentials or enabling replay if the server accepts old nonces. Consider clearing or resetting relevant state at the start of each `__call__` invocation rather than relying solely on the once-per-thread guard.",
           "confidence": 0.7
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/auth.py",
+          "line_range": [
+            219,
+            221
+          ],
+          "severity": "minor",
+          "title": "num_401_calls reset to 1 occurs after hook registration, subtle ordering difference from original",
+          "detail": "Every call to `__call__` registers fresh `handle_401` and `handle_redirect` hooks and then sets `self.tl.num_401_calls = 1`. In the original code, `num_401_calls` started at `1` from `__init__` and was reset there, so there was no window between hook registration and counter initialization. In the new code, if a hook somehow fires in the narrow window between hook registration (line 219) and the reset (line 221), it will see the stale counter value from the previous request. While this is unlikely under normal synchronous use, it is a subtle ordering difference worth documenting or fixing by moving the reset before hook registration.",
+          "confidence": 0.5
         },
         {
           "agent": "style",
@@ -457,59 +535,47 @@
             424
           ],
           "severity": "nit",
-          "title": "Missing spaces around `=` in keyword argument",
-          "detail": "`session.auth=auth` should be `session.auth = auth` to conform to PEP 8 and match the surrounding code style, where assignment operators consistently have spaces on both sides.",
+          "title": "Missing spaces around `=` in keyword argument assignment",
+          "detail": "`session.auth=auth` is missing spaces around the `=`. PEP 8 and the surrounding test code use spaces for regular assignments: `session.auth = auth`.",
           "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "test_requests.py",
-          "line_range": [
-            427,
-            429
-          ],
-          "severity": "nit",
-          "title": "`do_request` returns literal `1` that is never used",
-          "detail": "`pool.map` collects return values but the result is discarded. The `return 1` statement is dead/misleading. The helper should simply return nothing (`return` or omit the statement entirely), consistent with other helper functions in the test suite.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "style",
-          "file": "test_requests.py",
-          "line_range": [
-            419,
-            433
-          ],
-          "severity": "nit",
-          "title": "Test method style: missing blank line after `def`, and skip-guard should use a decorator rather than an inline conditional",
-          "detail": "Two style issues: (1) `test_DIGESTAUTH_THREADED` has no blank line between the `def` line and the first statement, unlike sibling tests (e.g., `test_DIGESTAUTH_QUOTES_QOP_VALUE`). (2) The `if ThreadPool is not None:` guard buries the actual assertions inside a conditional at the bottom of the method, making the skip condition invisible at a glance. Prefer `@pytest.mark.skipif` or `unittest.skipUnless` so the guard is declared at the function level and the test body stays flat.",
-          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "requests/auth.py",
           "line_range": [
-            67,
-            68
+            72,
+            73
           ],
           "severity": "nit",
-          "title": "Comment phrasing differs from surrounding descriptive style",
-          "detail": "The comment `# Keep state in per-thread local storage` uses imperative phrasing. The surrounding inline comments in the file are descriptive (e.g., `# lambdas assume digest modules are imported at the top level`). Prefer `# State is kept in per-thread local storage` for consistency.",
-          "confidence": 0.5
+          "title": "Sentinel attribute `tl.init` is not descriptive",
+          "detail": "The flag `self.tl.init = True` / `hasattr(self.tl, 'init')` used to guard re-initialization would be clearer as `self.tl.initialized` or `self.tl._initialized`, making the intent immediately apparent without requiring the reader to infer it from context.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "test_requests.py",
+          "line_range": [
+            429,
+            429
+          ],
+          "severity": "nit",
+          "title": "Returning magic literal `1` from `do_request` serves no apparent purpose",
+          "detail": "`do_request` returns `1`, but the return value of `pool.map` is never used. This makes the reader wonder whether the constant has some significance. Either drop the `return` statement (implicitly returning `None` is fine for `pool.map`) or add a comment explaining why it exists.",
+          "confidence": 0.85
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4791,
-      "tokens_out": 2437,
-      "cost_usd": 0.050928,
-      "duration_s": 47.02914945804514,
+      "tokens_in": 4530,
+      "tokens_out": 2769,
+      "cost_usd": 0.055125,
+      "duration_s": 48.95208595809527,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 44424,
-    "tokens_out": 6458,
-    "cost_usd": 0.230142,
-    "duration_s": 132.0
+    "tokens_in": 43968,
+    "tokens_out": 6576,
+    "cost_usd": 0.230544,
+    "duration_s": 123.8
   }
 }

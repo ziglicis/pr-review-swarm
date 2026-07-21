@@ -1,0 +1,84 @@
+case: requests_3655
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: When tell() fails at prepare time, _body_position stays None and rewind_body silently skips
+    instead of raising; a sentinel object is needed to distinguish "never set" from "tell failed".
+  matched_finding: null
+  note: fixed during review — the object() sentinel distinguishing failed tell() from never-set is
+    at the reviewed head (discussion_r85648021)
+  matchable: false
+- ground_truth: g2
+  issue: Casting tell()'s result with int() is wrong on Python 2 where long (bignum) is meaningful;
+    an integer_types tuple belongs in compat.py — and the first attempt wrote (int) which isn't a
+    tuple at all.
+  matched_finding: null
+  note: fixed during review — integer_types tuple lives in compat.py and rewind_body uses isinstance
+    against it (discussion_r85892421)
+  matchable: false
+- ground_truth: g3
+  issue: The new exception name RedirectError is too vague for what it signals; it should be the
+    specific UnrewindableBodyError.
+  matched_finding: null
+  note: fixed during review — the exception is named UnrewindableBodyError (discussion_r85712220)
+  matchable: false
+- ground_truth: g4
+  issue: Tests must assert the actual content re-read after rewind and cover an object with seek()
+    but a broken/missing tell().
+  matched_finding: null
+  note: addressed during review — tests assert re-read content and cover no-seek/failed-seek/failed-tell
+    objects (discussion_r85716594)
+  matchable: false
+- ground_truth: g5
+  issue: The rewind helper doesn't use self — it's a function masquerading as a method and belongs
+    in utils.
+  matched_finding: null
+  note: fixed during review — rewind_body is a function in utils.py (discussion_r85892494)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Rewindable body check does not account for `prepared_request.body` being `None` after non-307/308
+    redirect clears it
+  valid: uncertain
+  note: the coupling (header purge must precede the rewindable check) is real and undocumented, but
+    there is no current defect and the hypothesized triggers are speculative
+- finding: 1
+  title: 'Non-307/308 redirect with a seekable body: `_body_position` is non-None but body is cleared;
+    `rewindable` is False because headers are purged — correct, but fragile and undocumented'
+  valid: false
+  note: self-described as 'correct, but fragile' — a non-defect restatement of finding 0 the monolith
+    failed to merge
+- finding: 2
+  title: Rewindable check uses stale `headers` variable after body may have been cleared
+  valid: false
+  note: title claims stale headers, then the detail refutes itself ('it correctly...'); conf 0.4
+    non-issue
+- finding: 3
+  title: Missing blank line before function definition (PEP 8)
+  valid: true
+  note: confirmed single blank line
+- finding: 4
+  title: Assertion on exception message checks `str(e)` of `ExceptionInfo`, not the exception message
+  valid: true
+  note: 'real pytest idiom issue: str(ExceptionInfo) matching can mask message regressions; e.value
+    is the correct form'
+- finding: 5
+  title: No test for 307 redirect with a body that has `tell` but no `seek` (the hanging scenario)
+  valid: true
+  note: 'factual: the hang scenario is only unit-tested, never through resolve_redirects'
+- finding: 6
+  title: Callable `tell` attribute check uses `is not None` instead of `callable()`
+  valid: uncertain
+  note: callable() is more precise; edge is contrived
+- finding: 7
+  title: 'Typo: ''occured'' should be ''occurred'''
+  valid: true
+  note: confirmed typo
+- finding: 8
+  title: Unused variable `s` (Session) in unit tests that don't need a session
+  valid: true
+  note: confirmed dead assignments
+- finding: 9
+  title: Missing blank line before `UnrewindableBodyError` class (PEP 8)
+  valid: true
+  note: confirmed single blank line

@@ -4,20 +4,64 @@ ground_truth_matches:
 - ground_truth: g1
   issue: 'The get_debug_flag/property pattern is debated: one maintainer asks for the property decorator,
     the author explicitly prefers the older pattern — genuine unresolved style disagreement.'
-  matched_finding: null
-  note: 'baseline run errored (API 400: tool_use without matching tool_result) and produced zero
-    findings'
+  matched_finding: 3
+  note: 'PRESENT: non-@property debug pattern at app.py:808 (davidism/mitsuhiko property-decorator
+    debate)'
   matchable: true
 - ground_truth: g2
   issue: The claim that "the debugger will kick in" in development env is inaccurate — it only activates
     when FLASK_DEBUG is set, and the docs/docstrings as written would perpetuate a common confusion.
   matched_finding: null
-  note: baseline run errored and produced zero findings
+  note: 'PRESENT: app.py:801 docstring ''the debugger will kick in'' — davidism flagged it inaccurate;
+    no finding flags this specific docstring'
   matchable: true
 - ground_truth: g3
   issue: 'Assorted polish: typo ("repopulate") and visually inconsistent indentation style flagged
     in several places.'
   matched_finding: null
-  note: baseline run errored and produced zero findings
+  note: 'PRESENT: ''repopulate'' typo (cli.py:360) + inconsistent continuation indentation (app.py:815);
+    unmatched by all'
   matchable: true
-finding_validity: []
+finding_validity:
+- finding: 0
+  title: get_debug_flag() now always returns a boolean, silently breaking callers that checked for
+    None
+  valid: true
+  note: get_debug_flag() always returns a bool
+- finding: 1
+  title: ScriptInfo.load_app() unconditionally overwrites app.debug because get_debug_flag() never
+    returns None
+  valid: true
+  note: load_app() unconditionally overwrites app.debug
+- finding: 2
+  title: 'Dead code in test_get_debug_flag: the None branch can never be reached'
+  valid: true
+  note: dead None branch in test_get_debug_flag
+- finding: 3
+  title: debug property setter unnecessarily delegates to _set_debug_value
+  valid: true
+  note: 'g1: critiques the debug-property setter pattern as over-complex'
+- finding: 4
+  title: Default config values for ENV and DEBUG are None in default_config but are immediately overwritten
+  valid: uncertain
+  note: ENV/DEBUG None defaults are overwritten before an instance sees them
+- finding: 5
+  title: get_env() treats empty string FLASK_ENV as 'production' without warning
+  valid: uncertain
+  note: empty-string FLASK_ENV idiom — subjective
+- finding: 6
+  title: test_get_env lacks coverage for FLASK_DEBUG overriding FLASK_ENV=development
+  valid: true
+  note: 'coverage gap: FLASK_DEBUG-overrides-FLASK_ENV untested'
+- finding: 7
+  title: Env printed in run_command reads from env var directly, not from the loaded app's config
+  valid: uncertain
+  note: env read from var not the loaded app — mild
+- finding: 8
+  title: 'Contradictory wording: ''enable all development features (and to disable the debug mode)'''
+  valid: true
+  note: quickstart contradiction (matches davidism)
+- finding: 9
+  title: RST code block not indented — shell commands will render as plain text
+  valid: true
+  note: config.rst shell block not indented — renders as plain text

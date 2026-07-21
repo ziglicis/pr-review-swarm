@@ -4,96 +4,80 @@ ground_truth_matches:
 - ground_truth: g1
   issue: Decompressed chunks should be assembled with io.BytesIO rather than repeated bytes concatenation.
   matched_finding: null
-  note: fixed during review — decode() already assembles chunks with io.BytesIO at the reviewed head
-    (discussion_r1518812137)
+  note: 'NON-matchable: decode already assembles via `data_parts=[...]; b''''.join(...)` (list-join
+    avoids repeated concat) at review_sha; the BytesIO concern (discussion_r1518812137) was addressed
+    earlier'
   matchable: false
 - ground_truth: g2
   issue: The runtime zstandard version guard in _compat.py is questioned as overly defensive vs pinning
     >=0.18 in requirements; kept because the extra is optional and an old zstandard may already be
     installed — a genuine design disagreement documented in review.
   matched_finding: null
-  note: design debate resolved by keeping the guard (documented in review); no finding raises the
-    version-guard-vs-requirements-pin question (discussion_r1524997549)
+  note: 'NON-matchable: the runtime version-guard ''overly defensive'' point (discussion_r1524997549)
+    is a design disagreement the maintainers resolved by keeping the guard — not a defect'
   matchable: false
 - ground_truth: g3
   issue: Test coverage for the new decoder paths is incomplete and needs addressing before merge.
-  matched_finding: 6
-  note: reviewer's coverage complaint (discussion_r1525274642); finding 6 flags the untested multi-chunk
-    decoder path (findings 4/7 add more gaps)
+  matched_finding: 1
+  note: 'PRESENT: new zstd decoder paths (flush/error/multiframe/empty) are untested at review_sha
+    (discussion_r1525274642)'
   matchable: true
 finding_validity:
 - finding: 0
-  title: ZStandardDecoder.flush() raises false-positive DecodingError on empty/no-body responses
+  title: ZStandardDecoder.flush() incorrectly raises DecodingError on empty/zero-byte responses
   valid: true
-  note: 'verified: a fresh decompressobj has eof=False, so flush() on an empty streamed body raises
-    DecodingError; BrotliDecoder guards with seen_data'
+  note: 'flush() raises on empty body: fresh decompressobj eof=False'
 - finding: 1
-  title: '"## Added" should be "### Added" to match changelog heading hierarchy'
+  title: ZStandardDecoder error paths (incomplete stream, invalid bytes) not tested
   valid: true
-  note: 'confirmed in diff: existing sections use ###'
+  note: 'g3: zstd error paths untested'
 - finding: 2
-  title: ImportError message is incomplete — trailing '...' left as a placeholder
+  title: zstd sentinel uses `False` instead of `None`, and `zstd` is never removed from SUPPORTED_DECODERS
+    when unavailable
   valid: true
-  note: 'verified at the SHA: the message literally contains "Using ''ZStandardDecoder'', ..." —
-    an unfinished placeholder'
+  note: 'real: zstd only popped for ''br''; `zstd` stays in SUPPORTED_DECODERS when unavailable;
+    sentinel False not None'
 - finding: 3
-  title: '`zstd` is missing from `__all__` in `_compat.py`'
+  title: Multi-frame zstd decoding path not tested
   valid: true
-  note: 'verified: __all__ = [''brotli'', ''set_minimum_tls_version_1_2''] omits zstd'
+  note: 'g3: multi-frame path untested'
 - finding: 4
-  title: ZStd decoding-error test uses a str literal instead of bytes, and is not integrated into
-    the parametrized error-path tests
-  valid: uncertain
-  note: str content is accepted httpx API and does reach the decoder; the bytes-for-consistency point
-    is defensible, the hedged mechanism is not
+  title: Unchecked regex match result could raise AttributeError at import time
+  valid: true
+  note: regex .groups() on possibly-None in the else clause raises at import — real
 - finding: 5
-  title: Regex version check may silently disable zstd or yield confusing AttributeError
-  valid: uncertain
-  note: 'right fragile line, wrong control flow: the version check is in the else clause, so the
-    AttributeError would crash httpx import uncaught — worse than the claimed silent disable'
+  title: Broad except clause and inconsistent comment style in zstd import block
+  valid: true
+  note: broad except tuple over the import is real
 - finding: 6
-  title: Multi-frame zstd loop not covered by chunked streaming, and may expose flush() bug on incomplete
-    final frames
+  title: Version-check branch and ImportError path in ZStandardDecoder lack test coverage
   valid: true
-  note: 'factual: the multiframe test decodes in one shot; chunked streaming through the loop is
-    untested'
+  note: 'g3: version-check + ImportError path untested'
 - finding: 7
-  title: Version-too-old branch for zstd is untested
+  title: Unbounded multi-frame decompression loop is a potential resource-exhaustion vector
   valid: uncertain
-  note: the branch is pragma-no-cover by deliberate choice; a mock-based test is a defensible ask
-    but counters the project's explicit exclusion
+  note: unbounded-frames 'resource exhaustion' — speculative; loop terminates
 - finding: 8
-  title: No decompression size limit — potential memory exhaustion via crafted zstd body
-  valid: uncertain
-  note: self-acknowledged parity with the existing gzip/deflate decoders; not a regression
+  title: Truncated ImportError message with trailing ellipsis
+  valid: true
+  note: truncated ImportError message '...' confirmed
 - finding: 9
-  title: flush() integrity check is confused when decompressor was reset mid-stream for multi-frame
-    data
-  valid: false
-  note: 'verified with zstandard: a trailing skippable frame leaves eof True and empty unused_data
-    after the loop — flush() does not raise'
+  title: Inconsistent indentation in `[project.optional-dependencies]` for zstd entry
+  valid: true
+  note: pyproject 2-space indentation confirmed
 - finding: 10
-  title: Inconsistent indentation for the new `zstd` optional-dependency entry
-  valid: true
-  note: 'confirmed in diff: 2-space vs 4-space'
+  title: Section heading implies combined install but body shows two separate commands
+  valid: uncertain
+  note: docs heading vs two commands — subjective
 - finding: 11
-  title: Bare `# Defensive:` comment for broadened exception tuple lacks explanation
-  valid: false
-  note: the adjacent else block documents the rationale with the urllib3 link
+  title: Extra blank line before `if sys.version_info` block
+  valid: uncertain
+  note: extra blank line — trivial
 - finding: 12
-  title: Unnecessary mid-sentence line break creates awkward wrapping
+  title: Awkward mid-sentence line break in prose
   valid: false
-  note: markdown source wrapping has no rendered effect
+  note: markdown line-break has no rendered effect
 - finding: 13
-  title: Attribution comment would fit better inside the class docstring
-  valid: uncertain
-  note: subjective placement nit
-- finding: 14
-  title: Slightly awkward phrasing around 'decoders support'
-  valid: true
-  note: defensible doc polish
-- finding: 15
-  title: Top-level `import zstandard as zstd` has no guard for missing package
-  valid: uncertain
-  note: pytest.importorskip is best practice, but the repo's policy installs all extras for tests
-    (requirements.txt)
+  title: Multi-frame loop logic is subtle but correct — worth a clarifying comment
+  valid: false
+  note: 'non-finding: says the loop is correct'

@@ -2,28 +2,250 @@
   "case": "flask_2570",
   "experiment": "baseline",
   "pr_url": "https://github.com/pallets/flask/pull/2570",
-  "head_sha": "b8f955dd58411836df32d1e1258f92f9ee8ffcc6",
+  "head_sha": "8a0de67cc03706180382a16f3bc0c5b8b168c237",
   "sha_matches_dataset": true,
-  "timestamp": 1784217850,
+  "timestamp": 1784589493,
   "summary": "",
-  "findings": [],
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 66,
+      "line_end": 73,
+      "severity": "major",
+      "title": "get_debug_flag() now always returns a boolean, silently breaking callers that checked for None",
+      "detail": "Previously `get_debug_flag(default=None)` could return None to signal 'not set by environment'. Now it always returns True or False. The old `default` parameter was removed without deprecation. In `flask/cli.py` (line 357) and `flask/app.py` `make_config()` (line 644), there are `if debug is not None:` guards that were specifically designed to tolerate None. Now the guard is always True (since get_debug_flag() never returns None), meaning the debug flag will always be forced to False when FLASK_DEBUG is unset and FLASK_ENV is not 'development'\u2014potentially overriding an application that sets `app.debug = True` programmatically before the CLI loads it.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/cli.py",
+      "line_start": 356,
+      "line_end": 362,
+      "severity": "major",
+      "title": "ScriptInfo.load_app() unconditionally overwrites app.debug because get_debug_flag() never returns None",
+      "detail": "The guard `if debug is not None` at line 361 is now always True because `get_debug_flag()` always returns a bool. This means the CLI always sets `app.debug` via the env var reading path, overriding any value set programmatically inside the app factory. Before this PR, if no FLASK_DEBUG env var was set and no FLASK_ENV was set, `get_debug_flag(default=None)` returned None, the guard was False, and the app's own debug setting was respected. This behavioral change is not documented.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_helpers.py",
+      "line_start": 895,
+      "line_end": 901,
+      "severity": "minor",
+      "title": "Dead code in test_get_debug_flag: the None branch can never be reached",
+      "detail": "After changing the parametrize table, no row has `expected_flag = None` anymore (the `('', None, True)` row became `('', False, False)`). The `if expected_flag is None: assert get_debug_flag() is None` branch at line 897-898 is now dead code that will never execute. It should be removed to keep tests honest and readable.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/app.py",
+      "line_start": 795,
+      "line_end": 812,
+      "severity": "minor",
+      "title": "debug property setter unnecessarily delegates to _set_debug_value",
+      "detail": "The `_set_debug` method (line 797-798) does nothing but call `_set_debug_value`. There is no reason to have two separate private methods for this. Either inline `_set_debug_value` into `_set_debug` or assign `_set_debug_value` directly as the setter. This adds dead indirection that makes the code harder to read.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/app.py",
+      "line_start": 271,
+      "line_end": 273,
+      "severity": "minor",
+      "title": "Default config values for ENV and DEBUG are None in default_config but are immediately overwritten",
+      "detail": "The `default_config` ImmutableDict lists `'ENV': None` and `'DEBUG': None`, but `make_config()` always overwrites these with `get_env()` and `get_debug_flag()` before returning the config. The None values in `default_config` are misleading\u2014they falsely suggest these keys actually default to None. This could confuse subclasses that read `default_config` directly, or documentation generators. Consider not listing them in `default_config` at all, or documenting clearly that they are populated dynamically.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 59,
+      "line_end": 63,
+      "severity": "minor",
+      "title": "get_env() treats empty string FLASK_ENV as 'production' without warning",
+      "detail": "The check `if not val` will treat an empty-string value of FLASK_ENV as unset and silently fall back to 'production'. Users who accidentally export FLASK_ENV='' will silently get 'production' with no warning or error. This is somewhat inconsistent since the test case `('', 'production', False)` in test_get_env confirms this behavior but it may surprise users. Prefer an explicit None check: `if val is None:` using `os.environ.get('FLASK_ENV', None)` to match the intent more precisely.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_helpers.py",
+      "line_start": 903,
+      "line_end": 912,
+      "severity": "minor",
+      "title": "test_get_env lacks coverage for FLASK_DEBUG overriding FLASK_ENV=development",
+      "detail": "There is no test case verifying that when both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set, `get_debug_flag()` correctly returns False (FLASK_DEBUG wins). Similarly, there is no test for `FLASK_ENV=development` and `FLASK_DEBUG=1` together. The interaction between the two env vars is a critical invariant of the new design and should be tested.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/cli.py",
+      "line_start": 631,
+      "line_end": 631,
+      "severity": "minor",
+      "title": "Env printed in run_command reads from env var directly, not from the loaded app's config",
+      "detail": "`get_env()` is called at line 631 to print the current environment before the app loads. If an application factory overrides `app.config['ENV']` (which is allowed since `ENV` is now a proper config key), the printed value will not reflect the actual app env. At minimum a comment explaining this should be added; better would be to print it after the app loads, or print a warning if the two values differ.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "docs/quickstart.rst",
+      "line_start": 133,
+      "line_end": 135,
+      "severity": "nit",
+      "title": "Contradictory wording: 'enable all development features (and to disable the debug mode)'",
+      "detail": "The phrase 'To enable all development features (and to disable the debug mode)' is self-contradictory. Setting FLASK_ENV=development *enables* debug mode, it does not disable it. This is clearly an editing mistake. It should say something like 'To enable all development features (including debug mode)' or similar.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "docs/config.rst",
+      "line_start": 67,
+      "line_end": 68,
+      "severity": "nit",
+      "title": "RST code block not indented \u2014 shell commands will render as plain text",
+      "detail": "The example shell commands `$ export FLASK_ENV=development` and `$ flask run` are placed at column 0 after a `::` directive but are not indented. In reStructuredText a literal block introduced by `::` requires the block to be indented relative to the surrounding text. Without indentation these lines will be rendered as ordinary paragraph text, not as a formatted code example.",
+      "confidence": 0.9
+    }
+  ],
   "agent_runs": [
     {
       "agent": "baseline",
-      "status": "error",
-      "findings": [],
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            66,
+            73
+          ],
+          "severity": "major",
+          "title": "get_debug_flag() now always returns a boolean, silently breaking callers that checked for None",
+          "detail": "Previously `get_debug_flag(default=None)` could return None to signal 'not set by environment'. Now it always returns True or False. The old `default` parameter was removed without deprecation. In `flask/cli.py` (line 357) and `flask/app.py` `make_config()` (line 644), there are `if debug is not None:` guards that were specifically designed to tolerate None. Now the guard is always True (since get_debug_flag() never returns None), meaning the debug flag will always be forced to False when FLASK_DEBUG is unset and FLASK_ENV is not 'development'\u2014potentially overriding an application that sets `app.debug = True` programmatically before the CLI loads it.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/cli.py",
+          "line_range": [
+            356,
+            362
+          ],
+          "severity": "major",
+          "title": "ScriptInfo.load_app() unconditionally overwrites app.debug because get_debug_flag() never returns None",
+          "detail": "The guard `if debug is not None` at line 361 is now always True because `get_debug_flag()` always returns a bool. This means the CLI always sets `app.debug` via the env var reading path, overriding any value set programmatically inside the app factory. Before this PR, if no FLASK_DEBUG env var was set and no FLASK_ENV was set, `get_debug_flag(default=None)` returned None, the guard was False, and the app's own debug setting was respected. This behavioral change is not documented.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            895,
+            901
+          ],
+          "severity": "minor",
+          "title": "Dead code in test_get_debug_flag: the None branch can never be reached",
+          "detail": "After changing the parametrize table, no row has `expected_flag = None` anymore (the `('', None, True)` row became `('', False, False)`). The `if expected_flag is None: assert get_debug_flag() is None` branch at line 897-898 is now dead code that will never execute. It should be removed to keep tests honest and readable.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/app.py",
+          "line_range": [
+            795,
+            812
+          ],
+          "severity": "minor",
+          "title": "debug property setter unnecessarily delegates to _set_debug_value",
+          "detail": "The `_set_debug` method (line 797-798) does nothing but call `_set_debug_value`. There is no reason to have two separate private methods for this. Either inline `_set_debug_value` into `_set_debug` or assign `_set_debug_value` directly as the setter. This adds dead indirection that makes the code harder to read.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/app.py",
+          "line_range": [
+            271,
+            273
+          ],
+          "severity": "minor",
+          "title": "Default config values for ENV and DEBUG are None in default_config but are immediately overwritten",
+          "detail": "The `default_config` ImmutableDict lists `'ENV': None` and `'DEBUG': None`, but `make_config()` always overwrites these with `get_env()` and `get_debug_flag()` before returning the config. The None values in `default_config` are misleading\u2014they falsely suggest these keys actually default to None. This could confuse subclasses that read `default_config` directly, or documentation generators. Consider not listing them in `default_config` at all, or documenting clearly that they are populated dynamically.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            59,
+            63
+          ],
+          "severity": "minor",
+          "title": "get_env() treats empty string FLASK_ENV as 'production' without warning",
+          "detail": "The check `if not val` will treat an empty-string value of FLASK_ENV as unset and silently fall back to 'production'. Users who accidentally export FLASK_ENV='' will silently get 'production' with no warning or error. This is somewhat inconsistent since the test case `('', 'production', False)` in test_get_env confirms this behavior but it may surprise users. Prefer an explicit None check: `if val is None:` using `os.environ.get('FLASK_ENV', None)` to match the intent more precisely.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            903,
+            912
+          ],
+          "severity": "minor",
+          "title": "test_get_env lacks coverage for FLASK_DEBUG overriding FLASK_ENV=development",
+          "detail": "There is no test case verifying that when both `FLASK_ENV=development` and `FLASK_DEBUG=0` are set, `get_debug_flag()` correctly returns False (FLASK_DEBUG wins). Similarly, there is no test for `FLASK_ENV=development` and `FLASK_DEBUG=1` together. The interaction between the two env vars is a critical invariant of the new design and should be tested.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/cli.py",
+          "line_range": [
+            631,
+            631
+          ],
+          "severity": "minor",
+          "title": "Env printed in run_command reads from env var directly, not from the loaded app's config",
+          "detail": "`get_env()` is called at line 631 to print the current environment before the app loads. If an application factory overrides `app.config['ENV']` (which is allowed since `ENV` is now a proper config key), the printed value will not reflect the actual app env. At minimum a comment explaining this should be added; better would be to print it after the app loads, or print a warning if the two values differ.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "docs/quickstart.rst",
+          "line_range": [
+            133,
+            135
+          ],
+          "severity": "nit",
+          "title": "Contradictory wording: 'enable all development features (and to disable the debug mode)'",
+          "detail": "The phrase 'To enable all development features (and to disable the debug mode)' is self-contradictory. Setting FLASK_ENV=development *enables* debug mode, it does not disable it. This is clearly an editing mistake. It should say something like 'To enable all development features (including debug mode)' or similar.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "docs/config.rst",
+          "line_range": [
+            67,
+            68
+          ],
+          "severity": "nit",
+          "title": "RST code block not indented \u2014 shell commands will render as plain text",
+          "detail": "The example shell commands `$ export FLASK_ENV=development` and `$ flask run` are placed at column 0 after a `::` directive but are not indented. In reStructuredText a literal block introduced by `::` requires the block to be indented relative to the surrounding text. Without indentation these lines will be rendered as ordinary paragraph text, not as a formatted code example.",
+          "confidence": 0.9
+        }
+      ],
       "tool_calls": 4,
-      "tokens_in": 169778,
-      "tokens_out": 400,
-      "cost_usd": 0.515334,
-      "duration_s": 14.460241915890947,
-      "skip_or_error_reason": "BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.6: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_011v9fetg23CGGEq1SXx4Bn3. Each `tool_use` block must have a corresponding `tool_result` block in the next message.'}, 'request_id': 'req_011Cd6281PLAE6FvB2E5bgwS'}"
+      "tokens_in": 249725,
+      "tokens_out": 3892,
+      "cost_usd": 0.807555,
+      "duration_s": 74.67276633298025,
+      "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 169778,
-    "tokens_out": 400,
-    "cost_usd": 0.515334,
-    "duration_s": 14.5
+    "tokens_in": 249725,
+    "tokens_out": 3892,
+    "cost_usd": 0.807555,
+    "duration_s": 74.7
   }
 }

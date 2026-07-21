@@ -5,58 +5,48 @@ ground_truth_matches:
   issue: File handles must be closed on the error/exception paths (e.g. RequestedRangeNotSatisfiable)
     regardless of whether send_file opened the file or received it — the initial patch leaked the
     handle in some cases.
-  matched_finding: null
-  note: finding 0 is adjacent (416 close path) but misdiagnoses a leak the reviewed head already
-    fixed; the actual residual (non-RRNS exceptions leak) is not flagged
+  matched_finding: 1
+  note: 'PRESENT at review_sha: 416 handler file.close() on error paths; reviewer flagged the leak
+    (discussion_r80032416)'
   matchable: true
 - ground_truth: g2
   issue: Feature detection for werkzeug range support is too broad; it should be a werkzeug version
     check or an existence check of the specific function, not a blanket try/except.
-  matched_finding: null
-  note: fixed during review — head uses the existence check the reviewer asked for; finding 7 argues
-    against that resolution
-  matchable: false
+  matched_finding: 0
+  note: 'PRESENT: range support detected via broad `try/except TypeError` around make_conditional
+    (discussion_r80204974)'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: File descriptor leak on RequestedRangeNotSatisfiable when file was opened by send_file
-  valid: false
-  note: 'no leak at the reviewed head: the 416 handler closes the file it opened; the real residual
-    defect is the None/double-close crash, which this finding misses'
+  title: Silent fallback on `TypeError` hides real bugs and may pass wrong `fsize`
+  valid: true
+  note: 'g2: silent TypeError fallback hides real bugs / wrong fsize'
 - finding: 1
-  title: fsize is None when a file object is passed, causing make_conditional to receive None as
-    complete_length
-  valid: uncertain
-  note: 'facts right (complete_length stays None) but ''incorrect or undefined behaviour'' is wrong
-    — werkzeug 0.12 defines it: range processing silently skipped'
+  title: File leaked when `close_on_416=False` and 416 is raised for file-object input
+  valid: true
+  note: 'g1: file leaked when close_on_416=False and 416 raised for file-object'
 - finding: 2
-  title: Range requests silently unsupported / no Accept-Ranges header when file object is passed
+  title: Missing test for 416 response body and `Content-Range` header
   valid: true
-  note: 'title correct per werkzeug 0.12 source: ranges silently unsupported while Accept-Ranges
-    is advertised; near-duplicate of finding 1 the monolith failed to merge'
+  note: 'coverage gap: 416 body + Content-Range untested'
 - finding: 3
-  title: file variable may be undefined when RequestedRangeNotSatisfiable is raised with use_x_sendfile
+  title: 304 x-sendfile removal also needed for 206 partial-content responses
   valid: true
-  note: conclusion right (AttributeError or double-close on the x-sendfile 416 path); 'may be undefined'
-    is imprecise — file is always bound, possibly None
+  note: 206 partial-content also needs x-sendfile removal — defensible
 - finding: 4
-  title: 'Test typo in skip reason: ''not implement'' should be ''not implemented'''
+  title: Test assertion for partial content uses file read after `rv.data` comparison — both correct
+    but fragile
+  valid: false
+  note: 'non-finding: concludes both orderings are correct'
+- finding: 5
+  title: '`close_on_416` flag is an indirect and fragile way to track file ownership'
+  valid: uncertain
+  note: close_on_416 fragile — subjective
+- finding: 6
+  title: Typo in `skipif` reason string
   valid: true
   note: typo confirmed
-- finding: 5
-  title: No test for range request when file-like object (not filename) is passed
-  valid: true
-  note: no test passes a file object with conditional=True and a Range header
-- finding: 6
-  title: No test verifying Accept-Ranges header is present in response
-  valid: true
-  note: tests never assert the Accept-Ranges header
 - finding: 7
-  title: Version-detection via duck-typing on Range class is fragile and adds complexity
-  valid: false
-  note: argues for version sniffing over the feature-existence check the reviewer explicitly endorsed
-    (discussion_r80204974)
-- finding: 8
-  title: 304 x-sendfile cleanup not applied to 416 responses
-  valid: false
-  note: 'speculative: 416 is raised as an exception here, never returned as a response object; no
-    defect at the reviewed head'
+  title: Doc comment says 'upgrade the response stream' — imprecise wording
+  valid: uncertain
+  note: doc wording 'upgrade the response stream' — subjective

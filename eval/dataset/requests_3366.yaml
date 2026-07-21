@@ -3,6 +3,10 @@ repo: psf/requests
 pr: 3366
 title: check for headers containing return characters
 pre_merge_sha: 2669ab797ce769ecedf5493b04cb976f33e37210
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: b9f109d78961aaf62c65fc022c79e7b227b68dc2
 changed_lines: 82
 selected_because: >
   Header-injection validation (security-adjacent) whose review centered on

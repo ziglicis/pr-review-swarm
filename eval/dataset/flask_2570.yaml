@@ -3,6 +3,10 @@ repo: pallets/flask
 pr: 2570
 title: Add Support for FLASK_ENV
 pre_merge_sha: b8f955dd58411836df32d1e1258f92f9ee8ffcc6
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: 8a0de67cc03706180382a16f3bc0c5b8b168c237
 changed_lines: 228
 selected_because: >
   Mixed code+docs PR (tests the classifier) with maintainer disagreement on

@@ -5,7 +5,7 @@ Usage:
 
 Results are cached per case under eval/results/{experiment}/ — a rerun spends
 nothing. A judgment worksheet is generated per result for the manual matching
-step (SPEC §5.2); scoring reads the completed worksheets.
+step; scoring reads the completed worksheets.
 """
 
 from __future__ import annotations

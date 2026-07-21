@@ -1,0 +1,119 @@
+{
+  "case": "requests_4718",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/psf/requests/pull/4718",
+  "head_sha": "857e9b7ac20c3accf4cc328f594aecb8b6a644a6",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180955,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 132,
+      "line_end": 132,
+      "severity": "major",
+      "title": "Explicit default port vs implicit port comparison incorrectly strips auth on same-origin redirect",
+      "detail": "Consider a redirect from `http://example.com:80/a` to `http://example.com/b`. Both are semantically the same origin. `urlparse('http://example.com:80/a').port` returns `80`, while `urlparse('http://example.com/b').port` returns `None`. The final condition on line 132 is `old_parsed.port != new_parsed.port` \u2192 `80 != None` \u2192 `True`, which causes auth to be stripped for a same-origin redirect. Similarly, `https://example.com:443/a` \u2192 `https://example.com/b` would also incorrectly strip. The http\u2192https special case (lines 128-130) is safe because it checks both `(80, None)` and `(443, None)`, but the generic path on line 132 does not normalise default ports. A fix would be to normalise explicit default ports to `None` (or use a helper that maps scheme to default port) before comparing.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 128,
+      "line_end": 132,
+      "severity": "major",
+      "title": "Explicit port equivalents (e.g., http:80 and https:443) not normalised before comparison",
+      "detail": "On line 132, `old_parsed.port != new_parsed.port` compares raw port values. If the original URL is `http://example.com:80/foo` and the redirect is `https://example.com:443/bar`, the special-case on lines 128-130 checks `old_parsed.port in (80, None)` (True) AND `new_parsed.port in (443, None)` (True), so it correctly returns False. That specific combination is handled. But if the original URL is `http://example.com/foo` (port=None, default 80) and the redirect is `https://example.com:443/bar` (port=443), the special-case checks `old_parsed.port in (80, None)` (None \u2192 True) and `new_parsed.port in (443, None)` (443 \u2192 True), so it correctly returns False. This is also covered by the test on line 1605. So the logic is correct for http\u2192https. However the symmetry concern exists for line 132's port comparison: `http://example.com:80` vs `http://example.com` would have ports `80` and `None` respectively, and 80 != None is True, so auth would be stripped even for the same effective origin! This is a real bug \u2014 redirecting from `http://example.com:80/a` to `http://example.com/b` (same host, same effective port) would incorrectly strip auth.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1593,
+      "line_end": 1612,
+      "severity": "minor",
+      "title": "Missing unit test for same-origin redirect (no stripping)",
+      "detail": "`test_should_strip_auth_*` tests cover host change, http downgrade, https upgrade, and port change. There is no test asserting that `should_strip_auth('http://example.com/a', 'http://example.com/b')` returns False (plain same-origin redirect). This is the hot path and should be explicitly tested.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 118,
+      "line_end": 132,
+      "severity": "minor",
+      "title": "Missing test for same-scheme, same-host, same-port redirect (should NOT strip auth)",
+      "detail": "There is no unit test asserting that `should_strip_auth('http://example.com/foo', 'http://example.com/bar')` returns False (the common case of a same-origin redirect). While the code is correct for this case (hostname matches \u2192 False is NOT returned early, scheme unchanged \u2192 False, port unchanged \u2192 False, final result False), a test for this baseline would improve confidence in the function.",
+      "confidence": 0.85
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            132,
+            132
+          ],
+          "severity": "major",
+          "title": "Explicit default port vs implicit port comparison incorrectly strips auth on same-origin redirect",
+          "detail": "Consider a redirect from `http://example.com:80/a` to `http://example.com/b`. Both are semantically the same origin. `urlparse('http://example.com:80/a').port` returns `80`, while `urlparse('http://example.com/b').port` returns `None`. The final condition on line 132 is `old_parsed.port != new_parsed.port` \u2192 `80 != None` \u2192 `True`, which causes auth to be stripped for a same-origin redirect. Similarly, `https://example.com:443/a` \u2192 `https://example.com/b` would also incorrectly strip. The http\u2192https special case (lines 128-130) is safe because it checks both `(80, None)` and `(443, None)`, but the generic path on line 132 does not normalise default ports. A fix would be to normalise explicit default ports to `None` (or use a helper that maps scheme to default port) before comparing.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            128,
+            132
+          ],
+          "severity": "major",
+          "title": "Explicit port equivalents (e.g., http:80 and https:443) not normalised before comparison",
+          "detail": "On line 132, `old_parsed.port != new_parsed.port` compares raw port values. If the original URL is `http://example.com:80/foo` and the redirect is `https://example.com:443/bar`, the special-case on lines 128-130 checks `old_parsed.port in (80, None)` (True) AND `new_parsed.port in (443, None)` (True), so it correctly returns False. That specific combination is handled. But if the original URL is `http://example.com/foo` (port=None, default 80) and the redirect is `https://example.com:443/bar` (port=443), the special-case checks `old_parsed.port in (80, None)` (None \u2192 True) and `new_parsed.port in (443, None)` (443 \u2192 True), so it correctly returns False. This is also covered by the test on line 1605. So the logic is correct for http\u2192https. However the symmetry concern exists for line 132's port comparison: `http://example.com:80` vs `http://example.com` would have ports `80` and `None` respectively, and 80 != None is True, so auth would be stripped even for the same effective origin! This is a real bug \u2014 redirecting from `http://example.com:80/a` to `http://example.com/b` (same host, same effective port) would incorrectly strip auth.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1593,
+            1612
+          ],
+          "severity": "minor",
+          "title": "Missing unit test for same-origin redirect (no stripping)",
+          "detail": "`test_should_strip_auth_*` tests cover host change, http downgrade, https upgrade, and port change. There is no test asserting that `should_strip_auth('http://example.com/a', 'http://example.com/b')` returns False (plain same-origin redirect). This is the hot path and should be explicitly tested.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            118,
+            132
+          ],
+          "severity": "minor",
+          "title": "Missing test for same-scheme, same-host, same-port redirect (should NOT strip auth)",
+          "detail": "There is no unit test asserting that `should_strip_auth('http://example.com/foo', 'http://example.com/bar')` returns False (the common case of a same-origin redirect). While the code is correct for this case (hostname matches \u2192 False is NOT returned early, scheme unchanged \u2192 False, port unchanged \u2192 False, final result False), a test for this baseline would improve confidence in the function.",
+          "confidence": 0.85
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 63940,
+      "tokens_out": 2059,
+      "cost_usd": 0.222705,
+      "duration_s": 39.522527958033606,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 63940,
+    "tokens_out": 2059,
+    "cost_usd": 0.222705,
+    "duration_s": 39.5
+  }
+}

@@ -4,60 +4,58 @@ ground_truth_matches:
 - ground_truth: g1
   issue: The brute-force test making 100 HTTP requests is aggressive and not reliably failing; a
     deterministic test coordinating threads with threading.Event and no network would be better.
-  matched_finding: 0
-  note: 'finding 0 is the reviewer''s exact critique: 100 real network requests, slow, non-deterministic,
-    with no real thread-safety assertion (discussion_r27737727)'
+  matched_finding: 5
+  note: 'PRESENT: the 100-request ThreadPool brute-force test is at review_sha; Lukasa flagged it
+    ''overly aggressive'', suggested threading.Event (discussion_r27737727)'
   matchable: true
 - ground_truth: g2
   issue: The thread-local attribute should be private (underscore-prefixed) and clearly named (e.g.
     _thread_local) so readers understand it without reading the whole class.
   matched_finding: null
-  note: fixed during review — the attribute is private and named _thread_local at the reviewed head
-    (discussion_r27754250)
-  matchable: false
+  note: 'PRESENT: thread-local stored as `self.tl` (opaque, not private _thread_local); sigmavirus24
+    asked for clearer naming (discussion_r27754250)'
+  matchable: true
 - ground_truth: g3
   issue: The getattr fallback for num_401_calls is dead weight after the refactor — the value is
     always assigned in __call__, so the default branch can never trigger and should be removed.
   matched_finding: null
-  note: fixed during review — the getattr fallback is gone; handle_401 reads the thread-local directly
-    (discussion_r27659035)
+  note: 'NON-matchable: no getattr fallback at review_sha — handle_401 reads `self.tl.num_401_calls`
+    directly; the dead getattr (discussion_r27659035) was already removed'
   matchable: false
 finding_validity:
 - finding: 0
-  title: Thread-safety test makes a real network request and has no assertion on thread safety
-  valid: true
-  note: matches the reviewer's concern nearly verbatim
+  title: 'NoneType comparison crash: `num_401_calls` initialized to `None`, compared with `< 2`'
+  valid: false
+  note: 'None-comparison crash is unreachable: num_401_calls is set to 1 in __call__ before hooks
+    run'
 - finding: 1
-  title: Test silently skips when ThreadPool is unavailable instead of using pytest.skip
+  title: New threaded test silently passes when `ThreadPool` import fails and does not assert status
+    code
   valid: true
-  note: 'factual: explicit skip patterns exist for exactly this'
+  note: threaded test silently passes when ThreadPool import fails
 - finding: 2
-  title: num_401_calls initialized to None instead of 1
-  valid: false
-  note: 'unreachable in requests'' synchronous model: hooks are registered inside __call__ (which
-    sets num_401_calls=1 before the request is sent) and fire on the same thread post-send; requests
-    keeps the None initialization to this day without incident'
-- finding: 3
-  title: init_per_thread_state 'init' flag prevents re-initialization across requests on the same
-    thread
+  title: Per-thread state initialized only once per thread — stale nonce/challenge reused across
+    independent requests on pooled threads
   valid: uncertain
-  note: real design property; pre-existing persistence semantics preserved deliberately
+  note: stale per-thread nonce — design property
+- finding: 3
+  title: Hooks registered on every `__call__` without deduplication — multiple hooks accumulate on
+    session reuse
+  valid: uncertain
+  note: hooks registered every __call__ without dedup — minor real issue
 - finding: 4
-  title: Possible UnboundLocalError for hash_utf8 if algorithm is unrecognized
+  title: '`hash_utf8` may be used uninitialized if algorithm is not MD5, MD5-SESS, or SHA'
   valid: true
-  note: 'verified at the SHA: hash_utf8 is never assigned for unrecognized algorithms, so `if hash_utf8
-    is None` raises UnboundLocalError — real latent bug in a function this PR modifies, honestly
-    labeled pre-existing'
+  note: 'real latent bug: hash_utf8 unassigned for unknown algorithm'
 - finding: 5
-  title: Thread-safety test only checks Authorization header format, not actual concurrency correctness
+  title: Threaded test depends on live external service (httpbin.org) — not a unit test
   valid: true
-  note: 'factual: no status_code assertion, only header format'
+  note: 'g1: threaded test depends on live httpbin.org — not a unit test'
 - finding: 6
-  title: handle_redirect accesses _thread_local without calling init_per_thread_state
-  valid: false
-  note: 'same unreachable premise: hooks fire on the thread that ran __call__; the finding concedes
-    normal flow is safe'
+  title: '`handle_redirect` accesses `self.tl` without `init_per_thread_state()` guard'
+  valid: uncertain
+  note: handle_redirect accesses tl without init guard — edge
 - finding: 7
-  title: Missing space around assignment operator in test
+  title: Missing space around `=` in keyword argument / assignment
   valid: true
-  note: PEP 8 violation confirmed
+  note: missing space around = — factual

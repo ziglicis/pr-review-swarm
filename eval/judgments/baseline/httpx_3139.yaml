@@ -4,71 +4,58 @@ ground_truth_matches:
 - ground_truth: g1
   issue: Decompressed chunks should be assembled with io.BytesIO rather than repeated bytes concatenation.
   matched_finding: null
-  note: fixed during review — decode() already assembles chunks with io.BytesIO at the reviewed head
-    (discussion_r1518812137)
+  note: 'NON-matchable: decode already assembles via `data_parts=[...]; b''''.join(...)` (list-join
+    avoids repeated concat) at review_sha; the BytesIO concern (discussion_r1518812137) was addressed
+    earlier'
   matchable: false
 - ground_truth: g2
   issue: The runtime zstandard version guard in _compat.py is questioned as overly defensive vs pinning
     >=0.18 in requirements; kept because the extra is optional and an old zstandard may already be
     installed — a genuine design disagreement documented in review.
   matched_finding: null
-  note: design debate resolved by keeping the guard (documented in review); no finding raises the
-    version-guard-vs-requirements-pin question (discussion_r1524997549); finding 7 questions only
-    the exception breadth
+  note: 'NON-matchable: the runtime version-guard ''overly defensive'' point (discussion_r1524997549)
+    is a design disagreement the maintainers resolved by keeping the guard — not a defect'
   matchable: false
 - ground_truth: g3
   issue: Test coverage for the new decoder paths is incomplete and needs addressing before merge.
-  matched_finding: 3
-  note: 'finding 3 is the sharpest coverage gap: the parametrized empty-content/decode tests exclude
-    zstd — adding it would have exposed the empty-body flush bug'
+  matched_finding: 0
+  note: 'PRESENT: new zstd decoder paths (flush/error/multiframe/empty) are untested at review_sha
+    (discussion_r1525274642)'
   matchable: true
 finding_validity:
 - finding: 0
-  title: '`ZStandardDecoder.decode` can silently drop data when a skippable frame is the *last* frame'
-  valid: false
-  note: 'verified: no data is dropped — skippable frames carry no payload and the loop output is
-    correct; the speculated consequence does not occur'
+  title: '`test_empty_content` and `test_decoders_empty_cases` do not include zstd'
+  valid: true
+  note: 'g3: empty-content/empty-cases tests exclude zstd'
 - finding: 1
-  title: '`ZStandardDecoder.flush` incorrectly rejects valid streams that end with a skippable frame'
-  valid: false
-  note: 'verified with zstandard: a trailing skippable frame leaves eof True and empty unused_data
-    after the loop — flush() does not raise'
+  title: flush() raises DecodingError on empty/no-data response for zstd
+  valid: true
+  note: flush raises on empty response
 - finding: 2
-  title: Truncated / placeholder error message in `ZStandardDecoder.__init__`
-  valid: true
-  note: verified placeholder text at the SHA
+  title: Multi-frame zstd decoding loop may be incorrect when data is chunked across frames
+  valid: uncertain
+  note: '''multi-frame may be incorrect when chunked'' — speculative; loop is correct'
 - finding: 3
-  title: '`test_empty_content` and `test_decoders_empty_cases` parametrizations do not include `zstd`'
+  title: Incomplete error message in ZStandardDecoder.__init__
   valid: true
-  note: factual, and adding zstd to those parametrizations would expose the real empty-body flush
-    bug
+  note: incomplete ImportError message
 - finding: 4
-  title: '`zstd` missing from `__all__`'
+  title: Missing conditional removal of 'zstd' from SUPPORTED_DECODERS when zstd is unavailable
   valid: true
-  note: verified __all__ omission
+  note: 'real: zstd never removed from SUPPORTED_DECODERS when unavailable'
 - finding: 5
-  title: '`ZStandardDecoder.flush` returns `bytes(ret)` where `ret` is already `bytes`'
-  valid: uncertain
-  note: copied verbatim from urllib3; possibly defensive typing rather than pure redundancy
+  title: '`test_decoding_errors` does not include zstd'
+  valid: true
+  note: 'g3: test_decoding_errors excludes zstd'
 - finding: 6
-  title: '`test_decoding_errors` parametrization does not include `zstd`'
+  title: zstd sentinel value uses False instead of None for consistency
   valid: true
-  note: 'factual: test_decoding_errors excludes zstd'
+  note: sentinel False vs None — factual
 - finding: 7
-  title: Catching `AttributeError` and `ValueError` on `import zstandard` is over-broad
-  valid: uncertain
-  note: package __init__ code can raise those exceptions (why urllib3 catches them); the defensiveness
-    is deliberate and marked
-- finding: 8
-  title: '`test_zstd_decoding_error` passes a `str` as `content`, not invalid zstd bytes'
-  valid: uncertain
-  note: str content is accepted API and reaches the decoder; consistency point defensible
-- finding: 9
-  title: CHANGELOG `## Added` section is missing `###` prefix
+  title: '`zstd` not added to `__all__`'
   valid: true
-  note: confirmed heading-level break
-- finding: 10
-  title: Redundant `assert zstd is not None` in `decode`
-  valid: false
-  note: it is a mypy type-narrowing assert for Optional[ModuleType] — removing it breaks the type
-    check
+  note: zstd omitted from __all__ (confirmed)
+- finding: 8
+  title: Version check regex could fail if __version__ has no minor component
+  valid: true
+  note: version regex fails if __version__ has no minor component — real edge

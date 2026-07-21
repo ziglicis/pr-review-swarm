@@ -1,0 +1,97 @@
+case: requests_3655
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: When tell() fails at prepare time, _body_position stays None and rewind_body silently skips
+    instead of raising; a sentinel object is needed to distinguish "never set" from "tell failed".
+  matched_finding: null
+  note: fixed during review — the object() sentinel distinguishing failed tell() from never-set is
+    at the reviewed head (discussion_r85648021)
+  matchable: false
+- ground_truth: g2
+  issue: Casting tell()'s result with int() is wrong on Python 2 where long (bignum) is meaningful;
+    an integer_types tuple belongs in compat.py — and the first attempt wrote (int) which isn't a
+    tuple at all.
+  matched_finding: null
+  note: fixed during review — integer_types tuple lives in compat.py and rewind_body uses isinstance
+    against it (discussion_r85892421)
+  matchable: false
+- ground_truth: g3
+  issue: The new exception name RedirectError is too vague for what it signals; it should be the
+    specific UnrewindableBodyError.
+  matched_finding: null
+  note: fixed during review — the exception is named UnrewindableBodyError (discussion_r85712220)
+  matchable: false
+- ground_truth: g4
+  issue: Tests must assert the actual content re-read after rewind and cover an object with seek()
+    but a broken/missing tell().
+  matched_finding: null
+  note: addressed during review — tests assert re-read content and cover no-seek/failed-seek/failed-tell
+    objects (discussion_r85716594)
+  matchable: false
+- ground_truth: g5
+  issue: The rewind helper doesn't use self — it's a function masquerading as a method and belongs
+    in utils.
+  matched_finding: null
+  note: fixed during review — rewind_body is a function in utils.py (discussion_r85892494)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: No integration test for `UnrewindableBodyError` propagating out of `resolve_redirects`
+  valid: true
+  note: 'factual: no integration test for the primary user-facing failure path'
+- finding: 1
+  title: Rewind condition uses fragile header check and is vulnerable to server-controlled headers
+  valid: false
+  note: the security headline is counterfactual ('if the intent were ever changed'); the check reads
+    outgoing headers by design, not coincidence
+- finding: 2
+  title: No test for `Transfer-Encoding` / chunked-body path through a 307 redirect
+  valid: true
+  note: 'factual: no chunked/Transfer-Encoding body is tested through a 307'
+- finding: 3
+  title: '`rewind_body` raises `UnrewindableBodyError` instead of no-op when body is non-seekable
+    and `_body_position` is None'
+  valid: uncertain
+  note: raising is a reasonable standalone contract; guarded by rewindable in the only call site
+- finding: 4
+  title: 'Typo in public exception message and test assertion: "occured" should be "occurred"'
+  valid: true
+  note: confirmed typo, including the mirrored test assertion
+- finding: 5
+  title: Missing blank line before `UnrewindableBodyError` class definition
+  valid: true
+  note: confirmed single blank line
+- finding: 6
+  title: Missing blank line before top-level function `rewind_body`
+  valid: true
+  note: confirmed single blank line
+- finding: 7
+  title: No test verifying `_body_position` is preserved by `PreparedRequest.copy()`
+  valid: true
+  note: 'factual: copy() preservation unasserted'
+- finding: 8
+  title: '`object()` sentinel for failed `tell()` is undocumented and should be a named constant'
+  valid: uncertain
+  note: object() sentinel is kept in requests to this day; serialization concern speculative
+- finding: 9
+  title: No explicit test asserting `rewind_body` is skipped for non-stream body in `resolve_redirects`
+  valid: uncertain
+  note: self-acknowledged as incidentally covered; weak
+- finding: 10
+  title: Seek position from `tell()` is not validated before use
+  valid: false
+  note: 'far-fetched: position comes from the object''s own tell()'
+- finding: 11
+  title: No test for stream where `tell()` returns a non-integer
+  valid: true
+  note: 'factual edge tied to the reviewed integer_types mechanism: a float tell() raises UnrewindableBodyError
+    and is untested'
+- finding: 12
+  title: Unused `s = requests.Session()` assignments in multiple new test functions
+  valid: true
+  note: confirmed dead assignments
+- finding: 13
+  title: Long lines in new test methods inconsistent with surrounding style
+  valid: uncertain
+  note: weak style point

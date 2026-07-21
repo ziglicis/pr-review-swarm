@@ -3,6 +3,10 @@ repo: encode/httpx
 pr: 2423
 title: Change LineDecoder to match stdlib splitlines
 pre_merge_sha: f6685bdd12fb0c7da517f78e0322b8cd1955ce73
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: becea552195831ba8d65699b0212ada892abea6d
 changed_lines: 124
 selected_because: >
   Performance rewrite of incremental line splitting; review found behavior

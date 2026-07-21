@@ -6,88 +6,76 @@ ground_truth_matches:
     it, and the request goes out with no multipart boundary at all — violating the spec so no server
     can parse it; the boundary must be injected into the existing header.
   matched_finding: null
-  note: 'MISSED though live at the reviewed head: with a user Content-Type lacking a boundary, setdefault
-    keeps the user header while the body uses a random boundary — unparseable request. The system
-    analyzed the exact mechanism and concluded ''correct'' instead of flagging it (finding 6); findings
-    3/12 flag the missing body assertion that would have exposed it'
-  matchable: true
+  note: 'NON-matchable: at review_sha the parser RAISES ValueError on a missing boundary rather than
+    silently producing an unparseable request; the setdefault-mismatch + inject-boundary resolution
+    (discussion_r906733887) came later'
+  matchable: false
 - ground_truth: g2
   issue: RFC 2046 allows the boundary parameter to be quoted; the parser must strip quotes (and handle
     mixed-case/whitespace) rather than only accepting the bare token form.
-  matched_finding: null
-  note: fixed during review — strip(b'"') and the quoted-boundary parametrized tests are present
-    at the reviewed head (discussion_r945186942)
-  matchable: false
+  matched_finding: 1
+  note: 'PRESENT: `split(''boundary='')[-1].encode(''latin-1'')` does no quote/whitespace stripping
+    (discussion_r945186942)'
+  matchable: true
 - ground_truth: g3
   issue: The boundary should be extracted from headers upstream in _models.py and passed down, removing
     the content_type parameter from encode_request/encode_multipart_data signatures entirely.
   matched_finding: null
-  note: implemented during review — extraction lives in _models.py and encode_request/encode_multipart_data
-    take boundary, not content_type (discussion_r945184961)
-  matchable: false
+  note: 'PRESENT: content_type threaded through encode_request; reviewers wanted extraction moved
+    to _models.py (discussion_r945184961)'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: User-supplied boundary used without RFC 2046 validation — multipart injection and DoS risk
-  valid: uncertain
-  note: the boundary comes from the caller's own header — no trust boundary is crossed; RFC-validation
-    is a defensible robustness ask httpx itself never added
+  title: Invalid content-type header path is untested
+  valid: true
+  note: 'coverage gap: invalid content-type path untested'
 - finding: 1
-  title: Splitting on `;` breaks quoted-string boundary values containing semicolons
+  title: Boundary extraction does not strip trailing whitespace/garbage, causing declared and wire
+    boundary to diverge
   valid: true
-  note: technically correct RFC 2046 gap (quoted-string may contain ';'); parser falls back to a
-    random boundary producing a body/header mismatch; self-acknowledged as rare
+  note: 'g2: no whitespace stripping on the extracted boundary'
 - finding: 2
-  title: Missing unit tests for `get_multipart_boundary_from_content_type` edge-case branches
-  valid: true
-  note: 'factual: the helper has no direct unit tests, only client-level coverage'
+  title: Unvalidated boundary value enables CRLF/header injection
+  valid: uncertain
+  note: CRLF-injection via boundary — caller-controlled value, no trust boundary
 - finding: 3
-  title: test_multipart_header_without_boundary does not verify the auto-generated boundary was used
-    in the body
+  title: Case-sensitive header lookup and over-broad `startswith` check on Content-Type
   valid: true
-  note: factual, and this is exactly the assertion that would have exposed the g1 mismatch
+  note: 'real: case-sensitive startswith on the Content-Type value'
 - finding: 4
-  title: No test for explicit multipart boundary via direct `httpx.Request()` construction
+  title: Boundary value extracted with `split('boundary=')[-1]` is incorrect for boundary values
+    containing the substring 'boundary='
   valid: true
-  note: factual; marginal
+  note: 'real: split(''boundary='')[-1] is fragile for boundaries containing ''='''
 - finding: 5
-  title: Boundary quoted-string stripping with `strip(b'"')` silently truncates or mishandles edge-case
-    values
+  title: Redundant outer `if ";" in content_type` guard before `split`
   valid: true
-  note: strip-all semantics accurately described; its boundary="" example is the same empty-boundary
-    hole the baseline found
+  note: redundant outer if ';' guard — the split loop already handles it
 - finding: 6
-  title: MultipartStream reconstructs Content-Type internally but user-supplied header is preserved
-    via setdefault — behaviour is correct but fragile
-  valid: uncertain
-  note: accurate mechanism analysis that stops at 'correct but fragile' — it walked up to the g1
-    bug and did not flag it; no actionable defect claimed
+  title: No test for explicit `boundary` argument taking precedence over a `Content-Type` header
+  valid: true
+  note: 'coverage gap: explicit boundary precedence untested'
 - finding: 7
-  title: Boundary is unconditionally extracted from Content-Type even when `files` is None
-  valid: uncertain
-  note: factual but self-described as harmless; speculative confusion
+  title: '`get_multipart_boundary_from_content_type`: no-semicolon code path not unit-tested'
+  valid: true
+  note: 'coverage gap: no-semicolon path untested'
 - finding: 8
-  title: Case-insensitive boundary= prefix check is correct but implementation is fragile
-  valid: false
-  note: reports that something is correct — a non-finding
+  title: New `headers` parameter in `encode_request` / `Request` constructor not tested at unit level
+  valid: true
+  note: 'coverage gap: new headers param untested'
 - finding: 9
-  title: Outer `if b";" in content_type` guard is redundant
+  title: Truthy check on `headers` should use `is not None`
   valid: true
-  note: 'factual: the split loop already yields the whole value when no semicolon exists; guard is
-    redundant'
+  note: truthy headers check should be is not None — factual
 - finding: 10
-  title: Magic constant `len(b"boundary=")` duplicated — prefer a named constant
+  title: Variable name `new_headers` is a workaround, not a meaningful name
   valid: uncertain
-  note: two occurrences of a literal hardly warrant a constant; subjective
+  note: new_headers naming — subjective
 - finding: 11
-  title: Inline comment uses lower-case first letter — inconsistent with surrounding style
-  valid: true
-  note: trivial but factual against the file's sentence-case comment style
+  title: Dropped `boundary` keyword argument at `encode_request` call site may cause future confusion
+  valid: uncertain
+  note: dropped boundary kwarg 'may cause future bug' — speculative
 - finding: 12
-  title: test_multipart_header_without_boundary omits body-content assertion present in sibling tests
-  valid: true
-  note: factual; duplicate angle of finding 3 the synthesizer left unmerged
-- finding: 13
-  title: Parametrize style inconsistent within the file
-  valid: false
-  note: ('key') is just a parenthesized string, semantically identical; suggesting the old tests
-    be updated is out of scope
+  title: Inconsistent `parametrize` style across new and existing tests
+  valid: uncertain
+  note: parametrize style — subjective

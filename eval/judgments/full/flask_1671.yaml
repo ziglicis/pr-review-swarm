@@ -5,75 +5,76 @@ ground_truth_matches:
   issue: A bare "except:" clause is almost never appropriate — it swallows SystemExit and KeyboardInterrupt;
     the exception type must be constrained.
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: bare `except:` is gone at daceb3e3 (only specific `except TypeError:` remain);
+    g1 was fixed in an earlier commit (3249ca3c)'
   matchable: false
 - ground_truth: g2
   issue: 'Pointless type checks: kwargs is always a dict and args is always a tuple in that code
     path, so the isinstance guards are dead weight.'
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: at daceb3e3 the jsonify path already uses dict(kwargs)/list(args) with no
+    isinstance guards; the ''pointless isinstance'' critique applied to an earlier revision'
   matchable: false
 - ground_truth: g3
   issue: The behavior change needs a proper versionchanged directive in the docstring rather than
     prose.
   matched_finding: null
-  note: versionchanged was added during review; present in final state
+  note: 'NON-matchable: the versionchanged-directive concern was raised against a different commit
+    (a012e713); not the flagged prose state here'
   matchable: false
 finding_validity:
 - finding: 0
+  title: 'Single-element list: `jsonify(*l)` and `jsonify(l)` produce different output'
+  valid: true
+  note: 'real: single-element jsonify(*l) vs jsonify(l) produce different output'
+- finding: 1
   title: No test for TypeError when both args and kwargs are passed to jsonify()
   valid: true
-  note: TypeError branch is indeed untested in the merged PR
-- finding: 1
-  title: Single-arg path breaks equivalence of jsonify(l) vs jsonify(*l) for one-element lists
-  valid: true
-  note: real single-element jsonify(l) vs jsonify(*l) asymmetry
+  note: 'coverage gap: TypeError-when-both-args+kwargs untested'
 - finding: 2
-  title: Top-level JSON array serialization removes a defense-in-depth measure with insufficient
-    guidance
+  title: Bare scalar/primitive top-level JSON values silently bypass security framing with no documentation
+    warning
   valid: true
-  note: the historical JSON-hijacking rationale; PR body acknowledges the tradeoff
+  note: 'real: bare scalar top-level JSON bypasses the security framing'
 - finding: 3
-  title: 'Anchor label mismatch: `json-security` vs `json_security` breaks cross-references'
+  title: Security documentation anchor mismatch — `json_security` vs `json-security`
   valid: true
-  note: 'matches ivan-leontiev''s review comment (fixed later in #1703)'
+  note: anchor mismatch json_security vs json-security (matches ivan-leontiev review comment)
 - finding: 4
-  title: 'Missing tests for edge-case jsonify() invocations: zero arguments and None'
+  title: RST numbered list continuation lines not properly indented — rendered documentation will
+    break
   valid: true
-  note: ''
+  note: RST numbered-list continuation not indented (matches wlhlm review comment)
 - finding: 5
-  title: Docstring RST numbered-list indentation may render incorrectly
+  title: '`jsonify()` called with zero args and kwargs silently returns `{}` — unintended implicit
+    case'
   valid: true
-  note: matches wlhlm's RST-alignment review comment
+  note: 'real: jsonify() with zero args returns {}'
 - finding: 6
-  title: Single-argument pass-through allows arbitrary types to reach the JSON encoder unchecked
-  valid: true
-  note: dict() coercion previously rejected these types
-- finding: 7
-  title: No minimal test for the multi-arg array path with exactly two arguments
-  valid: true
-  note: borderline nit but a fair test suggestion
-- finding: 8
-  title: Missing spaces inside dict literals in test (PEP 8 / style consistency)
-  valid: true
-  note: ''
-- finding: 9
-  title: Changelog entry uses 'to serializing' instead of 'for serializing'
-  valid: true
-  note: quoted CHANGES text is real
-- finding: 10
-  title: Informal personal development note left in committed test code
-  valid: true
-  note: ''
-- finding: 11
-  title: Ambiguous single-character variable name `l` (lowercase L)
-  valid: true
-  note: ''
-- finding: 12
-  title: Inline comment placement inconsistent with surrounding code style
-  valid: true
-  note: ''
-- finding: 13
-  title: Docstring repeats behavior in both prose and a numbered list redundantly
+  title: AUTHORS list is no longer sorted alphabetically
   valid: uncertain
-  note: subjective; prose+list duplication is a taste call
+  note: AUTHORS sort order — trivial/subjective
+- finding: 7
+  title: 'Minor grammatical issue: ''to serializing'' should be ''for serializing'''
+  valid: true
+  note: CHANGES grammar 'to serializing' — factual
+- finding: 8
+  title: 'Inconsistent wording: ''throw an exception'' vs Python convention ''raise'''
+  valid: uncertain
+  note: '''throw an exception'' vs ''raise'' wording — subjective'
+- finding: 9
+  title: Leftover comment about pytest parametrize should be removed or converted
+  valid: uncertain
+  note: leftover parametrize comment — subjective
+- finding: 10
+  title: Missing spaces inside dict literals — inconsistent with PEP 8 and surrounding style
+  valid: true
+  note: missing spaces in dict literals — factual PEP8
+- finding: 11
+  title: Variable name `l` is easily confused with `1` — use a more descriptive name
+  valid: true
+  note: variable name `l` (PEP8 E741) — factual
+- finding: 12
+  title: Inline comment style inconsistent with surrounding code
+  valid: uncertain
+  note: inline comment style — subjective

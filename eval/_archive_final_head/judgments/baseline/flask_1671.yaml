@@ -1,0 +1,61 @@
+case: flask_1671
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: A bare "except:" clause is almost never appropriate — it swallows SystemExit and KeyboardInterrupt;
+    the exception type must be constrained.
+  matched_finding: null
+  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  matchable: false
+- ground_truth: g2
+  issue: 'Pointless type checks: kwargs is always a dict and args is always a tuple in that code
+    path, so the isinstance guards are dead weight.'
+  matched_finding: null
+  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  matchable: false
+- ground_truth: g3
+  issue: The behavior change needs a proper versionchanged directive in the docstring rather than
+    prose.
+  matched_finding: null
+  note: added during review
+  matchable: false
+finding_validity:
+- finding: 0
+  title: TypeError for mixed args+kwargs is not tested
+  valid: true
+  note: ''
+- finding: 1
+  title: 'Cross-reference anchor mismatch: `.. _json-security:` vs `:ref:\`json_security\``'
+  valid: true
+  note: ''
+- finding: 2
+  title: No test for the TypeError raised when both args and kwargs are provided
+  valid: true
+  note: duplicate of finding 0 — baseline has no dedupe step
+- finding: 3
+  title: '`test_jsonify_arrays` does not verify that a single-element list round-trips correctly'
+  valid: true
+  note: same real single-element subtlety, muddled write-up
+- finding: 4
+  title: 'Broken backward compatibility: `jsonify()` with no arguments now returns `{}` instead of
+    raising an error'
+  valid: false
+  note: 'claim is wrong: jsonify() with zero args returned {} before this PR too — no backward-compat
+    break'
+- finding: 5
+  title: Single-argument path silently accepts non-JSON-serializable types and loses the old dict-coercion
+    safety
+  valid: true
+  note: ''
+- finding: 6
+  title: 'Docstring RST formatting: numbered list items after line 213 are not indented correctly'
+  valid: true
+  note: ''
+- finding: 7
+  title: Endpoint name collision risk in `test_jsonify_basic_types`
+  valid: false
+  note: 'speculative: endpoint names are per-test-app; no real collision path'
+- finding: 8
+  title: Duplicate `versionchanged` directive in docstring
+  valid: uncertain
+  note: cannot verify the duplicate versionchanged render without building docs

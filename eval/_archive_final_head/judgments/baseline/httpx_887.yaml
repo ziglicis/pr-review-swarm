@@ -1,0 +1,62 @@
+case: httpx_887
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: The helper's "get chunk" naming misrepresents what it does — it returns a modified body
+    iterable that skips leading empty chunks, so it should be named accordingly (e.g. _skip_leading_empty_chunks).
+  matched_finding: null
+  note: fixed during review — the helper is already named _skip_leading_empty_chunks at the reviewed
+    head (discussion_r399778004)
+  matchable: false
+- ground_truth: g2
+  issue: PEP 3333 permits sending headers early when Content-Length is 0 — reviewers debated whether
+    that exception needs explicit handling and settled on pragmatically skipping it.
+  matched_finding: null
+  note: review settled on pragmatically skipping the Content-Length:0 early-header exception; no
+    finding raises it either (discussion_r399773077)
+  matchable: true
+- ground_truth: g3
+  issue: New tests duplicate what tests/test_wsgi.py already covers; the existing echo_body_with_response_stream
+    fixture should be refactored into a true generator instead of adding parallel tests elsewhere.
+  matched_finding: null
+  note: largely addressed during review — the tests were folded into tests/test_wsgi.py; the remaining
+    ask (make echo_body_with_response_stream a true generator) is not raised by any finding
+  matchable: false
+finding_validity:
+- finding: 0
+  title: 'Generator app: `start_response` is never called before `seen_status` assertion'
+  valid: false
+  note: 'title wrong: _skip_leading_empty_chunks runs before the assert and iterating the generator
+    executes its body, so start_response is called; detail walks the title back'
+- finding: 1
+  title: 'Generator-based WSGI app: `start_response` may not be called if body is all-empty (no `close()`
+    call either)'
+  valid: uncertain
+  note: the close()-not-forwarded half is accurate (and admits pre-existing); the all-empty start_response
+    half describes a broken app that must fail
+- finding: 2
+  title: Assertion on `seen_status` fires before generator has been iterated when app yields nothing
+  valid: false
+  note: the helper is invoked at line 99, before the line-104 assert; a run-to-completion generator
+    body executes start_response on first next()
+- finding: 3
+  title: '`application_factory` always yields (is a generator function), cannot test list-return
+    path'
+  valid: false
+  note: echo_body and raise_exc still return plain lists, so the list-return path remains tested;
+    only the leading-empty-list combination is untested
+- finding: 4
+  title: Removal of `Content-Length` header from test fixtures may mask regressions
+  valid: uncertain
+  note: defensible fidelity question, but the removal accompanies the generator refactor and nothing
+    asserted on those headers
+- finding: 5
+  title: 'Missing test: generator-based app that is entirely empty (no yield statements executed)'
+  valid: true
+  note: 'factual gap: an app whose generator yields zero items is a distinct case from yielding four
+    empty chunks'
+- finding: 6
+  title: Redundant generator expression wrapping the iterator
+  valid: false
+  note: factually right simplification, but the line pre-exists and is untouched by this PR — scope
+    noise

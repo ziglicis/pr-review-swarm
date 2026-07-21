@@ -4,113 +4,80 @@ ground_truth_matches:
 - ground_truth: g1
   issue: 'The get_debug_flag/property pattern is debated: one maintainer asks for the property decorator,
     the author explicitly prefers the older pattern — genuine unresolved style disagreement.'
-  matched_finding: null
-  note: no finding touches the property-decorator vs classic get/set debate (discussion_r159910418)
+  matched_finding: 7
+  note: 'PRESENT: non-@property debug pattern at app.py:808 (davidism/mitsuhiko property-decorator
+    debate)'
   matchable: true
 - ground_truth: g2
   issue: The claim that "the debugger will kick in" in development env is inaccurate — it only activates
     when FLASK_DEBUG is set, and the docs/docstrings as written would perpetuate a common confusion.
   matched_finding: null
-  note: the app.py debug docblock still says 'the debugger will kick in' at the reviewed head and
-    no finding flags it; finding 5 flags a different doc inaccuracy (quickstart parenthetical, davidism's
-    comment 160035766, not in GT)
+  note: 'PRESENT: app.py:801 docstring ''the debugger will kick in'' — davidism flagged it inaccurate;
+    no finding flags this specific docstring'
   matchable: true
 - ground_truth: g3
   issue: 'Assorted polish: typo ("repopulate") and visually inconsistent indentation style flagged
     in several places.'
   matched_finding: null
-  note: neither the 'repopulate' typo nor the continuation-indentation style was flagged; finding
-    15 touches the adjacent block-spacing convention (comment 159911583) but not the g3 items
+  note: 'PRESENT: ''repopulate'' typo (cli.py:360) + inconsistent continuation indentation (app.py:815);
+    unmatched by all'
   matchable: true
 finding_validity:
 - finding: 0
-  title: '`get_debug_flag()` never returns None, so `debug is not None` guard is always True and
-    ''Forcing debug mode'' prints unconditionally'
+  title: get_debug_flag() always returns a boolean, breaking explicit-vs-default detection and mishandling
+    empty FLASK_DEBUG
   valid: true
-  note: 'verified at the SHA: get_debug_flag() always returns a bool, so ''Forcing debug mode off''
-    prints on every plain flask run — and load_app unconditionally overrides app.debug'
+  note: get_debug_flag() always returns a bool, breaking explicit-vs-default detection
 - finding: 1
-  title: Falsy-string check (`if not val:`) treats explicit empty-string env vars as unset, masking
-    user intent
-  valid: uncertain
-  note: factually right, but treating empty-as-unset is a deliberate idiom (it is how vars are cleared
-    on Windows cmd) and predates this PR
+  title: Dead branch in test_get_debug_flag and missing coverage of the FLASK_DEBUG-not-set path
+  valid: true
+  note: dead branch in test_get_debug_flag + missing unset-FLASK_DEBUG coverage
 - finding: 2
-  title: Production environment warning, env print line, and updated shell banner lack test coverage
+  title: test_get_env does not isolate FLASK_DEBUG and misses the FLASK_ENV+FLASK_DEBUG interaction
   valid: true
-  note: no CLI tests added anywhere in the PR; all three behaviors unverified
+  note: test_get_env doesn't isolate FLASK_DEBUG; misses the interaction
 - finding: 3
-  title: New `make_config()` ENV/DEBUG defaults, debug property getter/setter, and `app.env` ConfigAttribute
-    not tested
+  title: Integration path through make_config and new 'env' attribute not tested
   valid: true
-  note: only helpers-level tests were added; nothing tests make_config population or the new property/attribute
+  note: make_config + new env attribute untested
 - finding: 4
-  title: FLASK_ENV implicitly enables the Werkzeug interactive debugger without validation or prominent
-    logging
-  valid: uncertain
-  note: describes a real design property maintainers later regretted (FLASK_ENV was deprecated in
-    2.2), but the marginal risk over an attacker setting FLASK_DEBUG directly is small
+  title: New debug property forces premature Jinja2 environment initialisation and is untested
+  valid: true
+  note: debug property forces premature Jinja2 init — real, untested
 - finding: 5
-  title: 'Contradictory phrasing: ''and to disable the debug mode'' in context that enables it'
-  valid: true
-  note: 'davidism raised exactly this in review (comment 160035766: "Shouldn''t this be ''and to
-    *enable* debug mode''?")'
+  title: FLASK_ENV silently activates the Werkzeug RCE-capable debugger without prominent documentation
+  valid: uncertain
+  note: FLASK_ENV enabling the debugger is a real design property but marginal RCE risk
 - finding: 6
-  title: 'Dead branch in `test_get_debug_flag`: `assert get_debug_flag() is None` can never be reached'
+  title: 'Parenthetical contradicts actual behaviour: FLASK_ENV=development enables debug mode, not
+    disables it'
   valid: true
-  note: parametrize table has no None expected_flag left; the branch is dead
+  note: quickstart parenthetical contradicts behaviour (matches davidism comment)
 - finding: 7
-  title: '`test_get_env` does not isolate `FLASK_DEBUG`, potentially polluting `get_debug_flag()`
-    assertions'
+  title: debug property uses verbose module-level helper pattern instead of @property/@setter decorators
   valid: true
-  note: 'real isolation flaw: FLASK_DEBUG in the runner env makes get_debug_flag() ignore FLASK_ENV
-    and the assertions fail'
+  note: 'g1: recommends @property/@setter over the verbose helper pattern'
 - finding: 8
-  title: Shell code block missing `.. code-block::` directive, will render incorrectly in Sphinx
-  valid: true
-  note: 'confirmed in the diff: the two shell lines sit at column 0 after the paragraph, so RST renders
-    them as plain text'
+  title: Awkward phrasing in cli.rst
+  valid: uncertain
+  note: cli.rst phrasing — subjective
 - finding: 9
-  title: Production warning only fires for the exact string `'production'`, silently skipped for
-    non-development environments
+  title: New 'Env' banner line and updated shell banner format not covered by tests
   valid: true
-  note: condition is == 'production' exactly; any other non-development env silently skips the warning
+  note: 'coverage gap: Env banner / shell banner untested'
 - finding: 10
-  title: Production warning uses `click.secho` while surrounding output uses plain `print`, mixing
-    output styles
+  title: get_env() treats empty string FLASK_ENV='' the same as unset, silently falling back to 'production'
   valid: uncertain
-  note: factually mixed styles, but secho is plainly chosen for the red color; a maintainer would
-    call it deliberate
+  note: empty-string FLASK_ENV treated as unset — deliberate idiom
 - finding: 11
-  title: '`_set_debug_value` triggers early Jinja environment creation before config files are loaded'
-  valid: true
-  note: 'real and newly universal: load_app now always sets app.debug (get_debug_flag never returns
-    None), so jinja_env is force-initialized at CLI load for every command'
-- finding: 12
-  title: '`get_debug_flag()` interaction when both `FLASK_ENV=development` and `FLASK_DEBUG=0` are
-    set is not tested'
-  valid: true
-  note: no test combines the two variables; the override interaction is the crux of the feature
-- finding: 13
-  title: 'Grammar: ''On older Flask version'' should be ''On older Flask versions'''
-  valid: true
-  note: grammar error confirmed in the diff
-- finding: 14
-  title: 'Awkward grammar: ''The other default environment which is known is'''
-  valid: true
-  note: awkward phrasing confirmed; doc-polish level
-- finding: 15
-  title: Missing blank line between `_get_debug` and `_set_debug` method definitions
-  valid: true
-  note: confirmed in diff; the file otherwise separates defs with a blank line
-- finding: 16
-  title: '`env` ConfigAttribute placed in the middle of the class body rather than near the other
-    class-level attributes'
+  title: Raw FLASK_ENV value printed to console without validation, allowing ANSI injection
   valid: uncertain
-  note: placement next to the related debug property is arguably deliberate grouping; convention
-    point is subjective
-- finding: 17
-  title: Env print label is unusually terse compared to sibling lines
+  note: ANSI injection from printed FLASK_ENV — speculative, low-risk
+- finding: 12
+  title: Verbose two-step if/reassign pattern in get_env() instead of a one-liner
+  valid: uncertain
+  note: verbose two-step get_env pattern — subjective
+- finding: 13
+  title: '''* Env %s'' startup message format is inconsistent with sibling messages'
   valid: false
-  note: sibling lines use the same bare style with no colons ('Forcing debug mode on'); the suggested
-    colon would itself be the inconsistency
+  note: 'banner-format inconsistency: sibling ''* Forcing debug mode'' lines use the same bare style'

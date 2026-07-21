@@ -3,6 +3,11 @@ repo: pallets/flask
 pr: 2031
 title: make use of range requests if available in werkzeug
 pre_merge_sha: 9f77b8991655a552507a3c07ab6ebbba3f447ddf
+# reviewed SHA: earliest commit a reviewer commented on (the initial
+# proposed change, before review fixes). Ground truth is verified present
+# at this commit during judging; items raised against later commits are
+# marked non-matchable.
+review_sha: 9b88f305768f56fd4bcd3041c584d8d036b0a2e6
 changed_lines: 102
 selected_because: >
   send_file range support whose review is dominated by a genuine resource

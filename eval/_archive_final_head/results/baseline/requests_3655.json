@@ -1,0 +1,251 @@
+{
+  "case": "requests_3655",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/psf/requests/pull/3655",
+  "head_sha": "522d37c9597882db3fbd5fb08804b27b5fd8be4d",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180807,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 170,
+      "line_end": 173,
+      "severity": "major",
+      "title": "Rewindable body check does not account for `prepared_request.body` being `None` after non-307/308 redirect clears it",
+      "detail": "After a non-307/308 redirect, `prepared_request.body` is set to `None` (line 148) and the Content-Length/Transfer-Encoding headers are purged (lines 145-147). The `rewindable` check relies on those headers being absent to skip rewinding. This indirect coupling works today, but if a future change (or an auth hook that re-adds a Content-Length) triggers the rewindable check while body is `None`, `rewind_body` will be called with a `None` body. Inside `rewind_body`, `getattr(None, 'seek', None)` returns `None`, and the `else` branch raises `UnrewindableBodyError`. Adding an explicit `and prepared_request.body is not None` guard to the `rewindable` check would make the intent clear and prevent surprise errors.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 167,
+      "line_end": 177,
+      "severity": "major",
+      "title": "Non-307/308 redirect with a seekable body: `_body_position` is non-None but body is cleared; `rewindable` is False because headers are purged \u2014 correct, but fragile and undocumented",
+      "detail": "For a non-temporary redirect (e.g. 302), `prepared_request.body` is set to `None` at line 148 and the Content-Length/Transfer-Encoding headers are removed. The `rewindable` check then correctly becomes `False` because neither header is present, so `rewind_body` is not called. This works, but the correctness depends on the header-purge happening before the rewindable check and the two conditions staying in sync. A comment explaining this invariant would help future maintainers avoid breaking it accidentally.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/sessions.py",
+      "line_start": 167,
+      "line_end": 177,
+      "severity": "major",
+      "title": "Rewindable check uses stale `headers` variable after body may have been cleared",
+      "detail": "At line 150 `headers = prepared_request.headers` is captured, then at lines 145-148 the body is set to `None` and the Content-Length/Transfer-Encoding headers are removed for non-307/308 redirects. The `rewindable` check at lines 170-173 still checks those (now already-removed) header keys in the same `headers` reference, but since it is a reference to the same dict it correctly sees the post-purge state. However, **for non-307/308 redirects** the body was already set to `None` (line 148), yet `_body_position` is still non-None, so `rewindable` can evaluate to `False` (headers purged) but the logic still won't rewind\u2014that part is arguably fine. The real problem is the **opposite** scenario: for 307/308 redirects the body is NOT cleared, headers are NOT purged, so `rewindable` is `True` and `rewind_body` is correctly called. But if `rebuild_auth` (line 165) or any hook modifies `prepared_request.body` between the header-purge block and the rewind call, the rewind applies to potentially the wrong object. This is a minor ordering concern but the sequence is correct as written; low-confidence issue.",
+      "confidence": 0.4
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/utils.py",
+      "line_start": 817,
+      "line_end": 829,
+      "severity": "minor",
+      "title": "Missing blank line before function definition (PEP 8)",
+      "detail": "There is no blank line between `urldefragauth` and `rewind_body`. PEP 8 requires two blank lines between top-level definitions. The rest of the file follows this convention.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1455,
+      "line_end": 1458,
+      "severity": "minor",
+      "title": "Assertion on exception message checks `str(e)` of `ExceptionInfo`, not the exception message",
+      "detail": "In `test_rewind_body_no_seek` (line 1458) and `test_rewind_body_failed_tell` (line 1503), the assertion is `assert '...' in str(e)` where `e` is a `pytest.ExceptionInfo` object. `str(ExceptionInfo)` includes the full representation including the type name, so the string match may pass even if the message wording changes. The idiomatic pytest form is `assert '...' in str(e.value)` to check the actual exception message. The same applies to `test_rewind_body_failed_seek` at line 1482.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1168,
+      "line_end": 1182,
+      "severity": "minor",
+      "title": "No test for 307 redirect with a body that has `tell` but no `seek` (the hanging scenario)",
+      "detail": "The PR description mentions that a body with `tell` but no `seek` can still cause a hang during redirect. There is a unit test for `rewind_body` with a no-seek object, but no integration-level test that actually exercises the `resolve_redirects` path with such a body, verifying that `UnrewindableBodyError` is raised rather than a hang.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/models.py",
+      "line_start": 453,
+      "line_end": 462,
+      "severity": "minor",
+      "title": "Callable `tell` attribute check uses `is not None` instead of `callable()`",
+      "detail": "`getattr(body, 'tell', None) is not None` would also be True if `tell` is a non-callable attribute (e.g. a plain integer or string named `tell`). A more robust check would be `callable(getattr(body, 'tell', None))`. While rare in practice, this is inconsistent with the `seek` check in `rewind_body` (`getattr(..., 'seek', None)`) which then calls it directly, so both should use `callable()`.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/utils.py",
+      "line_start": 826,
+      "line_end": 826,
+      "severity": "nit",
+      "title": "Typo: 'occured' should be 'occurred'",
+      "detail": "In the `UnrewindableBodyError` message: `\"An error occured when rewinding request body for redirect.\"` \u2014 'occured' should be 'occurred'. The same typo is reflected in the test assertion at test_requests.py line 1482.",
+      "confidence": 1.0
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1404,
+      "line_end": 1408,
+      "severity": "nit",
+      "title": "Unused variable `s` (Session) in unit tests that don't need a session",
+      "detail": "In `test_prepare_body_position_non_stream`, `test_rewind_body`, `test_rewind_partially_read_body`, `test_rewind_body_no_seek`, `test_rewind_body_failed_seek`, and `test_rewind_body_failed_tell`, a `requests.Session()` is created and assigned to `s` but never used. The `PreparedRequest` is created directly via `requests.Request(...).prepare()`. The dead assignment should be removed.",
+      "confidence": 0.99
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/exceptions.py",
+      "line_start": 100,
+      "line_end": 104,
+      "severity": "nit",
+      "title": "Missing blank line before `UnrewindableBodyError` class (PEP 8)",
+      "detail": "`RetryError` and `UnrewindableBodyError` are separated by only one blank line, while the rest of the exception classes in the file are separated by two blank lines.",
+      "confidence": 0.95
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            170,
+            173
+          ],
+          "severity": "major",
+          "title": "Rewindable body check does not account for `prepared_request.body` being `None` after non-307/308 redirect clears it",
+          "detail": "After a non-307/308 redirect, `prepared_request.body` is set to `None` (line 148) and the Content-Length/Transfer-Encoding headers are purged (lines 145-147). The `rewindable` check relies on those headers being absent to skip rewinding. This indirect coupling works today, but if a future change (or an auth hook that re-adds a Content-Length) triggers the rewindable check while body is `None`, `rewind_body` will be called with a `None` body. Inside `rewind_body`, `getattr(None, 'seek', None)` returns `None`, and the `else` branch raises `UnrewindableBodyError`. Adding an explicit `and prepared_request.body is not None` guard to the `rewindable` check would make the intent clear and prevent surprise errors.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Non-307/308 redirect with a seekable body: `_body_position` is non-None but body is cleared; `rewindable` is False because headers are purged \u2014 correct, but fragile and undocumented",
+          "detail": "For a non-temporary redirect (e.g. 302), `prepared_request.body` is set to `None` at line 148 and the Content-Length/Transfer-Encoding headers are removed. The `rewindable` check then correctly becomes `False` because neither header is present, so `rewind_body` is not called. This works, but the correctness depends on the header-purge happening before the rewindable check and the two conditions staying in sync. A comment explaining this invariant would help future maintainers avoid breaking it accidentally.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/sessions.py",
+          "line_range": [
+            167,
+            177
+          ],
+          "severity": "major",
+          "title": "Rewindable check uses stale `headers` variable after body may have been cleared",
+          "detail": "At line 150 `headers = prepared_request.headers` is captured, then at lines 145-148 the body is set to `None` and the Content-Length/Transfer-Encoding headers are removed for non-307/308 redirects. The `rewindable` check at lines 170-173 still checks those (now already-removed) header keys in the same `headers` reference, but since it is a reference to the same dict it correctly sees the post-purge state. However, **for non-307/308 redirects** the body was already set to `None` (line 148), yet `_body_position` is still non-None, so `rewindable` can evaluate to `False` (headers purged) but the logic still won't rewind\u2014that part is arguably fine. The real problem is the **opposite** scenario: for 307/308 redirects the body is NOT cleared, headers are NOT purged, so `rewindable` is `True` and `rewind_body` is correctly called. But if `rebuild_auth` (line 165) or any hook modifies `prepared_request.body` between the header-purge block and the rewind call, the rewind applies to potentially the wrong object. This is a minor ordering concern but the sequence is correct as written; low-confidence issue.",
+          "confidence": 0.4
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/utils.py",
+          "line_range": [
+            817,
+            829
+          ],
+          "severity": "minor",
+          "title": "Missing blank line before function definition (PEP 8)",
+          "detail": "There is no blank line between `urldefragauth` and `rewind_body`. PEP 8 requires two blank lines between top-level definitions. The rest of the file follows this convention.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1455,
+            1458
+          ],
+          "severity": "minor",
+          "title": "Assertion on exception message checks `str(e)` of `ExceptionInfo`, not the exception message",
+          "detail": "In `test_rewind_body_no_seek` (line 1458) and `test_rewind_body_failed_tell` (line 1503), the assertion is `assert '...' in str(e)` where `e` is a `pytest.ExceptionInfo` object. `str(ExceptionInfo)` includes the full representation including the type name, so the string match may pass even if the message wording changes. The idiomatic pytest form is `assert '...' in str(e.value)` to check the actual exception message. The same applies to `test_rewind_body_failed_seek` at line 1482.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1168,
+            1182
+          ],
+          "severity": "minor",
+          "title": "No test for 307 redirect with a body that has `tell` but no `seek` (the hanging scenario)",
+          "detail": "The PR description mentions that a body with `tell` but no `seek` can still cause a hang during redirect. There is a unit test for `rewind_body` with a no-seek object, but no integration-level test that actually exercises the `resolve_redirects` path with such a body, verifying that `UnrewindableBodyError` is raised rather than a hang.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/models.py",
+          "line_range": [
+            453,
+            462
+          ],
+          "severity": "minor",
+          "title": "Callable `tell` attribute check uses `is not None` instead of `callable()`",
+          "detail": "`getattr(body, 'tell', None) is not None` would also be True if `tell` is a non-callable attribute (e.g. a plain integer or string named `tell`). A more robust check would be `callable(getattr(body, 'tell', None))`. While rare in practice, this is inconsistent with the `seek` check in `rewind_body` (`getattr(..., 'seek', None)`) which then calls it directly, so both should use `callable()`.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/utils.py",
+          "line_range": [
+            826,
+            826
+          ],
+          "severity": "nit",
+          "title": "Typo: 'occured' should be 'occurred'",
+          "detail": "In the `UnrewindableBodyError` message: `\"An error occured when rewinding request body for redirect.\"` \u2014 'occured' should be 'occurred'. The same typo is reflected in the test assertion at test_requests.py line 1482.",
+          "confidence": 1.0
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1404,
+            1408
+          ],
+          "severity": "nit",
+          "title": "Unused variable `s` (Session) in unit tests that don't need a session",
+          "detail": "In `test_prepare_body_position_non_stream`, `test_rewind_body`, `test_rewind_partially_read_body`, `test_rewind_body_no_seek`, `test_rewind_body_failed_seek`, and `test_rewind_body_failed_tell`, a `requests.Session()` is created and assigned to `s` but never used. The `PreparedRequest` is created directly via `requests.Request(...).prepare()`. The dead assignment should be removed.",
+          "confidence": 0.99
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            100,
+            104
+          ],
+          "severity": "nit",
+          "title": "Missing blank line before `UnrewindableBodyError` class (PEP 8)",
+          "detail": "`RetryError` and `UnrewindableBodyError` are separated by only one blank line, while the rest of the exception classes in the file are separated by two blank lines.",
+          "confidence": 0.95
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 46465,
+      "tokens_out": 2344,
+      "cost_usd": 0.174555,
+      "duration_s": 43.967436417005956,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 46465,
+    "tokens_out": 2344,
+    "cost_usd": 0.174555,
+    "duration_s": 44.0
+  }
+}

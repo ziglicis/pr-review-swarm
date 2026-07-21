@@ -5,66 +5,65 @@ ground_truth_matches:
   issue: If the body ends with a CRLF split at a chunk boundary, the chunk becomes empty after stripping,
     splitlines() returns [], and lines[-1] raises IndexError.
   matched_finding: null
-  note: 'fixed during review — the `if not chunk: continue` guard is at the reviewed head (discussion_r112750569)'
+  note: 'NON-matchable: the empty-chunk `if not chunk: continue` guard is present at review_sha;
+    no IndexError (discussion_r112750569) — and no experiment falsely flags one here'
   matchable: false
 - ground_truth: g2
   issue: Chunks like ['...\r', '\n', '\nmore'] strip two newline characters instead of emitting the
     empty line — the CR flag must be reset after consuming one LF.
-  matched_finding: null
-  note: 'fixed during review — the flag is reassigned every chunk and the [b''a\r'', b''\n'', b''\nb'']
-    test case landed (discussion_r112929801); note a residual none of the experiments found: an empty
-    chunk between ''\r'' and ''\n'' resets the flag and yields a spurious empty line'
-  matchable: false
+  matched_finding: 0
+  note: 'PRESENT: the last_chunk_ends_with_cr flag-reset logic (discussion_r112929801) is under review
+    here; all three experiments flag it'
+  matchable: true
 - ground_truth: g3
   issue: New tests use unprefixed string literals that are intended to be unicode; they must carry
     the u'' prefix to pass on Python 2.
   matched_finding: null
-  note: fixed during review — tests carry u'' prefixes (discussion_r112804923)
+  note: 'NON-matchable: the py2 u'''' -prefix test-literal concern (discussion_r112804923) is a py2
+    detail; the tests already carry prefixes here'
   matchable: false
 - ground_truth: g4
   issue: The chunk/flag handling should be restructured for readability (named condition variables,
     single assignment site) rather than the doubled-up inline conditions.
   matched_finding: null
-  note: addressed during review — named condition variable and single assignment site (discussion_r113172022)
+  note: 'NON-matchable: named condition variables (carriage_return/line_feed) already exist at review_sha,
+    satisfying the readability ask (discussion_r113172022)'
   matchable: false
 finding_validity:
 - finding: 0
-  title: Missing test coverage for key state-transition branches in the CR/LF split-chunk logic
+  title: '`last_chunk_ends_with_cr` not reset before `continue`, causing blank lines to be silently
+    dropped'
   valid: true
-  note: 'factual: the named branch/state combinations are absent from the parametrized matrix'
+  note: 'g2: last_chunk_ends_with_cr not reset before continue'
 - finding: 1
-  title: Core correctness of last_chunk_ends_with_cr / skip_first_char logic needs careful review
-  valid: false
-  note: 'a non-finding: ''no concrete failure found... needs careful review'' claims no defect'
+  title: CRLF split across `pending`+chunk boundary may not be correctly collapsed
+  valid: uncertain
+  note: CRLF split across pending+chunk boundary — subtle, plausible
 - finding: 2
-  title: mock_iter_content helper duplicated verbatim between two test methods
-  valid: true
-  note: factual duplication of the mock helper across the two tests
+  title: Redundant intermediate variables `carriage_return` / `line_feed`
+  valid: uncertain
+  note: '''redundant'' carriage_return/line_feed contradicts the reviewer''s named-vars preference'
 - finding: 3
-  title: unicode_mock_data re-assigned later with a logically different dataset, risking confusion
+  title: 'Type mismatch risk: `decode_unicode=None` vs `decode_unicode=False` sentinel selection'
   valid: uncertain
-  note: the reassignment pattern pre-exists for mock_data; mild readability point
+  note: decode_unicode None-vs-False type nuance — mild
 - finding: 4
-  title: No test for iter_lines() with decode_unicode=False and non-\r\n custom delimiter
-  valid: uncertain
-  note: the new CR/LF logic is skipped entirely when a delimiter is given, so extra delimiter tests
-    would not exercise it
+  title: No test with explicit `decode_unicode=False` for the CRLF-split fix
+  valid: true
+  note: 'coverage gap: no explicit decode_unicode=False test'
 - finding: 5
-  title: Named constants carriage_return / line_feed add indirection for simple single-character
-    literals
-  valid: false
-  note: argues to inline the named variables — the reviewer explicitly asked for named condition
-    variables (g4, discussion_r113172022)
+  title: Missing space after comma in parametrize tuple
+  valid: true
+  note: missing space after comma in parametrize — factual
 - finding: 6
-  title: Long assertion line exceeds visible convention in surrounding test code
-  valid: uncertain
-  note: weak line-length nit
+  title: '`mock_iter_content` helper duplicated across two test methods'
+  valid: true
+  note: mock_iter_content duplicated across tests — factual
 - finding: 7
-  title: Inline comment on the empty-chunk branch uses informal tone inconsistent with surrounding
-    comments
-  valid: false
-  note: comment-tone noise
-- finding: 8
-  title: Variable name skip_first_char is generic; a domain-specific name would improve readability
+  title: Inconsistent comment style and verbosity in new code block
   valid: uncertain
-  note: subjective naming preference on a reviewer-endorsed structure
+  note: comment style — subjective
+- finding: 8
+  title: Long assertion line exceeds apparent line-length convention
+  valid: uncertain
+  note: long assertion line — subjective

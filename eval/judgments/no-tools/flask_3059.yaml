@@ -6,63 +6,65 @@ ground_truth_matches:
     libraries do implement __fspath__ on older Pythons, and the review converges on the PEP 519 protocol-check
     variant rather than either extreme.'
   matched_finding: null
-  note: resolved during review — the reviewed head contains the exact PEP protocol-check one-liner
-    the thread converged on (discussion_r245371019)
-  matchable: false
+  note: 'PRESENT: the full os.fspath backport (TypeError-raising, str/bytes check) is at _compat.py:106
+    — reviewers debated simplifying to the PEP-519 protocol check (discussion_r245371019); unmatched'
+  matchable: true
 - ground_truth: g2
   issue: send_file arguments can be file-like objects, so they must not be blindly passed through
     fspath(); an explicit __fspath__ hasattr check is required on that path.
   matched_finding: null
-  note: resolved during review — the hasattr __fspath__ guard mattrobenolt required is present at
-    the head (discussion_r245182635); notably the system argues *against* it (redundancy findings),
-    judged invalid
+  note: 'NON-matchable: the hasattr(__fspath__) guard is already in send_file at review_sha (line
+    545), satisfying g2 (discussion_r245182635); findings arguing it''s redundant are false'
   matchable: false
 finding_validity:
 - finding: 0
-  title: Fallback `fspath` doesn't validate input type, silently accepts arbitrary objects
+  title: PathLike handling via `hasattr(__fspath__)` is incorrect — bytes-returning PathLike silently
+    misrouted
   valid: uncertain
-  note: accurate deviation from os.fspath, but it is the PEP-recommended backport the reviewers converged
-    on; <3.6 only
+  note: '''hasattr handling incorrect'' is wrong (guard required), but the bytes-returning sub-point
+    is valid'
 - finding: 1
-  title: bytes path from `__fspath__` can bypass or break `safe_join` traversal check
-  valid: true
-  note: PEP-legal bytes returns flow into safe_join/string_types checks that only handle str; unhelpful
-    failure instead of BadRequest is real
+  title: '`fspath()` calls in `send_from_directory` outside try/except block — TypeError leaks as
+    500 instead of 400 BadRequest'
+  valid: uncertain
+  note: 'fspath outside try/except → TypeError leak: only for bytes-returning PathLike; mild'
 - finding: 2
-  title: 'Typo: "as describe" should be "as described"'
+  title: Custom `fspath` fallback has no dedicated unit tests for error branches
   valid: true
-  note: typo confirmed
+  note: 'coverage gap: fspath fallback error branches untested'
 - finding: 3
-  title: Redundant `hasattr` guard before calling `fspath` in `send_file`
-  valid: false
-  note: 'not redundant: on 3.6+ os.fspath raises TypeError on file-like objects — the guard is what
-    the reviewer required (g2)'
+  title: PathLike branch in `send_file` not tested with an absolute path
+  valid: true
+  note: 'coverage gap: no absolute-path PathLike test'
 - finding: 4
-  title: Fallback `fspath` implementation not tested in isolation (neither branch)
+  title: 'Typo: ''as describe'' should be ''as described'''
   valid: true
-  note: no direct unit test of the shim exists; coverage depends on which branch the test env imports
+  note: CHANGES typo confirmed
 - finding: 5
-  title: PathLike `send_file` test only covers relative path — absolute path case missing
+  title: PathLike assertions for `send_static_file` inlined into existing test rather than isolated
   valid: true
-  note: only the relative case is tested
+  note: send_static_file PathLike inlined rather than its own test — factual
 - finding: 6
+  title: No test for `send_file` with a bytes-returning PathLike
+  valid: true
+  note: 'coverage gap: no bytes-returning PathLike test'
+- finding: 7
   title: '`send_from_directory` PathLike test only covers both-args-PathLike; mixed cases not tested'
   valid: true
-  note: factual; the two fspath calls are independent
-- finding: 7
-  title: PathLike static-file test appended inline rather than as its own test method
-  valid: true
-  note: 'confirmed in diff: appended inside test_static_file with a section comment, unlike the sibling
-    pathlike tests'
+  note: 'coverage gap: mixed send_from_directory cases untested'
 - finding: 8
-  title: Compat `fspath` body style inconsistent with surrounding functions
-  valid: false
-  note: 'factually wrong: the body is on its own indented line, not on the def line'
-- finding: 9
-  title: Changelog PEP citation style inconsistent with surrounding entries
-  valid: uncertain
-  note: weak subjective nit; an inline PEP citation is informative and no rule forbids it
-- finding: 10
-  title: Docstring backtick formatting for "PathLike object" is non-standard
+  title: Docstring uses single backticks instead of double backticks for inline code
   valid: true
-  note: confirmed in diff; same literal-grouping nit as full's finding
+  note: single vs double backtick — factual
+- finding: 9
+  title: Changelog entry missing issue/PR reference link
+  valid: true
+  note: CHANGES missing PR link — factual
+- finding: 10
+  title: PEP number should be 'PEP 519', not 'PEP 0519'
+  valid: true
+  note: '''PEP 0519'' should be ''PEP 519'' — factual'
+- finding: 11
+  title: Redundant docstring on `FakePath` helper class
+  valid: uncertain
+  note: redundant FakePath docstring — subjective

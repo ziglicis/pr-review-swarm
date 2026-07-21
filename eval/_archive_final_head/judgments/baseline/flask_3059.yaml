@@ -1,0 +1,55 @@
+case: flask_3059
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The full os.fspath backport is questioned: coercing with str() changes the type, third-party
+    libraries do implement __fspath__ on older Pythons, and the review converges on the PEP 519 protocol-check
+    variant rather than either extreme.'
+  matched_finding: null
+  note: resolved during review — the reviewed head contains the exact PEP protocol-check one-liner
+    the thread converged on (discussion_r245371019)
+  matchable: false
+- ground_truth: g2
+  issue: send_file arguments can be file-like objects, so they must not be blindly passed through
+    fspath(); an explicit __fspath__ hasattr check is required on that path.
+  matched_finding: null
+  note: resolved during review — the hasattr __fspath__ guard mattrobenolt required is present at
+    the head (discussion_r245182635); notably the system argues *against* it (redundancy findings),
+    judged invalid
+  matchable: false
+finding_validity:
+- finding: 0
+  title: '`get_send_file_max_age` receives a raw PathLike object when called from `send_static_file`'
+  valid: true
+  note: 'verified at the SHA: send_static_file passes the raw PathLike to get_send_file_max_age before
+    any conversion; subclasses doing string ops on filename break'
+- finding: 1
+  title: '`hasattr(…, ''__fspath__'')` used instead of calling `fspath()` unconditionally, causing
+    inconsistency with `send_from_directory`'
+  valid: false
+  note: the 'more critical' unconditional-os.fspath suggestion would raise TypeError on file-like
+    send_file inputs — exactly what the reviewer ruled out (g2)
+- finding: 2
+  title: Fallback `fspath()` does not validate the return type like `os.fspath()` does
+  valid: uncertain
+  note: accurate deviation from os.fspath, but the permissive fallback is the PEP-recommended backport
+    the reviewers chose; <3.6 only
+- finding: 3
+  title: Missing `fspath` call for `send_from_directory` in docstring changelog
+  valid: true
+  note: 'title garbled but substance right: send_from_directory lacks the versionchanged 1.1 note
+    that send_file got'
+- finding: 4
+  title: 'Redundant double-lookup: `hasattr(…, ''__fspath__'')` then `fspath()`'
+  valid: false
+  note: 'the guard is required, not redundant: os.fspath raises TypeError on file-like objects on
+    3.6+ (g2)'
+- finding: 5
+  title: Test for `send_file` with PathLike does not cover the `as_attachment` path or `bytes`-returning
+    PathLike
+  valid: true
+  note: as_attachment / bytes-returning / absolute PathLike are all untested
+- finding: 6
+  title: 'Changelog entry contains a typo: ''as describe'' should be ''as described'''
+  valid: true
+  note: typo confirmed

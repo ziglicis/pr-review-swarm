@@ -3,6 +3,10 @@ repo: pallets/flask
 pr: 3059
 title: Add support for PathLike objects in static file helpers
 pre_merge_sha: 25de45cbb6fc7304f67b685034151f9ac6ea0df5
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: 0312111d17c151163f8a134490891efb61d0734d
 changed_lines: 67
 selected_because: >
   Small feature with a focused compat-design review debate between three

@@ -5,57 +5,54 @@ ground_truth_matches:
   issue: A bare "except:" clause is almost never appropriate — it swallows SystemExit and KeyboardInterrupt;
     the exception type must be constrained.
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: bare `except:` is gone at daceb3e3 (only specific `except TypeError:` remain);
+    g1 was fixed in an earlier commit (3249ca3c)'
   matchable: false
 - ground_truth: g2
   issue: 'Pointless type checks: kwargs is always a dict and args is always a tuple in that code
     path, so the isinstance guards are dead weight.'
   matched_finding: null
-  note: fixed by the author during review; not present at the pre-merge head SHA the system reviews
+  note: 'NON-matchable: at daceb3e3 the jsonify path already uses dict(kwargs)/list(args) with no
+    isinstance guards; the ''pointless isinstance'' critique applied to an earlier revision'
   matchable: false
 - ground_truth: g3
   issue: The behavior change needs a proper versionchanged directive in the docstring rather than
     prose.
   matched_finding: null
-  note: added during review
+  note: 'NON-matchable: the versionchanged-directive concern was raised against a different commit
+    (a012e713); not the flagged prose state here'
   matchable: false
 finding_validity:
 - finding: 0
-  title: TypeError for mixed args+kwargs is not tested
+  title: 'Behavioral asymmetry: `jsonify(*[x])` serializes differently from `jsonify([x])`'
   valid: true
-  note: ''
+  note: 'real: jsonify(*[x]) vs jsonify([x]) asymmetry'
 - finding: 1
-  title: 'Cross-reference anchor mismatch: `.. _json-security:` vs `:ref:\`json_security\``'
+  title: 'Inconsistent behavior: `jsonify()` with no arguments silently returns `{}`'
   valid: true
-  note: ''
+  note: 'real: jsonify() no args returns {}'
 - finding: 2
-  title: No test for the TypeError raised when both args and kwargs are provided
+  title: Single-argument path passes the value straight through, changing old dict-only contract
+    silently for non-dict/list types
   valid: true
-  note: duplicate of finding 0 — baseline has no dedupe step
+  note: single-arg passthrough changes the dict-only contract
 - finding: 3
-  title: '`test_jsonify_arrays` does not verify that a single-element list round-trips correctly'
-  valid: true
-  note: same real single-element subtlety, muddled write-up
-- finding: 4
-  title: 'Broken backward compatibility: `jsonify()` with no arguments now returns `{}` instead of
-    raising an error'
-  valid: false
-  note: 'claim is wrong: jsonify() with zero args returned {} before this PR too — no backward-compat
-    break'
-- finding: 5
-  title: Single-argument path silently accepts non-JSON-serializable types and loses the old dict-coercion
-    safety
-  valid: true
-  note: ''
-- finding: 6
-  title: 'Docstring RST formatting: numbered list items after line 213 are not indented correctly'
-  valid: true
-  note: ''
-- finding: 7
-  title: Endpoint name collision risk in `test_jsonify_basic_types`
-  valid: false
-  note: 'speculative: endpoint names are per-test-app; no real collision path'
-- finding: 8
-  title: Duplicate `versionchanged` directive in docstring
+  title: Mixed positional + keyword arguments silently accepted when `args` is empty tuple
   valid: uncertain
-  note: cannot verify the duplicate versionchanged render without building docs
+  note: mixed positional+keyword when args is empty tuple — edge/mild
+- finding: 4
+  title: 'Cross-reference anchor mismatch: `:ref:\`json_security\`` vs `.. _json-security:`'
+  valid: true
+  note: anchor mismatch confirmed
+- finding: 5
+  title: test_jsonify_arrays does not verify that `jsonify()` with a single-element list works correctly
+  valid: true
+  note: 'coverage gap: single-element list case unverified'
+- finding: 6
+  title: No test for the `jsonify(args, kwargs)` TypeError path
+  valid: true
+  note: 'coverage gap: TypeError path untested'
+- finding: 7
+  title: 'Inaccurate historical attribution: vulnerability was in ECMAScript 4, not a version number'
+  valid: uncertain
+  note: historical-attribution doc critique — unverified

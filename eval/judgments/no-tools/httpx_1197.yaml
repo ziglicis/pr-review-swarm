@@ -4,93 +4,102 @@ ground_truth_matches:
 - ground_truth: g1
   issue: The closed-check belongs as a plain inline guard at the top of send(), not as a decorator
     on request() — simpler, better tracebacks, and the right layer.
-  matched_finding: 0
-  note: finding 0 flags the use-after-close hole left by the missing send() guard the reviewer requested
+  matched_finding: null
+  note: 'PRESENT: @check_not_closed decorates request()/send() (discussion_r472950631); the send()-bypass
+    layering is the g1 insight'
   matchable: true
 - ground_truth: g2
   issue: 'close() should be idempotent: calling it on an already-closed client should pass silently
     instead of erroring.'
-  matched_finding: null
-  note: implemented during review — close()/aclose() are guarded with `if not self.is_closed` at
-    the reviewed head (discussion_r472952614)
-  matchable: false
+  matched_finding: 1
+  note: 'PRESENT: close()/aclose() decorated with check_not_closed raise on second call instead of
+    passing silently (discussion_r472952614)'
+  matchable: true
 - ground_truth: g3
   issue: _is_closed = True should be set as the first statement of close(), not the last, to shrink
     the race window with concurrent sends.
   matched_finding: null
-  note: implemented during review — `_is_closed = True` is the first statement inside the guard at
-    the reviewed head (discussion_r472953172)
+  note: 'NON-matchable: the _is_closed-first race-ordering concern (discussion_r472953172) applies
+    to the inline close() that replaced the decorator; not present at this commit'
   matchable: false
 - ground_truth: g4
   issue: 'The warning class choice matters for visibility: UserWarning vs ResourceWarning was debated
     (ResourceWarning is silenced by default; UserWarning pollutes the user''s namespace) — resolved
     to UserWarning.'
-  matched_finding: 4
-  note: finding 4 raises the ResourceWarning-vs-UserWarning category choice — the same debate the
-    reviewers resolved to UserWarning
-  matchable: true
+  matched_finding: null
+  note: 'NON-matchable: the unclosed-client warning (UserWarning vs ResourceWarning, discussion_r474644263)
+    was added in a later commit; no warnings.warn at review_sha'
+  matchable: false
 finding_validity:
 - finding: 0
-  title: '`send()` / `AsyncClient.send()` resets `_is_closed = False`, silently re-opening a closed
-    client'
-  valid: true
-  note: 'correct: no guard exists at the head; send() silently re-arms a closed client, exactly the
-    gap the reviewer wanted guarded'
+  title: '`check_not_closed` wrapper is not async-aware, wrapping async methods with a sync wrapper'
+  valid: uncertain
+  note: '''not async-aware'' — true observation, overstated impact (await path works)'
 - finding: 1
-  title: '`AsyncClient.__del__` warns but cannot close the async transport — connections are leaked'
-  valid: uncertain
-  note: factually true but restates the PR's own premise — the warning exists precisely because __del__
-    cannot aclose
+  title: '`Client.close()` decorated with `@check_not_closed` prevents idempotent closing and double-close
+    via `__exit__`'
+  valid: true
+  note: 'g2: Client.close() decorated → not idempotent'
 - finding: 2
-  title: '`Client.__del__` closes silently with no warning, and is inconsistent with `AsyncClient.__del__`;
-    path is untested'
-  valid: uncertain
-  note: the sync/async __del__ asymmetry is deliberate (sync can clean up in __del__, async cannot);
-    the untested-path half is factual
+  title: '`AsyncClient.aclose()` decorated with `@check_not_closed` prevents idempotent closing and
+    breaks `__aexit__`'
+  valid: true
+  note: aclose() likewise not idempotent — valid
 - finding: 3
-  title: '`_is_closed` initialized to `True` causes `close()` / `__del__` to skip transport teardown
-    for never-used clients'
-  valid: uncertain
-  note: skipping teardown for a never-used client is theoretically dodgy but harmless — a fresh pool
-    has nothing to close; behavior is pinned by test
+  title: Sync Client.close() guarded by check_not_closed but double-close is only tested, not first-close
+    sets _is_closed=True path re-entry
+  valid: true
+  note: double-close only tested, guard not inline — valid observation
 - finding: 4
-  title: '`warnings.warn` in `AsyncClient.__del__` uses wrong category, missing `stacklevel`, and
-    fragile `repr(self)`'
-  valid: uncertain
-  note: stacklevel and repr points are defensible, but the headline ResourceWarning claim contradicts
-    the reviewer's explicit resolution to UserWarning (discussion_r474644263)
+  title: AsyncClient.__aexit__ calling aclose() after manual aclose() raises RuntimeError – uncovered
+  valid: true
+  note: 'real: __aexit__ calls aclose() after a manual aclose() → RuntimeError'
 - finding: 5
-  title: Idempotency guards in `close()`, `aclose()`, `__exit__`, and `__aexit__` are untested
+  title: check_not_closed decorator not tested on async methods other than request/aclose
   valid: true
-  note: 'factual: no double-close/exit-after-close tests exist'
+  note: 'coverage gap: decorator untested on other async methods'
 - finding: 6
-  title: '`test_that_async_client_caused_warning_when_being_deleted` does not assert warning content
-    or the no-warning path'
-  valid: true
-  note: 'factual: message content unasserted and no no-warning-path test'
+  title: '`@check_not_closed` on `close()` prevents idempotent close, creating a DoS vector in `__exit__`/`__aexit__`
+    error paths'
+  valid: uncertain
+  note: idempotent-close 'DoS vector' framing is speculative
 - finding: 7
-  title: Proxy close tests no longer exercise the proxy transport path they were written to test
-  valid: false
-  note: 'misdescribes history: the old test also never sent through the proxy; proxy.close() is still
-    exercised — the real (unflagged here) issue is the live network call'
+  title: Overly verbose / inconsistent error message
+  valid: uncertain
+  note: error message verbose — subjective
 - finding: 8
-  title: '`test_that_send_cause_client_to_be_not_closed` does not call `close()` and omits important
-    scenarios'
-  valid: true
-  note: 'factual: the sync test leaks its client and the named scenarios are untested'
+  title: Decorator `check_not_closed` does not support async callables
+  valid: false
+  note: '''does not support async callables'' is wrong — it returns the coroutine, await works'
 - finding: 9
-  title: 'Docstring grammar: ''Check if the client being closed'''
+  title: is_closed property initial state (False) not explicitly tested
   valid: true
-  note: grammar error confirmed
+  note: 'coverage gap: is_closed initial state untested'
 - finding: 10
-  title: Test function names use 'cause' instead of 'causes' (both sync and async)
-  valid: true
-  note: subject-verb error confirmed
+  title: Error message in RuntimeError may leak internal object repr
+  valid: uncertain
+  note: repr-in-error leak speculative
 - finding: 11
-  title: Variable named `async_client` instead of `client` — inconsistent naming convention
-  valid: true
-  note: 'confirmed: every sibling test uses `client`'
+  title: test_that_client_cannot_send_request_after_being_closed uses get() not send() directly
+  valid: uncertain
+  note: test uses get() not send() — minor
 - finding: 12
-  title: Missing blank line in `AsyncClient.__aexit__` — inconsistent with sync `__exit__`
+  title: check_not_closed decorator not tested with proxies set up
+  valid: uncertain
+  note: decorator untested with proxies — marginal
+- finding: 13
+  title: 'Docstring grammar: "Check if the client being closed"'
   valid: true
-  note: confirmed in diff; trivial but factual
+  note: docstring grammar confirmed
+- finding: 14
+  title: Test function names use a verbose `test_that_` prefix inconsistent with existing tests
+  valid: uncertain
+  note: test naming — subjective
+- finding: 15
+  title: Test function names use a verbose `test_that_` prefix inconsistent with existing tests
+  valid: uncertain
+  note: async test naming — subjective
+- finding: 16
+  title: Decorator name `check_not_closed` is a verb-phrase that could be more idiomatic
+  valid: uncertain
+  note: decorator name idiomatic — subjective

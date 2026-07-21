@@ -1,0 +1,185 @@
+{
+  "case": "httpx_887",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/encode/httpx/pull/887",
+  "head_sha": "4a1cc2c090721ec8576aa466fe194ad5f1e85f03",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180669,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 99,
+      "line_end": 104,
+      "severity": "critical",
+      "title": "Generator app: `start_response` is never called before `seen_status` assertion",
+      "detail": "When `self.app` is a generator function (i.e. its body contains `yield`), calling `self.app(environ, start_response)` returns a generator object without executing *any* of the function body. `start_response` is therefore not invoked until the generator is first iterated. `_skip_leading_empty_chunks` does iterate the generator (to find the first non-empty chunk), so `start_response` will have been called by the time the function returns \u2014 but only if the generator actually yields at least one item.\n\nHowever, if the generator yields *no* items at all (fully empty body), `_skip_leading_empty_chunks` exhausts the iterator and returns `[]` without ever triggering `start_response`. The subsequent `assert seen_status is not None` (line 104) then raises `AssertionError` instead of a useful error. The test `test_wsgi_generator_empty` passes only because the `application_factory` app *does* call `start_response` before the first `yield`, so even though the loop body is never entered the function actually runs up to its first `yield` expression... wait, actually in a generator, the body is not executed until `next()` is called. Let me reconsider: for a generator-based app that yields only empty chunks, `_skip_leading_empty_chunks` iterates through all empty chunks (calling `start_response` implicitly via iteration) so `seen_status` *is* populated before returning `[]`. So the empty case works correctly only because the `for` loop in `_skip_leading_empty_chunks` exhausts the generator (thus executing the full body including `start_response`). The real gap is a generator that yields *zero* items AND calls `start_response` inside the generator \u2014 `seen_status` would be set. But if the app never calls `start_response` at all and yields nothing, the assert correctly fires. This part seems fine.\n\nThe actual correctness concern: `_skip_leading_empty_chunks` consumes the iterator eagerly up to the first non-empty chunk. After returning `itertools.chain([chunk], body)`, the `result` variable is now a `chain` object. This is passed to `IteratorStream(chunk for chunk in result)` at line 113. The `result` object is consumed lazily by the generator expression \u2014 but `seen_status` and `seen_response_headers` are checked *after* `_skip_leading_empty_chunks` returns (lines 104-107), which is correct because by that point the first non-empty chunk has been read and `start_response` must already have been called per the WSGI spec. The logic is sound for the generator case. However, for a generator-based WSGI app that calls `start_response` after yielding one or more empty chunks, the status is only captured once the first non-empty chunk is found. If the app calls `start_response` inside the loop (multiple times, to change status), only the last call before the first non-empty chunk would be captured. This is actually correct per PEP 3333.\n\nThe real issue: `_skip_leading_empty_chunks` is also applied to list-based WSGI apps (line 102 is unconditional). For a list-based app that returns `[]` (empty list), `start_response` *is* called before `self.app()` returns, so `seen_status` is populated. But `_skip_leading_empty_chunks([])` returns `[]` immediately without iterating, so `seen_status` is already set \u2014 this is fine. However, for a list-based WSGI app this is unnecessary overhead (minor).",
+      "confidence": 0.5
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 11,
+      "line_end": 16,
+      "severity": "major",
+      "title": "Generator-based WSGI app: `start_response` may not be called if body is all-empty (no `close()` call either)",
+      "detail": "Per PEP 3333, the server must call `close()` on the iterable if it has a `close` method, even if an error occurs. The current implementation never calls `result.close()` (neither in the new code nor the original). While this is a pre-existing issue, the PR adds a new helper that wraps the iterator, and an `itertools.chain` object does not forward `close()` to the underlying iterator. This means generator-based WSGI apps (which have a `close()` method on the generator) will never have their `close()` called via the chain object. The `IteratorStream` accepts a `close_func` parameter but it is not used. This is a pre-existing issue that the PR makes slightly worse by wrapping the original generator in a `chain` without forwarding `close()`.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 99,
+      "line_end": 102,
+      "severity": "major",
+      "title": "Assertion on `seen_status` fires before generator has been iterated when app yields nothing",
+      "detail": "When a generator-based WSGI app yields no items at all (body is genuinely empty \u2014 the `yield` statement is inside a conditional that never executes), calling `self.app(environ, start_response)` returns a generator that hasn't started. `_skip_leading_empty_chunks` iterates the generator fully (exhausting it), which executes the body and calls `start_response`. But if the body calls `start_response` only AFTER the yield (which would be non-compliant per the spec, but still), `seen_status` would not be set. More importantly and concretely: the `assert seen_status is not None` relies entirely on `_skip_leading_empty_chunks` having already iterated the generator. If the app is a non-generator callable that returns an iterator/generator object (not a generator function itself), then `start_response` may have been called eagerly (before `self.app()` returns), so the assert is fine. For a plain generator function app, `start_response` is called during iteration inside `_skip_leading_empty_chunks`. The code is correct for the specified use case but the dependency between the iteration side-effect and the assert is fragile and undocumented.",
+      "confidence": 0.4
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_wsgi.py",
+      "line_start": 8,
+      "line_end": 21,
+      "severity": "minor",
+      "title": "`application_factory` always yields (is a generator function), cannot test list-return path",
+      "detail": "The old `hello_world` fixture returned a list `[output]`. The new `application_factory` always uses `yield`, making the application a generator function. This means `test_wsgi` (line 71) now tests the generator code path rather than the list-return code path. There is no longer a test covering the original list-based WSGI app code path through `_skip_leading_empty_chunks`. Consider retaining a separate list-based app fixture to ensure the non-generator path is still exercised.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_wsgi.py",
+      "line_start": 27,
+      "line_end": 30,
+      "severity": "minor",
+      "title": "Removal of `Content-Length` header from test fixtures may mask regressions",
+      "detail": "The `echo_body` and `raise_exc` fixtures had their `Content-Length` response header removed. While not strictly necessary for the WSGI dispatch tests to pass, removing `Content-Length` reduces test fidelity \u2014 real WSGI apps frequently set this header and tests that previously verified the header was passed through correctly no longer do so.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_wsgi.py",
+      "line_start": 106,
+      "line_end": 111,
+      "severity": "minor",
+      "title": "Missing test: generator-based app that is entirely empty (no yield statements executed)",
+      "detail": "`test_wsgi_generator_empty` tests an app that does yield empty byte strings `[b'', b'', b'', b'']`. However it does not test an app whose generator body never reaches any `yield` statement (e.g. a conditional yield that is skipped entirely, meaning the generator is exhausted immediately on first `next()` call raising `StopIteration`). These are subtly different scenarios \u2014 one has the generator execute yield statements (producing empty values), the other has the generator return without ever executing a yield.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 113,
+      "line_end": 113,
+      "severity": "nit",
+      "title": "Redundant generator expression wrapping the iterator",
+      "detail": "`IteratorStream(chunk for chunk in result)` can be simplified to `IteratorStream(result)` since `result` is already an iterable. The generator expression adds no value and creates unnecessary overhead.",
+      "confidence": 0.9
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            99,
+            104
+          ],
+          "severity": "critical",
+          "title": "Generator app: `start_response` is never called before `seen_status` assertion",
+          "detail": "When `self.app` is a generator function (i.e. its body contains `yield`), calling `self.app(environ, start_response)` returns a generator object without executing *any* of the function body. `start_response` is therefore not invoked until the generator is first iterated. `_skip_leading_empty_chunks` does iterate the generator (to find the first non-empty chunk), so `start_response` will have been called by the time the function returns \u2014 but only if the generator actually yields at least one item.\n\nHowever, if the generator yields *no* items at all (fully empty body), `_skip_leading_empty_chunks` exhausts the iterator and returns `[]` without ever triggering `start_response`. The subsequent `assert seen_status is not None` (line 104) then raises `AssertionError` instead of a useful error. The test `test_wsgi_generator_empty` passes only because the `application_factory` app *does* call `start_response` before the first `yield`, so even though the loop body is never entered the function actually runs up to its first `yield` expression... wait, actually in a generator, the body is not executed until `next()` is called. Let me reconsider: for a generator-based app that yields only empty chunks, `_skip_leading_empty_chunks` iterates through all empty chunks (calling `start_response` implicitly via iteration) so `seen_status` *is* populated before returning `[]`. So the empty case works correctly only because the `for` loop in `_skip_leading_empty_chunks` exhausts the generator (thus executing the full body including `start_response`). The real gap is a generator that yields *zero* items AND calls `start_response` inside the generator \u2014 `seen_status` would be set. But if the app never calls `start_response` at all and yields nothing, the assert correctly fires. This part seems fine.\n\nThe actual correctness concern: `_skip_leading_empty_chunks` consumes the iterator eagerly up to the first non-empty chunk. After returning `itertools.chain([chunk], body)`, the `result` variable is now a `chain` object. This is passed to `IteratorStream(chunk for chunk in result)` at line 113. The `result` object is consumed lazily by the generator expression \u2014 but `seen_status` and `seen_response_headers` are checked *after* `_skip_leading_empty_chunks` returns (lines 104-107), which is correct because by that point the first non-empty chunk has been read and `start_response` must already have been called per the WSGI spec. The logic is sound for the generator case. However, for a generator-based WSGI app that calls `start_response` after yielding one or more empty chunks, the status is only captured once the first non-empty chunk is found. If the app calls `start_response` inside the loop (multiple times, to change status), only the last call before the first non-empty chunk would be captured. This is actually correct per PEP 3333.\n\nThe real issue: `_skip_leading_empty_chunks` is also applied to list-based WSGI apps (line 102 is unconditional). For a list-based app that returns `[]` (empty list), `start_response` *is* called before `self.app()` returns, so `seen_status` is populated. But `_skip_leading_empty_chunks([])` returns `[]` immediately without iterating, so `seen_status` is already set \u2014 this is fine. However, for a list-based WSGI app this is unnecessary overhead (minor).",
+          "confidence": 0.5
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "major",
+          "title": "Generator-based WSGI app: `start_response` may not be called if body is all-empty (no `close()` call either)",
+          "detail": "Per PEP 3333, the server must call `close()` on the iterable if it has a `close` method, even if an error occurs. The current implementation never calls `result.close()` (neither in the new code nor the original). While this is a pre-existing issue, the PR adds a new helper that wraps the iterator, and an `itertools.chain` object does not forward `close()` to the underlying iterator. This means generator-based WSGI apps (which have a `close()` method on the generator) will never have their `close()` called via the chain object. The `IteratorStream` accepts a `close_func` parameter but it is not used. This is a pre-existing issue that the PR makes slightly worse by wrapping the original generator in a `chain` without forwarding `close()`.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            99,
+            102
+          ],
+          "severity": "major",
+          "title": "Assertion on `seen_status` fires before generator has been iterated when app yields nothing",
+          "detail": "When a generator-based WSGI app yields no items at all (body is genuinely empty \u2014 the `yield` statement is inside a conditional that never executes), calling `self.app(environ, start_response)` returns a generator that hasn't started. `_skip_leading_empty_chunks` iterates the generator fully (exhausting it), which executes the body and calls `start_response`. But if the body calls `start_response` only AFTER the yield (which would be non-compliant per the spec, but still), `seen_status` would not be set. More importantly and concretely: the `assert seen_status is not None` relies entirely on `_skip_leading_empty_chunks` having already iterated the generator. If the app is a non-generator callable that returns an iterator/generator object (not a generator function itself), then `start_response` may have been called eagerly (before `self.app()` returns), so the assert is fine. For a plain generator function app, `start_response` is called during iteration inside `_skip_leading_empty_chunks`. The code is correct for the specified use case but the dependency between the iteration side-effect and the assert is fragile and undocumented.",
+          "confidence": 0.4
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            8,
+            21
+          ],
+          "severity": "minor",
+          "title": "`application_factory` always yields (is a generator function), cannot test list-return path",
+          "detail": "The old `hello_world` fixture returned a list `[output]`. The new `application_factory` always uses `yield`, making the application a generator function. This means `test_wsgi` (line 71) now tests the generator code path rather than the list-return code path. There is no longer a test covering the original list-based WSGI app code path through `_skip_leading_empty_chunks`. Consider retaining a separate list-based app fixture to ensure the non-generator path is still exercised.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            27,
+            30
+          ],
+          "severity": "minor",
+          "title": "Removal of `Content-Length` header from test fixtures may mask regressions",
+          "detail": "The `echo_body` and `raise_exc` fixtures had their `Content-Length` response header removed. While not strictly necessary for the WSGI dispatch tests to pass, removing `Content-Length` reduces test fidelity \u2014 real WSGI apps frequently set this header and tests that previously verified the header was passed through correctly no longer do so.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            106,
+            111
+          ],
+          "severity": "minor",
+          "title": "Missing test: generator-based app that is entirely empty (no yield statements executed)",
+          "detail": "`test_wsgi_generator_empty` tests an app that does yield empty byte strings `[b'', b'', b'', b'']`. However it does not test an app whose generator body never reaches any `yield` statement (e.g. a conditional yield that is skipped entirely, meaning the generator is exhausted immediately on first `next()` call raising `StopIteration`). These are subtly different scenarios \u2014 one has the generator execute yield statements (producing empty values), the other has the generator return without ever executing a yield.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            113,
+            113
+          ],
+          "severity": "nit",
+          "title": "Redundant generator expression wrapping the iterator",
+          "detail": "`IteratorStream(chunk for chunk in result)` can be simplified to `IteratorStream(result)` since `result` is already an iterable. The generator expression adds no value and creates unnecessary overhead.",
+          "confidence": 0.9
+        }
+      ],
+      "tool_calls": 3,
+      "tokens_in": 29806,
+      "tokens_out": 2703,
+      "cost_usd": 0.129963,
+      "duration_s": 54.219209166942164,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 29806,
+    "tokens_out": 2703,
+    "cost_usd": 0.129963,
+    "duration_s": 54.2
+  }
+}

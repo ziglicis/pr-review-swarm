@@ -3,6 +3,10 @@ repo: encode/httpx
 pr: 887
 title: Fix support for generator-based WSGI apps
 pre_merge_sha: 4a1cc2c090721ec8576aa466fe194ad5f1e85f03
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: ac46c900e3ecd73e51b26048d3a6064a6b2fd420
 changed_lines: 52
 selected_because: >
   Small WSGI spec-conformance fix; review focused on naming, a PEP 3333 edge

@@ -3,6 +3,10 @@ repo: encode/httpx
 pr: 2278
 title: allow setting an explicit multipart boundary via headers
 pre_merge_sha: 74de49482f0fdf49fb112d118bf580d764d18ccd
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: e4275c1d562685ecbe173a4b9ba7fbe203c40f3b
 changed_lines: 82
 selected_because: >
   Multipart boundary feature; review caught a spec-violating edge case and an

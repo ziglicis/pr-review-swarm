@@ -3,6 +3,10 @@ repo: psf/requests
 pr: 2523
 title: HTTPDigestAuth - Making it thread-safe
 pre_merge_sha: 5a69137ac871c38f4597b574e93de07d9ff9655f
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: 36dea434065fa174105ac220152d94f7a39827b5
 changed_lines: 85
 selected_because: >
   Thread-safety fix with review feedback on test determinism and API hygiene

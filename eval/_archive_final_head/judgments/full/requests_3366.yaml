@@ -1,0 +1,102 @@
+case: requests_3366
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'Header validation must handle both unicode and byte-string headers: matching a native-string
+    regex against an opaque bytestring misbehaves on Python 3, so separate byte and str regexes are
+    required.'
+  matched_finding: null
+  note: fixed during review — separate _CLEAN_HEADER_REGEX_BYTE/_STR exist at the reviewed head (discussion_r69270130)
+  matchable: false
+- ground_truth: g2
+  issue: The compiled regexes are created inside the function, losing the benefit of re.compile;
+    they should be hoisted to module scope with underscore-prefixed names.
+  matched_finding: null
+  note: fixed during review — regexes are module-level, compiled, underscore-prefixed (discussion_r69313226)
+  matchable: false
+- ground_truth: g3
+  issue: Using the validity check as a filter() predicate misrepresents what it does (nothing is
+    filtered); rename to check_header_validity and call it in the single loop that sets headers.
+  matched_finding: null
+  note: fixed during review — renamed check_header_validity and called in the single prepare_headers
+    loop (discussion_r69365861)
+  matchable: false
+- ground_truth: g4
+  issue: 'The byte-string regex is missing an escaped backslash: ''\S'' in a plain (non-raw) byte
+    string needs to be ''\\S'' to mean the regex class.'
+  matched_finding: null
+  note: fixed during review — the byte regex has the escaped backslash b'^\\S...' at the reviewed
+    head (discussion_r69381140)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: No test exercises the bytes branch of `check_header_validity` with an invalid value
+  valid: true
+  note: 'factual: the bytes branch has no negative test'
+- finding: 1
+  title: Regex uses `$` instead of `\Z`, allowing header values with a trailing newline to bypass
+    the check
+  valid: true
+  note: 'verified: ''foo\n'' matches both regexes because $ matches before a single trailing newline
+    — a real validation bypass'
+- finding: 2
+  title: Header name (key) is not validated for injection characters
+  valid: true
+  note: 'factual: only the value is validated; modern requests validates both name and value (HEADER_VALIDATORS)'
+- finding: 3
+  title: '`check_header_validity` raises `TypeError` for non-string, non-bytes header values'
+  valid: true
+  note: verified TypeError; this shipped as the real requests 2.11 integer-header regression (#3477),
+    hotfixed in 2.11.1
+- finding: 4
+  title: Headers added after `prepare_headers()` (by `prepare_body`, `prepare_auth`, `prepare_cookies`)
+    bypass the injection check
+  valid: uncertain
+  note: real residual paths, but arguably outside the PR's declared scope (user headers dict) and
+    those values are mostly library-generated
+- finding: 5
+  title: No direct unit test for `check_header_validity` in isolation
+  valid: true
+  note: 'factual: validation is only tested through live-httpbin requests despite being pure'
+- finding: 6
+  title: '`test_header_validation` asserts only one of the four valid header values'
+  valid: true
+  note: 'factual: three of four valid headers unasserted'
+- finding: 7
+  title: Raw header name interpolated into `InvalidHeader` message enables log injection
+  valid: uncertain
+  note: thin claimed harm, though requests later adopted !r in exactly this message
+- finding: 8
+  title: No test verifies that `prepare_headers(None)` still produces an empty `CaseInsensitiveDict`
+  valid: uncertain
+  note: factually no dedicated test, but prepare_headers(None) is exercised implicitly by nearly
+    every existing test
+- finding: 9
+  title: Missing space after comma in test method signature
+  valid: true
+  note: confirmed in diff
+- finding: 10
+  title: '`headers_tab` value contains spaces, not a tab character'
+  valid: true
+  note: 'confirmed: three spaces, not a tab; tab case genuinely untested'
+- finding: 11
+  title: Trailing whitespace on import line
+  valid: true
+  note: confirmed in diff
+- finding: 12
+  title: Missing two-blank-line separators around `check_header_validity`
+  valid: true
+  note: 'confirmed: single blank lines at both boundaries'
+- finding: 13
+  title: Dead `r =` assignments inside `pytest.raises` blocks
+  valid: true
+  note: factual dead assignments
+- finding: 14
+  title: Unpacking loop variable could be done in the `for` statement directly
+  valid: uncertain
+  note: the tuple is passed whole to check_header_validity; the intermediate variable is arguably
+    deliberate
+- finding: 15
+  title: Dict literal formatting inconsistent with surrounding test code
+  valid: false
+  note: formatting noise

@@ -3,6 +3,10 @@ repo: psf/requests
 pr: 3655
 title: Rewind readable body before POST redirect
 pre_merge_sha: 522d37c9597882db3fbd5fb08804b27b5fd8be4d
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: 101eee64ac324ef7f2a10b7e2ea26e97186171f6
 changed_lines: 174
 selected_because: >
   Body-rewind bugfix with review catching a sentinel-value gap, a Python 2

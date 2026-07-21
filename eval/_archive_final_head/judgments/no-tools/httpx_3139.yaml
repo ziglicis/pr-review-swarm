@@ -1,0 +1,91 @@
+case: httpx_3139
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: Decompressed chunks should be assembled with io.BytesIO rather than repeated bytes concatenation.
+  matched_finding: null
+  note: fixed during review — decode() already assembles chunks with io.BytesIO at the reviewed head
+    (discussion_r1518812137)
+  matchable: false
+- ground_truth: g2
+  issue: The runtime zstandard version guard in _compat.py is questioned as overly defensive vs pinning
+    >=0.18 in requirements; kept because the extra is optional and an old zstandard may already be
+    installed — a genuine design disagreement documented in review.
+  matched_finding: null
+  note: design debate resolved by keeping the guard (documented in review); no finding raises the
+    version-guard-vs-requirements-pin question (discussion_r1524997549)
+  matchable: false
+- ground_truth: g3
+  issue: Test coverage for the new decoder paths is incomplete and needs addressing before merge.
+  matched_finding: 5
+  note: finding 5 (with 6) flags untested new-decoder branches; the strongest gap (empty-body parametrization)
+    was only caught by the baseline run
+  matchable: true
+finding_validity:
+- finding: 0
+  title: ZStandardDecoder.flush() incorrectly raises DecodingError on empty/no-data responses
+  valid: true
+  note: 'verified: fresh decompressobj eof=False → flush() raises on an empty streamed body; Brotli
+    guards with seen_data'
+- finding: 1
+  title: Potential infinite loop in multi-frame decode loop if unused_data does not shrink
+  valid: false
+  note: 'not constructible: eof=True requires a complete consumed frame, so unused_data strictly
+    shrinks each iteration'
+- finding: 2
+  title: 'Changelog ''Added'' section uses wrong heading level (## instead of ###)'
+  valid: true
+  note: confirmed heading-level break
+- finding: 3
+  title: Incomplete placeholder text in ZStandardDecoder ImportError message
+  valid: true
+  note: verified placeholder text at the SHA
+- finding: 4
+  title: test_zstd_decoding_error passes a str instead of bytes as content
+  valid: false
+  note: str content is accepted httpx API — no TypeError, and the test does exercise the decoder
+- finding: 5
+  title: ZStandardDecoder.__init__ ImportError branch untested
+  valid: uncertain
+  note: the branch is pragma-no-cover by deliberate choice; a mock-based test is a defensible ask
+    but counters the project's explicit exclusion
+- finding: 6
+  title: SUPPORTED_DECODERS.pop('zstd') branch when zstd unavailable untested
+  valid: uncertain
+  note: the branch is pragma-no-cover by deliberate choice; a mock-based test is a defensible ask
+    but counters the project's explicit exclusion
+- finding: 7
+  title: 'Zstd except clause missing # pragma: no cover and uses inconsistent comment convention'
+  valid: false
+  note: _compat.py is excluded from coverage entirely (stated in its own module docstring); pragma
+    annotations there are moot
+- finding: 8
+  title: Unguarded re.search() result can cause AttributeError on malformed zstd.__version__
+  valid: true
+  note: 'verified control flow: the else clause sits outside the except, so .groups() on None raises
+    an uncaught AttributeError at import time'
+- finding: 9
+  title: test_zstd_multiframe passes io.BytesIO as content, may not be reliably supported
+  valid: false
+  note: BytesIO is a supported iterable content type; the equality assertion would fail loudly if
+    the decoder were bypassed
+- finding: 10
+  title: zstd optional-dependency block uses 2-space indentation instead of 4-space
+  valid: true
+  note: confirmed in diff
+- finding: 11
+  title: 'Awkward phrasing: ''brotli and zstandard decoders support'''
+  valid: true
+  note: defensible doc polish
+- finding: 12
+  title: Asymmetric singular/plural 'encoding' vs 'encodings' in zstd description
+  valid: true
+  note: factual singular/plural asymmetry
+- finding: 13
+  title: Inline comment uses non-standard 'note:' prefix
+  valid: false
+  note: comment-prefix noise
+- finding: 14
+  title: Spaces in hex strings inside bytes.fromhex() inconsistent with rest of test file
+  valid: false
+  note: no other fromhex calls exist in the file; spaced hex is idiomatic for byte grouping

@@ -1,0 +1,63 @@
+case: requests_3984
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: If the body ends with a CRLF split at a chunk boundary, the chunk becomes empty after stripping,
+    splitlines() returns [], and lines[-1] raises IndexError.
+  matched_finding: null
+  note: 'fixed during review — the `if not chunk: continue` guard is at the reviewed head (discussion_r112750569)'
+  matchable: false
+- ground_truth: g2
+  issue: Chunks like ['...\r', '\n', '\nmore'] strip two newline characters instead of emitting the
+    empty line — the CR flag must be reset after consuming one LF.
+  matched_finding: null
+  note: 'fixed during review — the flag is reassigned every chunk and the [b''a\r'', b''\n'', b''\nb'']
+    test case landed (discussion_r112929801); note a residual none of the experiments found: an empty
+    chunk between ''\r'' and ''\n'' resets the flag and yields a spurious empty line'
+  matchable: false
+- ground_truth: g3
+  issue: New tests use unprefixed string literals that are intended to be unicode; they must carry
+    the u'' prefix to pass on Python 2.
+  matched_finding: null
+  note: fixed during review — tests carry u'' prefixes (discussion_r112804923)
+  matchable: false
+- ground_truth: g4
+  issue: The chunk/flag handling should be restructured for readability (named condition variables,
+    single assignment site) rather than the doubled-up inline conditions.
+  matched_finding: null
+  note: addressed during review — named condition variable and single assignment site (discussion_r113172022)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: No test for the `continue` path when the `\n`-only chunk is the last chunk in the stream
+  valid: true
+  note: 'factual: a lone ''\n'' as the final chunk is untested'
+- finding: 1
+  title: No test for multiple consecutive CR+LF splits across more than two chunk boundaries
+  valid: true
+  note: 'factual: no case splits CRLF at more than one consecutive boundary'
+- finding: 2
+  title: No test for `iter_lines` with `decode_unicode=False` and a non-CRLF delimiter
+  valid: uncertain
+  note: delimiter path skips the new logic entirely
+- finding: 3
+  title: Comment/block order for `decode_unicode=True` vs `None` is reversed relative to the sibling
+    test function
+  valid: false
+  note: trivial ordering noise between two test functions
+- finding: 4
+  title: Long assertion line should be split for consistency with surrounding style
+  valid: uncertain
+  note: weak line-length nit
+- finding: 5
+  title: 'Inline comment on `if not chunk: continue` duplicates the block comment above'
+  valid: false
+  note: the inline comment explains a non-obvious guard; not a duplicate
+- finding: 6
+  title: 'Minor style: single-use variables and verbose constant names'
+  valid: false
+  note: argues to inline skip_first_char — the reviewer explicitly asked for the named variable (g4)
+- finding: 7
+  title: Mixed use of `def` and `lambda` for mock callables in the same test file
+  valid: false
+  note: self-described as 'purely a consistency nit rather than a real issue'

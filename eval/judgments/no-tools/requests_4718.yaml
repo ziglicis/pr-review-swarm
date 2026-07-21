@@ -6,73 +6,48 @@ ground_truth_matches:
     redirects too; browsers keep credentials on secure upgrades, so stripping there breaks a common
     legitimate pattern and the logic must special-case the upgrade.
   matched_finding: null
-  note: fixed during review — the http→https standard-port exemption is at the reviewed head (discussion_r199569417)
-  matchable: false
+  note: 'PRESENT: at review_sha the logic strips auth on scheme change incl http->https upgrade;
+    bmerry/nateprewitt debating the RFC-7235 upgrade exception here (discussion_r199569417)'
+  matchable: true
 - ground_truth: g2
   issue: 'The origin comparison must normalize implicit vs explicit ports: urlparse returns port
     None for implicit defaults, so http://example.com:80 -> https://example.com must be treated the
     same as http://example.com -> https://example.com.'
-  matched_finding: 5
-  note: the reviewer's port-normalization concern was only fixed inside the upgrade branch; the standard
-    case still treats :80 vs implicit as different origins and strips auth on a same-origin redirect
-    — this residual is live at the head (and survives in requests to this day); finding 5 flags it
-    with the correct safe-direction scoping
+  matched_finding: 2
+  note: 'PRESENT: port comparison doesn''t normalise implicit vs explicit default ports (discussion_r209665887)'
   matchable: true
 - ground_truth: g3
   issue: The redirect-stripping logic grew complex enough that it should be extracted into its own
     dedicated method rather than living inline.
   matched_finding: null
-  note: fixed during review — logic extracted into should_strip_auth (discussion_r209668067)
-  matchable: false
+  note: 'PRESENT: the stripping logic is dense/inline, not yet extracted to should_strip_auth (discussion_r209668067)'
+  matchable: true
 - ground_truth: g4
   issue: Tests should explicitly assert the Authorization header is absent from the redirected request
     (and verify it was not sent on the wire), not just check a falsey value.
   matched_finding: null
-  note: fixed during review — the test asserts 'Authorization' not in headers (discussion_r198935315)
-  matchable: false
+  note: 'PRESENT: tests assert a falsey Authorization rather than its absence (discussion_r198935315);
+    unmatched'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: Port-only change (same scheme, different port) not covered by any test
+  title: Session-level `auth` may re-add Authorization header after it is stripped, defeating the
+    fix
   valid: uncertain
-  note: the ask (same-scheme port test) is valid, but the claim about which clause fires is wrong
-    — the port comparison evaluates first and decides
+  note: session auth re-adding Authorization after strip — plausible, flow-dependent
 - finding: 1
-  title: Missing integration-level test for auth retention on same-host http→https redirect at standard
-    ports
+  title: No test exercises the new port-change stripping branch
   valid: true
-  note: 'factual: no integration test covers auth retention across an http→https upgrade'
+  note: 'coverage gap: port-change branch untested'
 - finding: 2
-  title: should_strip_auth does not handle missing hostname (relative/malformed URLs)
-  valid: false
-  note: 'unreachable: resolve_redirects always passes absolute URLs'
+  title: Port comparison does not normalise implicit default ports
+  valid: true
+  note: 'g2: port comparison doesn''t normalise implicit default ports'
 - finding: 3
-  title: No test for should_strip_auth with an https→https cross-host redirect
-  valid: uncertain
-  note: factually absent but the hostname check is scheme-agnostic; near-zero value
+  title: Scheme-change stripping covered only by an integration test; no fast offline test
+  valid: true
+  note: scheme-change covered only by an integration test — real coverage gap
 - finding: 4
-  title: No test for rebuild_auth when Authorization header is absent but should_strip_auth returns
-    True
-  valid: uncertain
-  note: dedicated-test ask; implicitly exercised by every unauthenticated redirect test
-- finding: 5
-  title: 'Port normalization: same-endpoint URLs with explicit vs implicit default ports unnecessarily
-    strip auth'
+  title: No regression test confirming Authorization is RETAINED on same-origin path-only redirects
   valid: true
-  note: 'verified: the g2 residual, correctly scoped as over-stripping rather than a vulnerability'
-- finding: 6
-  title: Docstring missing trailing period
-  valid: true
-  note: factual, trivial
-- finding: 7
-  title: 'Logic review: no actual bugs found in scheme/port/hostname comparisons'
-  valid: false
-  note: an explicit non-finding ('no actual bugs found')
-- finding: 8
-  title: Boolean operator placement inconsistent with surrounding style
-  valid: false
-  note: leading-vs-trailing operator placement is style-war noise; PEP 8 now prefers the leading
-    form
-- finding: 9
-  title: test_should_strip_auth_https_upgrade groups multiple sub-cases without separation
-  valid: false
-  note: test-grouping preference; noise
+  note: 'coverage gap: no regression test that same-origin auth is retained'

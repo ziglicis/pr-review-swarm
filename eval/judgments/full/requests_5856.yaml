@@ -4,110 +4,78 @@ ground_truth_matches:
 - ground_truth: g1
   issue: 'The Python 2 json path is broken: json.JSONDecodeError doesn''t exist on Python 2, so the
     except-clause handling falls over with an AttributeError (caught via failing CI during review).'
-  matched_finding: null
-  note: fixed during review — compat.py sets JSONDecodeError = ValueError on py2 and models handles
-    both branches (discussion_r667104578)
-  matchable: false
+  matched_finding: 5
+  note: 'PRESENT at review_sha: models.py:917 `except json.JSONDecodeError` fails on py2 where the
+    attr doesn''t exist (discussion_r667104578, CI-caught)'
+  matchable: true
 - ground_truth: g2
   issue: 'The new JSONDecodeError must fit the exception hierarchy: subclass the catch-all RequestException
     (so users can catch everything requests throws) and preserve/proxy the original underlying exception''s
     info.'
-  matched_finding: 4
-  note: 'subclassing landed, but the ''preserve the underlying info'' half is residually broken:
-    the MRO never runs json.JSONDecodeError.__init__, so msg/doc/pos are not set as attributes —
-    finding 4 flags exactly this; requests later added an explicit __init__ for it'
+  matched_finding: 1
+  note: 'PRESENT: `class JSONDecodeError(StandardJSONDecodeError, SimpleJSONDecodeError)` does not
+    subclass RequestException (discussion_r667095839)'
   matchable: true
 - ground_truth: g3
   issue: Unrelated changes bundled into the PR (formatting/spacing tweaks, doc edits) that reviewers
     repeatedly asked to revert as scope creep.
   matched_finding: null
-  note: reviewers' scope-creep complaint; some unrelated formatting still remains at the head (HISTORY
-    bullet restyle, compat.py blank-line removal, prepare_body re-indent); no full-run finding raises
-    the bundling
+  note: 'PRESENT: sigmavirus24 left 11 ''Please revert this'' comments on tangential formatting (models.py
+    180/187/231/315/391/446/509/785/843/957/961); no experiment flagged the changes as out-of-scope'
   matchable: true
 - ground_truth: g4
   issue: The simplejson/json resolution logic is duplicated across several files; JSONDecodeError
     should be resolved once in compat.py and imported from there.
   matched_finding: null
-  note: fixed during review — JSONDecodeError resolved once in compat.py (discussion_r671444604)
+  note: 'NON-matchable: the ''consolidate JSON-type resolution in compat.py'' concern (discussion_r671444604)
+    was raised against later commit 64b3f189; at 0045b835 the logic lives only in exceptions.py,
+    no cross-file duplication yet'
   matchable: false
 finding_validity:
 - finding: 0
-  title: JSONDecodeError from the early UTF-detection code path is never wrapped into RequestsJSONDecodeError
+  title: All tests make live outbound network requests to external URLs
   valid: true
-  note: 'verified against the head: the guess_json_utf fast path only catches UnicodeDecodeError,
-    so raw json/simplejson JSONDecodeError escapes unwrapped — vindicated by the requests 2.27.0
-    changelog entry fixing exactly this'
+  note: test_json.py hits httpbin.org/google.com live (confirmed at review_sha)
 - finding: 1
-  title: No test asserts that JSONDecodeError is catchable as RequestException / InvalidJSONError
+  title: JSONDecodeError does not inherit from RequestException, breaking the stated exception hierarchy
   valid: true
-  note: 'factual: no isinstance/catch-hierarchy test exists; with finding 4''s init gap, such a test
-    would have failed'
+  note: 'g2: no RequestException in the MRO'
 - finding: 2
-  title: Python 2 branch uses deprecated e.message and is completely untested
-  valid: uncertain
-  note: py2 .message exists in 2.7 (deprecated property) and works for single-arg errors; the AttributeError
-    claim is wrong, the silent-empty degradation is real
+  title: Unconditional `import simplejson` breaks environments without simplejson installed
+  valid: true
+  note: unconditional `import simplejson` at test_json.py:2 breaks envs without it
 - finding: 3
-  title: simplejson-installed code path for CompatJSONDecodeError is not tested
+  title: json.JSONDecodeError in the UTF-detection branch is not caught and not re-raised as requests.JSONDecodeError
   valid: true
-  note: 'factual: nothing forces the simplejson branch; coverage depends on the environment'
+  note: guess_json_utf branch calls json.loads without wrapping — same real gap as the fallback path
 - finding: 4
-  title: JSONDecodeError multiple-inheritance MRO may not correctly initialise json.JSONDecodeError
-    internals
+  title: Missing test coverage for key correctness claims and exception hierarchy properties
   valid: true
-  note: 'vindicated: requests later added an explicit __init__ calling CompatJSONDecodeError.__init__
-    because cooperative MRO init never reaches it — msg/doc/pos are unset at this head'
+  note: 'reasonable coverage gap: hierarchy/py2 paths untested'
 - finding: 5
-  title: On Python 2 + simplejson, CompatJSONDecodeError is ValueError not simplejson.JSONDecodeError,
-    breaking the subclass guarantee
+  title: Catching json.JSONDecodeError breaks on Python 2 where the attribute does not exist
   valid: true
-  note: 'real py2+simplejson backward-compat break: user except simplejson.JSONDecodeError no longer
-    catches'
+  note: 'g1: py2 json.JSONDecodeError catch'
 - finding: 6
-  title: test_json_decode_compatibility only checks exception type, not exception attributes
+  title: Fallback `SimpleJSONDecodeError = Exception` is semantically wrong and broadens exception
+    scope
   valid: true
-  note: factual; asserting e.msg/e.doc/e.pos would have exposed finding 4
+  note: SimpleJSONDecodeError=Exception fallback genuinely broadens the caught scope
 - finding: 7
-  title: response.json() error wrapping not tested with simplejson as the active JSON module
+  title: Replacing `complexjson` alias with bare `json` import shadows stdlib name and local parameter
   valid: true
-  note: 'factual: no test drives the wrapper with simplejson active'
+  note: '`from .compat import json` collides with the json= param; json.dumps(json) breaks (sigmavirus24:
+    ''Why did you change this?'')'
 - finding: 8
-  title: None-content path may raise TypeError rather than RequestsJSONDecodeError — edge case untested
-  valid: false
-  note: 'premise wrong: Response.text never returns None (falsy content yields ''''), and loads('''')
-    raises a JSONDecodeError that is wrapped'
+  title: JSONDecodeError docstring style inconsistent with surrounding exceptions
+  valid: true
+  note: docstring is a real inconsistency with neighbours
 - finding: 9
-  title: Full server-controlled response body stored verbatim in exception (potential log-injection
-    / unbounded memory)
-  valid: false
-  note: storing doc in the exception is exactly what json.JSONDecodeError itself does; non-issue
+  title: Intermediate aliases StandardJSONDecodeError / SimpleJSONDecodeError leak into the public
+    module namespace
+  valid: uncertain
+  note: aliases are module-level, but that's how compat aliases work; subjective
 - finding: 10
-  title: CompatJSONDecodeError fallback type is undocumented; a future bare-Exception fallback would
-    create a catch-all
-  valid: false
-  note: counterfactual future hazard
-- finding: 11
-  title: Lowercase 'python' in documentation should be capitalised
-  valid: true
-  note: trivial factual
-- finding: 12
-  title: Missing newline at end of file
-  valid: true
-  note: 'confirmed: the new EOF still lacks a trailing newline (as did the old one)'
-- finding: 13
-  title: JSONDecodeError docstring missing trailing period and uses lowercase 'json'
-  valid: true
-  note: confirmed in diff
-- finding: 14
-  title: 'Import style: duplicate from-clause and confusingly named compat alias'
+  title: New `import json` breaks alphabetical/logical import ordering in the file
   valid: uncertain
-  note: the aliased import could be folded into the block; keeping it separate is arguably clearer
-- finding: 15
-  title: Missing two spaces before inline comment on if-statement
-  valid: true
-  note: 'confirmed: single space before the inline comment'
-- finding: 16
-  title: has_simplejson flag lacks an explanatory comment consistent with surrounding style
-  valid: uncertain
-  note: weak comment-style ask
+  note: import-ordering nit, unverified/subjective

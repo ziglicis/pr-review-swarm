@@ -2,89 +2,79 @@
   "case": "httpx_2423",
   "experiment": "no-tools",
   "pr_url": "https://github.com/encode/httpx/pull/2423",
-  "head_sha": "f6685bdd12fb0c7da517f78e0322b8cd1955ce73",
+  "head_sha": "becea552195831ba8d65699b0212ada892abea6d",
   "sha_matches_dataset": true,
-  "timestamp": 1784181641,
-  "summary": "This PR rewrites `LineDecoder` to use `str.splitlines()` (matching stdlib behaviour) and extends the supported newline characters significantly. The implementation contains a critical `IndexError` bug when a lone newline is decoded against a non-empty buffer, plus several gaps in flush semantics and test coverage for the newly-added line-ending characters.",
+  "timestamp": 1784589795,
+  "summary": "This PR refactors `LineDecoder` to use Python's `str.splitlines()` for line splitting, which the author claims is a significant speed-up. The main concerns are: (1) `splitlines()` recognises many more line-ending characters than the original `\\n`/`\\r`/`\\r\\n`-only implementation, which is a meaningful behavioural change for HTTP/SSE consumers and a potential security concern; (2) the constant `NEWLINE_CHARS` is defined inside the method body on every call; and (3) test coverage does not exercise the newly-supported separators or several edge cases in the buffering logic.",
   "findings": [
     {
-      "agent": "correctness",
-      "file": "httpx/_decoders.py",
-      "line_start": 292,
-      "line_end": 296,
-      "severity": "critical",
-      "title": "IndexError when text is solely a newline and buffer is non-empty",
-      "detail": "When `decode(\"\\n\")` is called (or any text whose only content is a newline terminator) while `self.buffer` is non-empty, `\"\\n\".splitlines()` returns `[]` and `trailing_newline` is set to `True`. The code skips the early-return guard (which requires `len(lines) == 1`), reaches line 295, and attempts `lines[0]` on an empty list \u2014 raising `IndexError: list index out of range`.\n\nA concrete reproducer:\n```python\ndecoder = LineDecoder()\ndecoder.decode(\"partial\")   # buffers \"partial\"\ndecoder.decode(\"\\n\")        # \u2190 IndexError\n```\n\nFix: guard `lines[0]` access before indexing:\n```python\nif self.buffer:\n    if lines:\n        lines = [\"\".join(self.buffer) + lines[0]] + lines[1:]\n    else:\n        lines = [\"\".join(self.buffer)]\n    self.buffer = []\n```",
-      "confidence": 0.97
-    },
-    {
-      "agent": "test_coverage",
+      "agent": "correctness, security, test_coverage",
       "file": "httpx/_decoders.py",
       "line_start": 271,
       "line_end": 271,
       "severity": "major",
-      "title": "No tests for newly-supported extended newline characters",
-      "detail": "The new implementation explicitly supports `\\x0b` (VT), `\\x0c` (FF), `\\x1c`, `\\x1d`, `\\x1e`, `\\x85` (NEL), `\\u2028` (LS), and `\\u2029` (PS) as line separators to match `str.splitlines`. None of these characters are exercised by any existing test in `tests/test_decoders.py` or `tests/models/test_responses.py`. The interaction of `trailing_newline=True` with these exotic terminators and a previously-buffered chunk is also entirely untested. Given that these are the primary new feature of the PR, test coverage is essential.",
-      "confidence": 0.95
+      "title": "splitlines() expands recognised line endings beyond \\n/\\r/\\r\\n, introducing behavioural regression and potential security concern",
+      "detail": "The new implementation delegates to `str.splitlines()`, which treats `\\x0b` (VT), `\\x0c` (FF), `\\x1c`\u2013`\\x1e`, `\\x85` (NEL), `\\u2028` (LINE SEPARATOR), and `\\u2029` (PARAGRAPH SEPARATOR) as line boundaries. The original code \u2014 and the docstring \u2014 only guaranteed `\\n`, `\\r`, and `\\r\\n`. HTTP/1.1 (RFC 7230) and the SSE specification only recognise those three as valid line terminators. Concretely:\n\n\u2022 **Behavioural regression**: JSON bodies or other response payloads that legitimately contain `\\u2028`/`\\u2029` (which are valid in JSON strings) will be incorrectly split into multiple lines.\n\u2022 **Security concern**: An attacker-controlled response body containing these characters could craft lines that appear whole to the application but are split by the decoder, potentially causing header-injection-style confusion in any line-oriented protocol parser (e.g., SSE `data:` fields) layered on top of `iter_lines()`.\n\u2022 **No test coverage**: None of the new or existing tests in `tests/test_decoders.py` exercise any of the newly-supported separators to document or verify this broadened behaviour.\n\nRecommendation: either restrict `splitlines()` by post-filtering (only split on `\\n`, `\\r`, `\\r\\n`), or update the docstring + add explicit tests that clearly document the expanded behaviour as intentional.",
+      "confidence": 0.92
     },
     {
-      "agent": "correctness, style",
+      "agent": "correctness, test_coverage",
       "file": "httpx/_decoders.py",
-      "line_start": 306,
-      "line_end": 311,
+      "line_start": 288,
+      "line_end": 292,
       "severity": "major",
-      "title": "flush() returns [''] instead of the correct content when only trailing_cr is set",
-      "detail": "When a stream ends with a lone `\\r` (e.g. `decode(\"\\r\")` followed by `flush()` with no further decode), `trailing_cr` is `True` and `self.buffer` is empty. `flush()` executes `\"\".join(self.buffer)` \u2192 `\"\"` and returns `[\"\"]` \u2014 a list containing one empty string. The semantics are unclear: the old code treated a trailing `\\r` as a line terminator producing `\"\\n\"`, while the new code effectively drops its content. At minimum the intent is not obvious from the code and a comment or explicit branch is needed; at worst this is a semantic regression.\n\nRecommendation: add an explicit branch for `trailing_cr=True` with an empty buffer, deciding whether to emit an empty-string line or nothing, and document the choice.",
+      "title": "No tests verify that chunks ending in non-\\r newline chars (\\x0b, \\x85, \\u2028, etc.) are not incorrectly buffered",
+      "detail": "The condition `text[-1] not in NEWLINE_CHARS` (line 288) determines whether the last segment from `splitlines()` is incomplete and should be buffered. For the newly-recognised newline characters (`\\x0b`, `\\x0c`, `\\x1c`\u2013`\\x1e`, `\\x85`, `\\u2028`, `\\u2029`) that are NOT `\\r`, this branch should correctly NOT buffer the last element. However, this is entirely untested \u2014 there are no test cases that feed a chunk ending in one of these characters and verify the line is immediately emitted rather than withheld. Combined with the behavioural-expansion issue above, this represents a significant gap in test coverage for the new code paths.",
       "confidence": 0.85
     },
     {
-      "agent": "correctness",
+      "agent": "correctness, security",
       "file": "httpx/_decoders.py",
-      "line_start": 274,
-      "line_end": 279,
+      "line_start": 284,
+      "line_end": 292,
       "severity": "major",
-      "title": "Trailing \\r handling may be inconsistent in flush() when buffer is empty",
-      "detail": "The `trailing_cr` deferral logic correctly handles `\\r\\n` split across chunk boundaries. However, when `flush()` is called with `trailing_cr=True` and an empty `self.buffer`, it returns `[\"\"]` (an empty-string line) rather than clearly representing the lone `\\r` as a line separator. This is a lower-confidence concern (confidence 0.6) and partially overlaps with the flush() finding above, but the root cause \u2014 that `flush()` does not reconstruct any meaning for a saved `trailing_cr` \u2014 is worth addressing explicitly.",
-      "confidence": 0.6
+      "title": "Repeated empty-chunk input when buffer ends with bare \\r causes unbounded buffer growth (resource exhaustion)",
+      "detail": "When `text[-1] == '\\r'` (line 284), the code does `self.buffer = lines.pop() + '\\r'`. This is correct for the `\\r\\n`-split-across-chunks case. However, if the caller repeatedly invokes `decode(\"\")` while the buffer already holds a bare `'\\r'`:\n\n1. `decode(\"\\r\")` \u2192 `splitlines()` \u2192 `['']`, pop \u2192 `''`, buffer = `'\\r'`, returns `[]`.\n2. `decode(\"\")` \u2192 `text = '\\r'`, `splitlines()` \u2192 `['']`, pop \u2192 `''`, buffer = `'\\r'` again \u2014 the buffer never drains.\n\nWhile a well-behaved HTTP client will not produce repeated empty decode calls, a malicious or misbehaving server that sends isolated `\\r` bytes followed by empty chunks can keep the buffer alive indefinitely without triggering a flush, which is a mild resource-exhaustion / denial-of-service vector.\n\nNote: f1's concern about `lines.pop()` raising `IndexError` on an empty list is **not** a real risk because `splitlines()` on any non-empty string always returns at least one element.\n\nRecommendation: Guard the `\\r`-buffering branch so that if the reconstructed buffer is identical to what was already buffered (no progress), progress is forced \u2014 or document that callers must not feed repeated empty strings.",
+      "confidence": 0.72
     },
     {
-      "agent": "style",
+      "agent": "security, style",
       "file": "httpx/_decoders.py",
       "line_start": 271,
       "line_end": 271,
       "severity": "minor",
-      "title": "NEWLINE_CHARS defined inside the method body on every call",
-      "detail": "`NEWLINE_CHARS` is a pure constant string that never changes. Defining it inside `decode()` allocates it on every invocation. Following the existing style of this file (module- or class-level constants), it should be hoisted to module scope (e.g. `_NEWLINE_CHARS = \"\\n\\r\\x0b...\"`) to avoid repeated allocation and improve readability.",
-      "confidence": 0.85
+      "title": "NEWLINE_CHARS constant defined inside decode() method \u2014 should be at module or class scope",
+      "detail": "`NEWLINE_CHARS` is an invariant string that is reconstructed on every call to `decode()`. The rest of this file defines invariant data at module or class scope, and PEP 8 UPPER_CASE naming signals a module-level constant. Placing an UPPER_CASE name inside a method body is both an unusual style mix and a minor repeated allocation. Promote it to module scope (or at minimum class scope) to match the existing conventions.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "correctness, test_coverage",
+      "file": "httpx/_decoders.py",
+      "line_start": 297,
+      "line_end": 299,
+      "severity": "minor",
+      "title": "flush() behaviour change for buffered \\r is untested and subtly different from the original",
+      "detail": "The original `flush()` converted a buffered trailing `\\r` to a `\\n`-terminated line. The new `flush()` calls `self.buffer.splitlines()`, which strips terminators entirely. While internally consistent with the new strip-terminators policy, the edge case where `self.buffer == \"\\r\"` at flush time is not covered by any test. `\"\\r\".splitlines()` returns `['']` (one empty string), not `[]`. Callers that previously relied on flush emitting a `\\n`-terminated line will see different output. This should be explicitly tested and documented.",
+      "confidence": 0.82
     },
     {
       "agent": "test_coverage",
       "file": "httpx/_decoders.py",
-      "line_start": 281,
-      "line_end": 311,
+      "line_start": 282,
+      "line_end": 293,
       "severity": "minor",
-      "title": "flush() with only trailing_cr=True and empty buffer, and early-return path, are not directly tested",
-      "detail": "Two specific code paths lack dedicated test coverage: (1) `decode(\"\\r\")` followed immediately by `flush()` with no further decode call \u2014 the branch where `trailing_cr=True` and buffer is empty; (2) the `if not text: return []` guard at lines 281-282, which is only implicitly hit by `decode(\"\")` and never by the case where stripping a trailing `\\r` leaves `text` empty (e.g. `decode(\"\\r\")` when `trailing_cr` was already `False`).",
+      "title": "Missing test: decode(\"\") called with a non-empty buffer",
+      "detail": "There is no test that calls `decode(\"\")` (empty string) when `self.buffer` already holds partial content. This path exercises the buffer-prepend logic (lines 273\u2013280) and verifies the buffer is preserved and nothing is prematurely emitted. Adding such a test would also help guard against the infinite-loop scenario described in the resource-exhaustion finding.",
       "confidence": 0.8
     },
     {
-      "agent": "test_coverage",
-      "file": "httpx/_decoders.py",
-      "line_start": 274,
-      "line_end": 279,
-      "severity": "minor",
-      "title": "No test for \\r\\r split across chunk boundaries",
-      "detail": "The `trailing_cr` deferral logic prepends a saved `\\r` to the next chunk. There is no test verifying that two consecutive `\\r` characters split across separate `decode()` calls each produce their own line ending (i.e. `decode(\"a\\r\")` then `decode(\"\\rb\")` should yield two separate lines).",
-      "confidence": 0.75
-    },
-    {
       "agent": "style",
       "file": "httpx/_decoders.py",
-      "line_start": 262,
-      "line_end": 262,
+      "line_start": 289,
+      "line_end": 289,
       "severity": "nit",
-      "title": "Typo \"stdllib\" in docstring",
-      "detail": "The docstring contains \"stdllib\" which should be \"stdlib\". The docstring could also be more precise: e.g. \"Has the same behaviour as `str.splitlines`, but processes input iteratively.\"",
+      "title": "Typo in comment: \"seperator\" \u2192 \"separator\"",
+      "detail": "The comment on line 289 reads \"newline seperator\". The correct spelling is \"separator\". Please fix.",
       "confidence": 0.99
     }
   ],
@@ -97,67 +87,116 @@
           "agent": "correctness",
           "file": "httpx/_decoders.py",
           "line_range": [
-            281,
-            301
+            284,
+            292
+          ],
+          "severity": "critical",
+          "title": "Trailing \\r buffering re-adds \\r to already-stripped line from splitlines()",
+          "detail": "When `text[-1] == '\\r'`, the code does `self.buffer = lines.pop() + \"\\r\"`. However, `str.splitlines()` already strips the line terminator from each element it returns, so `lines[-1]` does NOT end with `\\r`. Re-appending `\"\\r\"` is correct in intent (we need to hold the `\\r` until we know whether the next chunk starts with `\\n`). But the reconstructed buffer is `<line content> + \"\\r\"`, which is fine.\n\nThe real bug is in the case where the buffered `\\r` is NOT followed by `\\n` \u2014 after the next decode call, the `\\r`-terminated buffer gets prepended to the new text (line 276: `text = self.buffer + text`), so the combined text becomes `<prev content>\\r<new text>`. Then `splitlines()` is called again and correctly splits on `\\r`. This part works.\n\nHowever, consider the edge case: input is split exactly at a `\\r\\n` boundary, e.g. chunk1 = `\"a\\r\"`, chunk2 = `\"\\nb\"`. After chunk1: `lines = [\"a\"]` from `splitlines()`, then `text[-1] == '\\r'` so we do `self.buffer = lines.pop() + \"\\r\"` \u2192 buffer = `\"a\\r\"`. After chunk2: text = `\"a\\r\" + \"\\nb\"` = `\"a\\r\\nb\"`. `splitlines()` on `\"a\\r\\nb\"` gives `[\"a\", \"b\"]` (splitlines treats `\\r\\n` as one separator). `text[-1]` is `\"b\"` which is not a newline char, so `self.buffer = lines.pop()` = `\"b\"`. Returns `[\"a\"]`. This is correct.\n\nNow consider chunk1 = `\"a\\r\"`, chunk2 = `\"\\r\"`, chunk3 = `\"b\"`. After chunk1: buffer = `\"a\\r\"`. After chunk2: text = `\"a\\r\\r\"`. `splitlines()` \u2192 `[\"a\", \"\"]`. `text[-1] == '\\r'` \u2192 `self.buffer = lines.pop() + \"\\r\"` = `\"\" + \"\\r\"` = `\"\\r\"`. Returns `[\"a\"]`. After chunk3: text = `\"\\rb\"`. `splitlines()` \u2192 `[\"\", \"b\"]`. `text[-1]` is `\"b\"`, not newline \u2192 `self.buffer = \"b\"`. Returns `[\"\"]`. Flush: `\"b\".splitlines()` \u2192 `[\"b\"]`. Correct.\n\nThe truly problematic case: what if `lines` is empty when we try to `lines.pop()` at line 287 or 292? Consider chunk = `\"\\r\"`. `splitlines()` on `\"\\r\"` \u2192 `[\"\"]`. `text[-1] == '\\r'` \u2192 `self.buffer = lines.pop() + \"\\r\"` = `\"\" + \"\\r\"` = `\"\\r\"`. Returns `[]`. OK.\n\nConsider chunk = `\"\\n\"`. `splitlines()` \u2192 `[\"\"]`. `text[-1]` is `\"\\n\"` which IS in NEWLINE_CHARS \u2192 no buffer pop. Returns `[\"\"]`. Correct.\n\nActually the most critical bug: `lines` could be empty yet we still call `lines.pop()`. Consider input text (after prepending buffer) that consists of a single newline character at the end that is NOT `\\r`, e.g. `\"\\n\"`. `splitlines()` returns `[\"\"]` \u2014 one element. `text[-1]` is `\"\\n\"` which is in NEWLINE_CHARS, so no pop. Fine.\n\nBut consider `\"\\r\"`: `splitlines()` returns `[\"\"]`. `text[-1] == '\\r'` \u2192 `lines.pop()` \u2192 returns `[]`. Fine.\n\nWhat about completely empty text after buffer prepend? That's handled at line 279-280.\n\nActually there is a subtle logical flaw: when `text[-1] == '\\r'`, the `\\r` was already consumed as a line terminator by `splitlines()`, so the last element of `lines` is the content of the line TERMINATED by that `\\r`. By popping it and adding `\\r` back to the buffer, we are holding back a complete line unnecessarily when the next chunk doesn't start with `\\n`. \n\nFor example: chunk1=`\"a\\rb\"`, chunk2=`\"c\"`. After chunk1: `splitlines(\"a\\rb\")` \u2192 `[\"a\", \"b\"]`. `text[-1]` is `\"b\"`, not newline \u2192 `self.buffer = lines.pop()` = `\"b\"`. Returns `[\"a\"]`. After chunk2: text=`\"bc\"`. `splitlines()` \u2192 `[\"bc\"]`. Not newline at end \u2192 `self.buffer = \"bc\"`. Returns `[]`. Flush: `[\"bc\"]`. Final output: `[\"a\", \"bc\"]`. Correct.\n\nChunk1=`\"a\\r\"`, chunk2=`\"b\"`. After chunk1: `splitlines()` \u2192 `[\"a\"]`. `text[-1]=='\\r'` \u2192 `self.buffer = lines.pop() + \"\\r\"` = `\"a\\r\"`. Returns `[]`. After chunk2: text=`\"a\\rb\"`. `splitlines()` \u2192 `[\"a\", \"b\"]`. `text[-1]`=`\"b\"` not newline \u2192 `self.buffer = \"b\"`. Returns `[\"a\"]`. Flush: `[\"b\"]`. Final: `[\"a\", \"b\"]`. Correct.\n\nSo the `\\r` boundary logic works. Let me look for the actual `lines` being empty when pop is called.\n\nEdge: buffer=`\"x\\r\"`, incoming text=`\"\"`. After prepend: text=`\"x\\r\"`, not empty. `splitlines(\"x\\r\")` \u2192 `[\"x\"]`. `text[-1]=='\\r'` \u2192 `self.buffer = \"x\" + \"\\r\"` = `\"x\\r\"`. Returns `[]`. This is an infinite-loop-like scenario (buffer never drains) if you keep sending empty strings, but it terminates correctly on flush.\n\nActually wait \u2014 what if after prepending the buffer the resulting text ends with `\\r` and `splitlines()` returns an EMPTY list? Is that possible? `splitlines()` on a string ending with `\\r` always returns at least one element (the `\\r` itself counts as a line separator producing at least one line). E.g., `\"\\r\".splitlines()` \u2192 `[\"\"]`. So `lines` will not be empty when `text[-1] == '\\r'`. Similarly for the non-newline case: if text is non-empty and `text[-1]` is not a newline char, `splitlines()` will include the last segment. So `lines.pop()` is always safe here.\n\nConclusion: The logic appears correct for the described use cases. However, the change in behavior (splitlines now supports more line-ending characters like \\x0b, \\x0c, \\x1c, \\x1d, \\x1e, \\x85, \\u2028, \\u2029) may be unintentional and could break callers that expect only \\n, \\r, \\r\\n to be treated as line separators.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            284,
+            292
+          ],
+          "severity": "critical",
+          "title": "When text ends with \\r and splitlines() returns empty list, lines.pop() raises IndexError",
+          "detail": "Although in practice `splitlines()` on a non-empty string always returns at least one element, so this is not actually a crash risk. The real issue is different: see the behavioral change bug below.",
+          "confidence": 0.3
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            271,
+            271
           ],
           "severity": "major",
-          "title": "Single-line text with trailing newline skips buffer prepend",
-          "detail": "When `text` has exactly one line AND a trailing newline (e.g. `decode(\"abc\\n\")`), `trailing_newline` is `True` and `len(lines) == 1`, so the code falls through to line 292 where `self.buffer` is prepended \u2014 that part is fine. But the early-return path at line 287-290 (`len(lines) == 1 and not trailing_newline`) skips the buffer check entirely and returns `[]` after appending to the buffer, which is correct for that case. Let me re-examine the actual bug...\n\nThe real issue: when `len(lines) == 1` AND `trailing_newline` is `True`, code does NOT take the early return (good), falls to line 292 and prepends buffer (good), then falls to line 298 where `trailing_newline` is True so does NOT pop (good) \u2014 this case is actually correct.\n\nHowever: consider the case where `self.buffer = [\"partial\"]` and `text = \"\\n\"`. After stripping the trailing `\\r` logic, `text = \"\\n\"`, `trailing_newline = True`, `lines = text.splitlines()` \u2192 `lines = []` (because `\"\\n\".splitlines()` returns `[]`!). Then `len(lines) == 1` is False, so we skip the early-return. At line 292, `self.buffer` is non-empty, so we try `lines[0]` \u2014 but `lines` is empty! This raises an `IndexError`.",
+          "title": "LineDecoder now splits on many additional Unicode line-ending characters not in original spec",
+          "detail": "The original implementation only handled `\\n`, `\\r`, and `\\r\\n`. The new implementation uses `str.splitlines()` which also splits on `\\x0b` (vertical tab), `\\x0c` (form feed), `\\x1c`, `\\x1d`, `\\x1e`, `\\x85` (NEL), `\\u2028` (line separator), and `\\u2029` (paragraph separator). These characters may appear legitimately in HTTP response bodies (e.g., JSON strings containing `\\u2028`/`\\u2029`) and would now be incorrectly treated as line separators. The docstring still says 'supporting any of `\\n`, `\\r`, or `\\r\\n`' but the actual behavior is now much broader. This is a behavioral regression for callers relying on line-by-line iteration of HTTP responses that contain these characters.",
           "confidence": 0.95
         },
         {
           "agent": "correctness",
           "file": "httpx/_decoders.py",
           "line_range": [
-            292,
-            296
+            288,
+            292
           ],
-          "severity": "critical",
-          "title": "IndexError when text consists solely of a newline character and buffer is non-empty",
-          "detail": "`\"\\n\".splitlines()` returns `[]` (an empty list). If `self.buffer` is non-empty (e.g. from a previous `decode(\"partial\")`) and then `decode(\"\\n\")` is called, the code reaches line 295: `lines = [\"\" .join(self.buffer) + lines[0]] + lines[1:]` which throws `IndexError: list index out of range` because `lines` is empty.\n\nSimilarly this affects any text that is purely a newline character (or multiple newlines all producing empty-string lines that splitlines still returns, but a single `\\n` is the clear reproducer).\n\nActually let's be precise: `\"\\n\".splitlines()` == `[]` and `\"\\n\\n\".splitlines()` == `['', '']`. So the single-`\\n` case is the problematic one where `trailing_newline=True` and `lines=[]`.\n\nFix: guard `lines[0]` access, e.g.:\n```python\nif self.buffer:\n    if lines:\n        lines = [\"\".join(self.buffer) + lines[0]] + lines[1:]\n    else:\n        lines = [\"\".join(self.buffer)]\n    self.buffer = []\n```",
-          "confidence": 0.97
+          "severity": "major",
+          "title": "Non-newline trailing character check is insufficient for multi-char newlines consumed by splitlines()",
+          "detail": "The condition `text[-1] not in NEWLINE_CHARS` is used to determine whether the last segment from `splitlines()` is incomplete and should be buffered. However, `NEWLINE_CHARS` only checks a single trailing character. The sequence `\\r\\n` ends in `\\n` which IS in NEWLINE_CHARS, so `\\r\\n`-terminated text won't buffer the last segment \u2014 that's correct. But what about text ending in one of the other multi-char sequences? All the other splitlines separators are single characters, so this is fine. The issue is only that NEWLINE_CHARS is broader than intended (see the previous finding).",
+          "confidence": 0.7
         },
         {
           "agent": "correctness",
           "file": "httpx/_decoders.py",
           "line_range": [
-            306,
-            311
+            297,
+            299
           ],
-          "severity": "major",
-          "title": "flush() returns empty string when only trailing_cr is set",
-          "detail": "When `self.trailing_cr` is `True` and `self.buffer` is empty (e.g. input ended with `\\r`), `flush()` returns `[\"\".join([])]` which is `[\"\"]` \u2014 a list containing an empty string \u2014 instead of returning `[\"\\r\"]` or `[\"\"]` (depending on desired semantics) for that trailing carriage return. The old code returned `[\"\\n\"]` (treating the trailing `\\r` as a line ending that produces `\"\\n\"`). With the new code the `\\r` is stripped at line 279 and set as `trailing_cr=True`, but `flush()` doesn't reconstruct any content for it; it just returns `[\"\"]`. This is semantically incorrect \u2014 a trailing `\\r` should produce an empty line (from `splitlines`) or be treated as part of a line terminator, not silently produce an empty string token.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "correctness",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            274,
-            279
-          ],
-          "severity": "major",
-          "title": "Trailing \\r handling interacts incorrectly with multi-character newlines",
-          "detail": "The code strips a trailing `\\r` and defers it to the next call to handle `\\r\\n` split across chunks. However, after prepending the deferred `\\r` at line 275, the code checks `text.endswith(\"\\r\")` again at line 277. If the new `text` itself ends with `\\r`, it is stripped and `trailing_cr` is set again \u2014 this part is fine. But the issue is that `NEWLINE_CHARS` includes `\\r` explicitly, so `splitlines()` will treat lone `\\r` as a line separator, which means the deferred-`\\r`-prepend approach is only needed to distinguish `\\r\\n` from lone `\\r`. The logic seems correct for `\\r\\n` across chunk boundaries, but when `flush()` is called with `trailing_cr=True` and empty buffer, it returns `[\"\"]` (an empty-string line) rather than properly representing the lone `\\r` as producing an empty line with no content \u2014 the empty string return may be acceptable behavior but it's inconsistent with `trailing_cr` with a non-empty buffer.",
-          "confidence": 0.6
+          "severity": "minor",
+          "title": "flush() no longer normalizes trailing \\r to \\n",
+          "detail": "The original `flush()` converted a trailing `\\r` to `\\n` (i.e., returned `[self.buffer[:-1] + '\\n']`). After the refactor, `flush()` calls `self.buffer.splitlines()` which strips all line terminators. The buffer at flush time could be `'sometext\\r'` (because `decode()` explicitly stores the `\\r` back into the buffer at line 287). `'sometext\\r'.splitlines()` returns `['sometext']`, which is the correct behavior under the new stripping-terminators policy. However, if the intent is to match stdlib `splitlines()` semantics exactly (no terminators), this is consistent. This is a behavioral change from the original (which emitted `\\n`-terminated lines), and while consistent internally, may surprise users expecting `\\r`-terminated output. This is more of a behavior change than a bug, but should be explicitly noted.",
+          "confidence": 0.5
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 6555,
-      "tokens_out": 1470,
-      "cost_usd": 0.041715,
-      "duration_s": 29.017696207854897,
+      "tokens_in": 6266,
+      "tokens_out": 2894,
+      "cost_usd": 0.062208,
+      "duration_s": 49.21246224991046,
       "skip_or_error_reason": null
     },
     {
       "agent": "security",
       "status": "ok",
-      "findings": [],
+      "findings": [
+        {
+          "agent": "security",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            271,
+            271
+          ],
+          "severity": "minor",
+          "title": "NEWLINE_CHARS constant redefined on every decode() call",
+          "detail": "NEWLINE_CHARS is defined inside the decode() method body, so it is reconstructed as a new string object on every single call. This is a minor inefficiency but not a security issue. No security impact.",
+          "confidence": 0.3
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            284,
+            292
+          ],
+          "severity": "major",
+          "title": "Off-by-one in \\r-boundary buffering causes incorrect data reconstruction and potential information leakage or data corruption",
+          "detail": "When text[-1] == '\\r' (line 284), the code does `self.buffer = lines.pop() + \"\\r\"`. However, `str.splitlines()` already consumes the trailing '\\r' as a line separator, so the popped element is the content of that last line *without* the '\\r'. Re-appending '\\r' and storing in the buffer is the intended approach here \u2014 but consider the case where the '\\r' is itself the entire input or follows an empty line. More critically: if `lines` is empty after splitlines() (e.g., text == \"\\r\"), calling `lines.pop()` on an empty list raises an IndexError. For example, `decode(\"\\r\")` \u2192 splitlines() \u2192 `['']`... actually that is one element, but `decode(\"a\\r\")` \u2192 splitlines() \u2192 `['a']` which is fine. However `decode(\"\\r\")` \u2192 splitlines() \u2192 `['']` and pop gives `''`, buffer becomes `'\\r'`. Then `decode(\"\")` is called: buffer `'\\r'` + `\"\"` = `\"\\r\"`, text[-1] == '\\r', splitlines() of `\"\\r\"` = `['']`, pop gives `''`, buffer = `'' + '\\r'` = `'\\r'` again \u2014 **infinite loop / unbounded buffer growth** if the caller keeps feeding empty strings. While this is not a direct injection risk, it represents a resource exhaustion / denial-of-service vector if an attacker can control the stream to send isolated '\\r' bytes followed by repeated empty chunks. Consider guarding against this: only buffer when `lines` is non-empty after the pop, or check that the reconstructed buffer is not just '\\r' in isolation.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            270,
+            293
+          ],
+          "severity": "minor",
+          "title": "Expanded set of newline characters (Unicode line separators) may bypass server-sent event or HTTP header parsing expectations",
+          "detail": "By adopting Python's full `str.splitlines()` semantics, the decoder now treats U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR), U+0085 (NEL), U+000B (VT), U+000C (FF), and several others as line boundaries. In an HTTP/SSE streaming context only \\n, \\r, and \\r\\n are valid line terminators per RFC 7230 and the SSE specification. An attacker-controlled response body containing these Unicode characters could craft lines that appear whole to the application but are split by the decoder, potentially causing header-injection-style confusion in line-oriented protocol parsers layered on top of iter_lines(). Callers who process SSE `data:` fields or similar line-based protocols may misinterpret the split output.",
+          "confidence": 0.75
+        }
+      ],
       "tool_calls": 0,
-      "tokens_in": 4189,
-      "tokens_out": 33,
-      "cost_usd": 0.013062,
-      "duration_s": 1.885910082841292,
+      "tokens_in": 3892,
+      "tokens_out": 909,
+      "cost_usd": 0.025311,
+      "duration_s": 19.35736187500879,
       "skip_or_error_reason": null
     },
     {
@@ -172,40 +211,40 @@
             271
           ],
           "severity": "minor",
-          "title": "Local constant `NEWLINE_CHARS` defined inside the method body",
-          "detail": "The existing code in this file defines all constants and class-level state at module or class scope. `NEWLINE_CHARS` is a pure constant that never changes; placing it inside `decode()` means it is re-created on every call. Following the surrounding style it should be a module-level or class-level constant (e.g. `_NEWLINE_CHARS = ...` at module scope).",
+          "title": "Module-level constant defined inside method body",
+          "detail": "NEWLINE_CHARS is a constant string that never changes, but it is re-created on every call to decode(). The existing code in this file defines class-level or module-level names rather than embedding invariant data inside methods. Move NEWLINE_CHARS to module scope (or at least class scope) to match that convention and avoid the repeated allocation.",
           "confidence": 0.85
         },
         {
           "agent": "style",
           "file": "httpx/_decoders.py",
           "line_range": [
-            262,
-            262
+            271,
+            271
           ],
           "severity": "nit",
-          "title": "Typo: \"stdllib\" in the docstring",
-          "detail": "The word \"stdllib\" should be \"stdlib\". The old docstring was also more precise about which line endings were handled; the new one could be slightly clearer, e.g. \"Has the same behaviour as `str.splitlines`, but processes input iteratively.\"",
-          "confidence": 0.99
+          "title": "Constant name uses UPPER_CASE but is defined inside a function",
+          "detail": "PEP 8 UPPER_CASE naming signals a module-level constant. Placing an UPPER_CASE name inside a method body is an unusual style mix. If the constant is kept inside the method it should be lower_case (e.g. newline_chars); if it is promoted to module scope the current name is fine.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "httpx/_decoders.py",
           "line_range": [
-            309,
-            309
+            289,
+            289
           ],
           "severity": "nit",
-          "title": "`flush()` returns `[\"\"]]` when only `trailing_cr` is set",
-          "detail": "When `self.trailing_cr` is `True` and `self.buffer` is empty, `\"`.join([])` produces `\"\"`, so `flush()` returns `[\"\"]`. This is likely unintentional and inconsistent with the guard on line 306 \u2014 but raising it purely as a readability/clarity concern: the intent of the `\"`.join(self.buffer)` expression when the buffer is empty after a lone trailing CR is not obvious from a reading of the code, and a brief comment or an explicit `if self.trailing_cr` branch would make the two cases clearer.",
-          "confidence": 0.75
+          "title": "Typo in comment: \"seperator\" should be \"separator\"",
+          "detail": "The comment on line 289 reads \"newline seperator\" \u2014 \"separator\" is the correct spelling. The surrounding code and the rest of the file use standard English spelling.",
+          "confidence": 0.99
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 6663,
-      "tokens_out": 523,
-      "cost_usd": 0.027834,
-      "duration_s": 12.309455000096932,
+      "tokens_in": 6366,
+      "tokens_out": 420,
+      "cost_usd": 0.025398,
+      "duration_s": 8.68185891606845,
       "skip_or_error_reason": null
     },
     {
@@ -220,8 +259,8 @@
             271
           ],
           "severity": "major",
-          "title": "No tests for the new extended NEWLINE_CHARS beyond \\n, \\r",
-          "detail": "The new implementation uses an expanded NEWLINE_CHARS set (\"\\n\\r\\x0b\\x0c\\x1c\\x1d\\x1e\\x85\\u2028\\u2029\") to match stdlib splitlines. However, none of the test cases in tests/test_decoders.py or tests/models/test_responses.py exercise any of the newly-supported line-ending characters beyond \\n, \\r, and \\r\\n. Characters like \\x0b (vertical tab), \\x0c (form feed), \\x1c, \\x1d, \\x1e, \\x85 (NEL), \\u2028 (LS), \\u2029 (PS) are not tested at all. Since these are explicitly claimed as supported by the new docstring and implementation, their absence from tests is a gap.",
+          "title": "No tests for new Unicode/vertical-tab newline characters in LineDecoder",
+          "detail": "The new implementation explicitly lists `NEWLINE_CHARS = \"\\n\\r\\x0b\\x0c\\x1c\\x1d\\x1e\\x85\\u2028\\u2029\"` and delegates to `str.splitlines()`, which recognises all of these. However, none of the updated tests in `tests/test_decoders.py` exercise any of the newly-supported separators (\\x0b vertical tab, \\x0c form feed, \\x1c\u2013\\x1e file/group/record separators, \\x85 NEL, \\u2028 line separator, \\u2029 paragraph separator). The old implementation only handled `\\n`, `\\r`, and `\\r\\n`; the new one deliberately expands this set, but zero test cases verify that behaviour.",
           "confidence": 0.95
         },
         {
@@ -229,55 +268,43 @@
           "file": "httpx/_decoders.py",
           "line_range": [
             284,
-            290
+            292
+          ],
+          "severity": "major",
+          "title": "No test for trailing Unicode/other newline chars at chunk boundary in decode()",
+          "detail": "The buffer-management logic in `decode()` has two branches: one for a trailing `\\r` (line 284) and one for any non-newline trailing character (line 288). There are no tests that verify the second branch is NOT entered (i.e., that a chunk ending in one of the non-`\\r` newline characters like `\\x0b`, `\\x85`, `\\u2028`, etc. is immediately emitted rather than buffered). A chunk ending in `\\x0b` should NOT be buffered, but this is untested.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            297,
+            299
           ],
           "severity": "minor",
-          "title": "No test for trailing_newline=True with a non-\\n/\\r character at end",
-          "detail": "The `trailing_newline` check at line 284 uses the full NEWLINE_CHARS set. There is no test that verifies the behaviour when text ends with one of the extended newline chars (e.g. \\x85, \\u2028). Specifically, the interaction of trailing_newline=True with a buffer from a previous chunk using these exotic terminators is untested.",
+          "title": "flush() with a trailing \\r in the buffer is no longer tested",
+          "detail": "The old `flush()` had explicit logic to handle a buffered trailing `\\r` (converting it to `\\n`). The new `flush()` simply calls `self.buffer.splitlines()`. The existing `test_line_decoder_cr` test only checks `flush()` after a trailing `\\r` that was NOT followed by `\\n` in subsequent chunks (the `baz\\r` case), but doesn't test `flush()` when the entire remaining buffer is just `\\r` by itself. With the new implementation, `\"\\r\".splitlines()` returns `['']` (an empty string), not `[]`. This edge case \u2014 `flush()` called with `self.buffer == \"\\r\"` \u2014 is not covered.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            282,
+            293
+          ],
+          "severity": "minor",
+          "title": "decode() with an empty string after prepending a non-empty buffer is untested",
+          "detail": "The path where `self.buffer` is non-empty and the incoming `text` argument is `\"\"` (empty string) exercises the prepend-and-check logic (lines 273-280). While `decode(\"\")` is tested when the buffer is empty, there is no test that calls `decode(\"\")` when the buffer already holds partial content, to confirm the buffer is preserved and nothing is emitted.",
           "confidence": 0.8
-        },
-        {
-          "agent": "test_coverage",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            274,
-            279
-          ],
-          "severity": "minor",
-          "title": "No test for trailing_cr followed by another \\r (\\r\\r split across chunks)",
-          "detail": "The trailing_cr logic prepends a saved \\r to the next chunk. There is no test exercising a \\r at the end of one chunk followed immediately by another \\r at the start of the next chunk in a multi-chunk scenario, verifying that the two carriage-returns are each treated as separate line endings.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "test_coverage",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            306,
-            311
-          ],
-          "severity": "minor",
-          "title": "flush() with only trailing_cr=True and empty buffer is not directly tested",
-          "detail": "The new flush() method has a branch: if trailing_cr is True but buffer is empty, it returns [\"\"]. (A trailing \\r was saved but no buffered text.) This case is not explicitly tested \u2014 existing tests always have text buffered alongside the trailing \\r. For example, a decode(\"\\r\") followed immediately by flush() (with no further decode call) is not covered.",
-          "confidence": 0.8
-        },
-        {
-          "agent": "test_coverage",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            281,
-            282
-          ],
-          "severity": "minor",
-          "title": "decode() returning [] for empty text after trailing_cr stripping not tested in isolation",
-          "detail": "After the trailing_cr prefix is prepended and the trailing \\r is stripped, text could become empty (e.g., if the only input was \"\\r\" and trailing_cr was already False). The `if not text: return []` branch at line 281-282 is not explicitly covered by a dedicated test \u2014 it is only implicitly exercised by the `decode(\"\")` case which never sets trailing_cr.",
-          "confidence": 0.65
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 16661,
-      "tokens_out": 935,
-      "cost_usd": 0.064008,
-      "duration_s": 18.025303167058155,
+      "tokens_in": 16352,
+      "tokens_out": 886,
+      "cost_usd": 0.062346,
+      "duration_s": 17.81383024994284,
       "skip_or_error_reason": null
     },
     {
@@ -285,114 +312,102 @@
       "status": "ok",
       "findings": [
         {
-          "agent": "correctness",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            292,
-            296
-          ],
-          "severity": "critical",
-          "title": "IndexError when text is solely a newline and buffer is non-empty",
-          "detail": "When `decode(\"\\n\")` is called (or any text whose only content is a newline terminator) while `self.buffer` is non-empty, `\"\\n\".splitlines()` returns `[]` and `trailing_newline` is set to `True`. The code skips the early-return guard (which requires `len(lines) == 1`), reaches line 295, and attempts `lines[0]` on an empty list \u2014 raising `IndexError: list index out of range`.\n\nA concrete reproducer:\n```python\ndecoder = LineDecoder()\ndecoder.decode(\"partial\")   # buffers \"partial\"\ndecoder.decode(\"\\n\")        # \u2190 IndexError\n```\n\nFix: guard `lines[0]` access before indexing:\n```python\nif self.buffer:\n    if lines:\n        lines = [\"\".join(self.buffer) + lines[0]] + lines[1:]\n    else:\n        lines = [\"\".join(self.buffer)]\n    self.buffer = []\n```",
-          "confidence": 0.97
-        },
-        {
-          "agent": "test_coverage",
+          "agent": "correctness, security, test_coverage",
           "file": "httpx/_decoders.py",
           "line_range": [
             271,
             271
           ],
           "severity": "major",
-          "title": "No tests for newly-supported extended newline characters",
-          "detail": "The new implementation explicitly supports `\\x0b` (VT), `\\x0c` (FF), `\\x1c`, `\\x1d`, `\\x1e`, `\\x85` (NEL), `\\u2028` (LS), and `\\u2029` (PS) as line separators to match `str.splitlines`. None of these characters are exercised by any existing test in `tests/test_decoders.py` or `tests/models/test_responses.py`. The interaction of `trailing_newline=True` with these exotic terminators and a previously-buffered chunk is also entirely untested. Given that these are the primary new feature of the PR, test coverage is essential.",
-          "confidence": 0.95
+          "title": "splitlines() expands recognised line endings beyond \\n/\\r/\\r\\n, introducing behavioural regression and potential security concern",
+          "detail": "The new implementation delegates to `str.splitlines()`, which treats `\\x0b` (VT), `\\x0c` (FF), `\\x1c`\u2013`\\x1e`, `\\x85` (NEL), `\\u2028` (LINE SEPARATOR), and `\\u2029` (PARAGRAPH SEPARATOR) as line boundaries. The original code \u2014 and the docstring \u2014 only guaranteed `\\n`, `\\r`, and `\\r\\n`. HTTP/1.1 (RFC 7230) and the SSE specification only recognise those three as valid line terminators. Concretely:\n\n\u2022 **Behavioural regression**: JSON bodies or other response payloads that legitimately contain `\\u2028`/`\\u2029` (which are valid in JSON strings) will be incorrectly split into multiple lines.\n\u2022 **Security concern**: An attacker-controlled response body containing these characters could craft lines that appear whole to the application but are split by the decoder, potentially causing header-injection-style confusion in any line-oriented protocol parser (e.g., SSE `data:` fields) layered on top of `iter_lines()`.\n\u2022 **No test coverage**: None of the new or existing tests in `tests/test_decoders.py` exercise any of the newly-supported separators to document or verify this broadened behaviour.\n\nRecommendation: either restrict `splitlines()` by post-filtering (only split on `\\n`, `\\r`, `\\r\\n`), or update the docstring + add explicit tests that clearly document the expanded behaviour as intentional.",
+          "confidence": 0.92
         },
         {
-          "agent": "correctness, style",
+          "agent": "correctness, test_coverage",
           "file": "httpx/_decoders.py",
           "line_range": [
-            306,
-            311
+            288,
+            292
           ],
           "severity": "major",
-          "title": "flush() returns [''] instead of the correct content when only trailing_cr is set",
-          "detail": "When a stream ends with a lone `\\r` (e.g. `decode(\"\\r\")` followed by `flush()` with no further decode), `trailing_cr` is `True` and `self.buffer` is empty. `flush()` executes `\"\".join(self.buffer)` \u2192 `\"\"` and returns `[\"\"]` \u2014 a list containing one empty string. The semantics are unclear: the old code treated a trailing `\\r` as a line terminator producing `\"\\n\"`, while the new code effectively drops its content. At minimum the intent is not obvious from the code and a comment or explicit branch is needed; at worst this is a semantic regression.\n\nRecommendation: add an explicit branch for `trailing_cr=True` with an empty buffer, deciding whether to emit an empty-string line or nothing, and document the choice.",
+          "title": "No tests verify that chunks ending in non-\\r newline chars (\\x0b, \\x85, \\u2028, etc.) are not incorrectly buffered",
+          "detail": "The condition `text[-1] not in NEWLINE_CHARS` (line 288) determines whether the last segment from `splitlines()` is incomplete and should be buffered. For the newly-recognised newline characters (`\\x0b`, `\\x0c`, `\\x1c`\u2013`\\x1e`, `\\x85`, `\\u2028`, `\\u2029`) that are NOT `\\r`, this branch should correctly NOT buffer the last element. However, this is entirely untested \u2014 there are no test cases that feed a chunk ending in one of these characters and verify the line is immediately emitted rather than withheld. Combined with the behavioural-expansion issue above, this represents a significant gap in test coverage for the new code paths.",
           "confidence": 0.85
         },
         {
-          "agent": "correctness",
+          "agent": "correctness, security",
           "file": "httpx/_decoders.py",
           "line_range": [
-            274,
-            279
+            284,
+            292
           ],
           "severity": "major",
-          "title": "Trailing \\r handling may be inconsistent in flush() when buffer is empty",
-          "detail": "The `trailing_cr` deferral logic correctly handles `\\r\\n` split across chunk boundaries. However, when `flush()` is called with `trailing_cr=True` and an empty `self.buffer`, it returns `[\"\"]` (an empty-string line) rather than clearly representing the lone `\\r` as a line separator. This is a lower-confidence concern (confidence 0.6) and partially overlaps with the flush() finding above, but the root cause \u2014 that `flush()` does not reconstruct any meaning for a saved `trailing_cr` \u2014 is worth addressing explicitly.",
-          "confidence": 0.6
+          "title": "Repeated empty-chunk input when buffer ends with bare \\r causes unbounded buffer growth (resource exhaustion)",
+          "detail": "When `text[-1] == '\\r'` (line 284), the code does `self.buffer = lines.pop() + '\\r'`. This is correct for the `\\r\\n`-split-across-chunks case. However, if the caller repeatedly invokes `decode(\"\")` while the buffer already holds a bare `'\\r'`:\n\n1. `decode(\"\\r\")` \u2192 `splitlines()` \u2192 `['']`, pop \u2192 `''`, buffer = `'\\r'`, returns `[]`.\n2. `decode(\"\")` \u2192 `text = '\\r'`, `splitlines()` \u2192 `['']`, pop \u2192 `''`, buffer = `'\\r'` again \u2014 the buffer never drains.\n\nWhile a well-behaved HTTP client will not produce repeated empty decode calls, a malicious or misbehaving server that sends isolated `\\r` bytes followed by empty chunks can keep the buffer alive indefinitely without triggering a flush, which is a mild resource-exhaustion / denial-of-service vector.\n\nNote: f1's concern about `lines.pop()` raising `IndexError` on an empty list is **not** a real risk because `splitlines()` on any non-empty string always returns at least one element.\n\nRecommendation: Guard the `\\r`-buffering branch so that if the reconstructed buffer is identical to what was already buffered (no progress), progress is forced \u2014 or document that callers must not feed repeated empty strings.",
+          "confidence": 0.72
         },
         {
-          "agent": "style",
+          "agent": "security, style",
           "file": "httpx/_decoders.py",
           "line_range": [
             271,
             271
           ],
           "severity": "minor",
-          "title": "NEWLINE_CHARS defined inside the method body on every call",
-          "detail": "`NEWLINE_CHARS` is a pure constant string that never changes. Defining it inside `decode()` allocates it on every invocation. Following the existing style of this file (module- or class-level constants), it should be hoisted to module scope (e.g. `_NEWLINE_CHARS = \"\\n\\r\\x0b...\"`) to avoid repeated allocation and improve readability.",
-          "confidence": 0.85
+          "title": "NEWLINE_CHARS constant defined inside decode() method \u2014 should be at module or class scope",
+          "detail": "`NEWLINE_CHARS` is an invariant string that is reconstructed on every call to `decode()`. The rest of this file defines invariant data at module or class scope, and PEP 8 UPPER_CASE naming signals a module-level constant. Placing an UPPER_CASE name inside a method body is both an unusual style mix and a minor repeated allocation. Promote it to module scope (or at minimum class scope) to match the existing conventions.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "correctness, test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            297,
+            299
+          ],
+          "severity": "minor",
+          "title": "flush() behaviour change for buffered \\r is untested and subtly different from the original",
+          "detail": "The original `flush()` converted a buffered trailing `\\r` to a `\\n`-terminated line. The new `flush()` calls `self.buffer.splitlines()`, which strips terminators entirely. While internally consistent with the new strip-terminators policy, the edge case where `self.buffer == \"\\r\"` at flush time is not covered by any test. `\"\\r\".splitlines()` returns `['']` (one empty string), not `[]`. Callers that previously relied on flush emitting a `\\n`-terminated line will see different output. This should be explicitly tested and documented.",
+          "confidence": 0.82
         },
         {
           "agent": "test_coverage",
           "file": "httpx/_decoders.py",
           "line_range": [
-            281,
-            311
+            282,
+            293
           ],
           "severity": "minor",
-          "title": "flush() with only trailing_cr=True and empty buffer, and early-return path, are not directly tested",
-          "detail": "Two specific code paths lack dedicated test coverage: (1) `decode(\"\\r\")` followed immediately by `flush()` with no further decode call \u2014 the branch where `trailing_cr=True` and buffer is empty; (2) the `if not text: return []` guard at lines 281-282, which is only implicitly hit by `decode(\"\")` and never by the case where stripping a trailing `\\r` leaves `text` empty (e.g. `decode(\"\\r\")` when `trailing_cr` was already `False`).",
+          "title": "Missing test: decode(\"\") called with a non-empty buffer",
+          "detail": "There is no test that calls `decode(\"\")` (empty string) when `self.buffer` already holds partial content. This path exercises the buffer-prepend logic (lines 273\u2013280) and verifies the buffer is preserved and nothing is prematurely emitted. Adding such a test would also help guard against the infinite-loop scenario described in the resource-exhaustion finding.",
           "confidence": 0.8
         },
         {
-          "agent": "test_coverage",
-          "file": "httpx/_decoders.py",
-          "line_range": [
-            274,
-            279
-          ],
-          "severity": "minor",
-          "title": "No test for \\r\\r split across chunk boundaries",
-          "detail": "The `trailing_cr` deferral logic prepends a saved `\\r` to the next chunk. There is no test verifying that two consecutive `\\r` characters split across separate `decode()` calls each produce their own line ending (i.e. `decode(\"a\\r\")` then `decode(\"\\rb\")` should yield two separate lines).",
-          "confidence": 0.75
-        },
-        {
           "agent": "style",
           "file": "httpx/_decoders.py",
           "line_range": [
-            262,
-            262
+            289,
+            289
           ],
           "severity": "nit",
-          "title": "Typo \"stdllib\" in docstring",
-          "detail": "The docstring contains \"stdllib\" which should be \"stdlib\". The docstring could also be more precise: e.g. \"Has the same behaviour as `str.splitlines`, but processes input iteratively.\"",
+          "title": "Typo in comment: \"seperator\" \u2192 \"separator\"",
+          "detail": "The comment on line 289 reads \"newline seperator\". The correct spelling is \"separator\". Please fix.",
           "confidence": 0.99
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 3674,
-      "tokens_out": 1813,
-      "cost_usd": 0.038217,
-      "duration_s": 33.36527162510902,
+      "tokens_in": 5683,
+      "tokens_out": 1998,
+      "cost_usd": 0.047019,
+      "duration_s": 35.030895499978215,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 37742,
-    "tokens_out": 4774,
-    "cost_usd": 0.184836,
-    "duration_s": 94.6
+    "tokens_in": 38559,
+    "tokens_out": 7107,
+    "cost_usd": 0.222282,
+    "duration_s": 130.1
   }
 }

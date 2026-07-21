@@ -5,72 +5,68 @@ ground_truth_matches:
   issue: The rewrite silently changes user-visible behavior (whether line endings are kept/normalized
     in yielded lines) — the changed test expectations reveal it, and behavior must be preserved.
   matched_finding: null
-  note: deliberate change accepted in review (it is the PR's title); the changed test expectations
-    pin it; no finding raises the endings-dropped compatibility concern
-  matchable: false
+  note: 'PRESENT: docstring still says ''normalizing to \n'' but splitlines() strips terminators
+    — silent behavior change (discussion_r1014794251)'
+  matchable: true
 - ground_truth: g2
   issue: A trailing carriage return at the end of a decode() call must be buffered — it may be the
     first half of a CRLF pair split across chunks, and splitlines() alone treats it as a complete
     newline.
   matched_finding: null
-  note: implemented at the reviewed head — trailing_cr buffering is present (discussion_r1045052360)
+  note: 'NON-matchable: trailing ''\r'' is already buffered at review_sha (`self.buffer = lines.pop()
+    + ''\r''`), satisfying discussion_r1045052360'
   matchable: false
 - ground_truth: g3
   issue: Checking that the text ends with a linefeed is insufficient, since str.splitlines recognizes
     many more newline characters (vertical tab, form feed, file/group/record separators, U+2028/U+2029),
     and the tests don't cover them.
-  matched_finding: 1
-  note: the code half is fixed (NEWLINE_CHARS covers the full splitlines set) but the tests still
-    cover none of the exotic terminators — finding 1 flags exactly that residual
+  matched_finding: 0
+  note: 'PRESENT: NEWLINE_CHARS/splitlines recognise VT/FF/FS/GS/RS/NEL/U+2028/2029; tests don''t
+    cover them (discussion_r1045653671)'
   matchable: true
 - ground_truth: g4
   issue: Building the buffer by string concatenation is quadratic across many small decode() calls;
     a list buffer joined on demand is needed.
   matched_finding: null
-  note: implemented at the reviewed head — list buffer joined on demand (discussion_r1066603902)
-  matchable: false
+  note: 'PRESENT: string buffer with `self.buffer + text` concat (O(n^2) across small chunks); no
+    finding flags it (discussion_r1066603902)'
+  matchable: true
 - ground_truth: g5
   issue: flush() returns the buffered line but doesn't reset the buffer and trailing-CR state, so
     a second flush repeats output.
   matched_finding: null
-  note: implemented at the reviewed head — flush() resets both buffer and trailing_cr (discussion_r1067360513)
+  note: 'NON-matchable: flush() already resets `self.buffer = ''''` at review_sha, so a second flush
+    returns [] (discussion_r1067360513)'
   matchable: false
 finding_validity:
 - finding: 0
-  title: IndexError when text is solely a newline and buffer is non-empty
-  valid: false
-  note: 'false premise: str.splitlines() returns [''''] (not []) for ''\n'' — it is [] only for empty
-    text, which the `if not text` guard already excludes; reproducer executed against the head implementation
-    returns [''abc''] with no IndexError; flagged critical at 0.97 confidence'
+  title: splitlines() expands recognised line endings beyond \n/\r/\r\n, introducing behavioural
+    regression and potential security concern
+  valid: true
+  note: 'g3: splitlines expands recognised line endings beyond \n/\r/\r\n'
 - finding: 1
-  title: No tests for newly-supported extended newline characters
+  title: No tests verify that chunks ending in non-\r newline chars (\x0b, \x85, \u2028, etc.) are
+    not incorrectly buffered
   valid: true
-  note: correct residual of g3
+  note: 'g3 coverage: non-\r newline-terminated chunks untested'
 - finding: 2
-  title: flush() returns [''] instead of the correct content when only trailing_cr is set
+  title: Repeated empty-chunk input when buffer ends with bare \r causes unbounded buffer growth
+    (resource exhaustion)
   valid: false
-  note: claims the [''] return is incorrect; flush() returning [''] for a lone trailing \r exactly
-    matches '\r'.splitlines() == [''] — the PR's stated contract; deliberate behavior change with
-    flush resetting both fields
+  note: buffer stays bounded at '\r'; not 'unbounded' — overstated
 - finding: 3
-  title: Trailing \r handling may be inconsistent in flush() when buffer is empty
-  valid: false
-  note: acknowledged duplicate of finding 2 with the same wrong conclusion; synthesizer left it unmerged
+  title: NEWLINE_CHARS constant defined inside decode() method — should be at module or class scope
+  valid: uncertain
+  note: NEWLINE_CHARS placement — compile-time constant; subjective
 - finding: 4
-  title: NEWLINE_CHARS defined inside the method body on every call
-  valid: false
-  note: 'factually wrong mechanism: a string literal is a compile-time constant in CPython — no per-call
-    allocation, just LOAD_CONST; and the maintainers kept it method-local'
+  title: flush() behaviour change for buffered \r is untested and subtly different from the original
+  valid: uncertain
+  note: flush buffered-\r behavior untested — mild
 - finding: 5
-  title: flush() with only trailing_cr=True and empty buffer, and early-return path, are not directly
-    tested
+  title: 'Missing test: decode("") called with a non-empty buffer'
   valid: true
-  note: 'factual: those paths lack dedicated tests'
+  note: 'coverage gap: decode('''') with a non-empty buffer untested'
 - finding: 6
-  title: No test for \r\r split across chunk boundaries
-  valid: true
-  note: 'factual: no test splits \r\r across chunks (verified the behavior is correct, but untested)'
-- finding: 7
-  title: Typo "stdllib" in docstring
+  title: 'Typo in comment: "seperator" → "separator"'
   valid: true
   note: typo confirmed

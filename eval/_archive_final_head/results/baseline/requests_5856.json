@@ -1,0 +1,207 @@
+{
+  "case": "requests_5856",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/psf/requests/pull/5856",
+  "head_sha": "8f0dcc4ecd71877389b0031af4d623a4a7350dee",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180996,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "requests/models.py",
+      "line_start": 909,
+      "line_end": 917,
+      "severity": "critical",
+      "title": "JSONDecodeError from the fast-path (UTF-detected branch) is not caught and re-raised as RequestsJSONDecodeError",
+      "detail": "When `guess_json_utf` succeeds and `complexjson.loads()` is called on line 899-901, a `JSONDecodeError` thrown there is swallowed only if it is a `UnicodeDecodeError` (line 902). A plain `json.JSONDecodeError` / `simplejson.JSONDecodeError` from that call is NOT caught \u2014 it propagates raw to the caller instead of being wrapped in `RequestsJSONDecodeError`. Only the fallback `complexjson.loads(self.text, **kwargs)` on line 910 is wrapped. This is a regression from the stated goal of making the exception type consistent.",
+      "confidence": 0.97
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/models.py",
+      "line_start": 914,
+      "line_end": 915,
+      "severity": "major",
+      "title": "Python 2 branch uses `e.message` which is deprecated/unavailable for newer ValueError subclasses",
+      "detail": "`e.message` was deprecated in Python 2.6 and is not a guaranteed attribute on all `ValueError` subclasses. In Python 2, the canonical way to get the message string is `str(e)` or `e.args[0]`. If `e.message` is empty or missing, the re-raised `RequestsJSONDecodeError` will carry no useful diagnostic information.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/exceptions.py",
+      "line_start": 34,
+      "line_end": 35,
+      "severity": "major",
+      "title": "MRO / __init__ conflict when CompatJSONDecodeError is ValueError (Python 2)",
+      "detail": "On Python 2, `CompatJSONDecodeError` is `ValueError`. `JSONDecodeError(InvalidJSONError, ValueError)` inherits both `RequestException.__init__` (which pops `request` / `response` kwargs) and `ValueError.__init__`. `RequestException.__init__` calls `super().__init__(*args, **kwargs)`, which will eventually chain to `ValueError.__init__`. This should work as long as no extra kwargs are passed, but the interplay is fragile and untested. More critically, on Python 3 when simplejson is NOT installed, `CompatJSONDecodeError` is `json.JSONDecodeError`, whose `__init__` signature is `(msg, doc, pos)` \u2014 three positional arguments \u2014 while `RequestException.__init__` accepts `*args`. If Python's MRO calls `json.JSONDecodeError.__init__` with the wrong argument count (e.g., when constructed with a single exception object), a `TypeError` will be raised instead of the intended `JSONDecodeError`. The raise at line 917 passes `(e.msg, e.doc, e.pos)`, so that specific call is fine, but the class is fragile for any other instantiation path.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 2575,
+      "line_end": 2578,
+      "severity": "minor",
+      "title": "New test only covers the fallback decode path, not the UTF-detected fast path",
+      "detail": "The test `test_json_decode_compatibility` uses `httpbin('bytes/20')`, which returns random bytes without a JSON Content-Type. This exercises only the `complexjson.loads(self.text)` fallback path. There is no test for the case where `guess_json_utf` succeeds and finds an encoding but `json.loads` still fails (e.g., valid UTF-8 bytes that are not valid JSON). Because the fast path is not wrapped (see the critical finding), that gap is also untested.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 2575,
+      "line_end": 2578,
+      "severity": "minor",
+      "title": "Test does not verify inheritance / backwards-compatibility catches",
+      "detail": "The PR's stated goal includes backwards compatibility \u2014 catching `requests.JSONDecodeError` should also be catchable as `ValueError`, `json.JSONDecodeError`, and `requests.RequestException`. The new test only checks that `requests.exceptions.JSONDecodeError` is raised; it does not assert that `except ValueError`, `except json.JSONDecodeError`, or `except requests.exceptions.RequestException` also catch it.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/compat.py",
+      "line_start": 71,
+      "line_end": 74,
+      "severity": "minor",
+      "title": "simplejson's JSONDecodeError is used as the compat alias even though models.py no longer uses simplejson for decoding",
+      "detail": "The PR removes simplejson usage from `models.py` (switching to `complexjson` which is still `simplejson` when installed), but the alias in `compat.py` still imports `simplejson.JSONDecodeError` when simplejson is present. This is intentional for catch-compatibility, but it creates a subtle asymmetry: when simplejson is installed, the library uses simplejson for decoding (via `complexjson`) so the caught type is still correct. However, the comment in models.py (line 913) says \"This aliases json.JSONDecodeError and simplejson.JSONDecodeError\" which is misleading \u2014 it only aliases one of them at a time depending on whether simplejson is installed, not both simultaneously.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/models.py",
+      "line_start": 43,
+      "line_end": 43,
+      "severity": "minor",
+      "title": "JSONDecodeError imported from compat is unused in models.py after refactor (duplicate/redundant import)",
+      "detail": "`JSONDecodeError` is imported from `requests.compat` at line 43 and used only as the `except` clause type at line 911. However, `RequestsJSONDecodeError` (imported at line 34) is itself a subclass of `CompatJSONDecodeError`, which means catching `JSONDecodeError` from compat is correct. The naming is confusing: two nearly identically named symbols (`JSONDecodeError` from compat and `RequestsJSONDecodeError` from exceptions) are both in scope, increasing the risk of future mixups. Consider catching `(ValueError, json.JSONDecodeError)` explicitly or just consolidate to one name.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "baseline",
+      "file": "requests/models.py",
+      "line_start": 914,
+      "line_end": 914,
+      "severity": "nit",
+      "title": "PEP-8: inline comment should have two spaces before `#`",
+      "detail": "`if is_py2: # e is a ValueError` \u2014 single space before the `#`. PEP 8 requires two spaces before an inline comment. Minor style issue.",
+      "confidence": 0.95
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "requests/models.py",
+          "line_range": [
+            909,
+            917
+          ],
+          "severity": "critical",
+          "title": "JSONDecodeError from the fast-path (UTF-detected branch) is not caught and re-raised as RequestsJSONDecodeError",
+          "detail": "When `guess_json_utf` succeeds and `complexjson.loads()` is called on line 899-901, a `JSONDecodeError` thrown there is swallowed only if it is a `UnicodeDecodeError` (line 902). A plain `json.JSONDecodeError` / `simplejson.JSONDecodeError` from that call is NOT caught \u2014 it propagates raw to the caller instead of being wrapped in `RequestsJSONDecodeError`. Only the fallback `complexjson.loads(self.text, **kwargs)` on line 910 is wrapped. This is a regression from the stated goal of making the exception type consistent.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            915
+          ],
+          "severity": "major",
+          "title": "Python 2 branch uses `e.message` which is deprecated/unavailable for newer ValueError subclasses",
+          "detail": "`e.message` was deprecated in Python 2.6 and is not a guaranteed attribute on all `ValueError` subclasses. In Python 2, the canonical way to get the message string is `str(e)` or `e.args[0]`. If `e.message` is empty or missing, the re-raised `RequestsJSONDecodeError` will carry no useful diagnostic information.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "major",
+          "title": "MRO / __init__ conflict when CompatJSONDecodeError is ValueError (Python 2)",
+          "detail": "On Python 2, `CompatJSONDecodeError` is `ValueError`. `JSONDecodeError(InvalidJSONError, ValueError)` inherits both `RequestException.__init__` (which pops `request` / `response` kwargs) and `ValueError.__init__`. `RequestException.__init__` calls `super().__init__(*args, **kwargs)`, which will eventually chain to `ValueError.__init__`. This should work as long as no extra kwargs are passed, but the interplay is fragile and untested. More critically, on Python 3 when simplejson is NOT installed, `CompatJSONDecodeError` is `json.JSONDecodeError`, whose `__init__` signature is `(msg, doc, pos)` \u2014 three positional arguments \u2014 while `RequestException.__init__` accepts `*args`. If Python's MRO calls `json.JSONDecodeError.__init__` with the wrong argument count (e.g., when constructed with a single exception object), a `TypeError` will be raised instead of the intended `JSONDecodeError`. The raise at line 917 passes `(e.msg, e.doc, e.pos)`, so that specific call is fine, but the class is fragile for any other instantiation path.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2575,
+            2578
+          ],
+          "severity": "minor",
+          "title": "New test only covers the fallback decode path, not the UTF-detected fast path",
+          "detail": "The test `test_json_decode_compatibility` uses `httpbin('bytes/20')`, which returns random bytes without a JSON Content-Type. This exercises only the `complexjson.loads(self.text)` fallback path. There is no test for the case where `guess_json_utf` succeeds and finds an encoding but `json.loads` still fails (e.g., valid UTF-8 bytes that are not valid JSON). Because the fast path is not wrapped (see the critical finding), that gap is also untested.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            2575,
+            2578
+          ],
+          "severity": "minor",
+          "title": "Test does not verify inheritance / backwards-compatibility catches",
+          "detail": "The PR's stated goal includes backwards compatibility \u2014 catching `requests.JSONDecodeError` should also be catchable as `ValueError`, `json.JSONDecodeError`, and `requests.RequestException`. The new test only checks that `requests.exceptions.JSONDecodeError` is raised; it does not assert that `except ValueError`, `except json.JSONDecodeError`, or `except requests.exceptions.RequestException` also catch it.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/compat.py",
+          "line_range": [
+            71,
+            74
+          ],
+          "severity": "minor",
+          "title": "simplejson's JSONDecodeError is used as the compat alias even though models.py no longer uses simplejson for decoding",
+          "detail": "The PR removes simplejson usage from `models.py` (switching to `complexjson` which is still `simplejson` when installed), but the alias in `compat.py` still imports `simplejson.JSONDecodeError` when simplejson is present. This is intentional for catch-compatibility, but it creates a subtle asymmetry: when simplejson is installed, the library uses simplejson for decoding (via `complexjson`) so the caught type is still correct. However, the comment in models.py (line 913) says \"This aliases json.JSONDecodeError and simplejson.JSONDecodeError\" which is misleading \u2014 it only aliases one of them at a time depending on whether simplejson is installed, not both simultaneously.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/models.py",
+          "line_range": [
+            43,
+            43
+          ],
+          "severity": "minor",
+          "title": "JSONDecodeError imported from compat is unused in models.py after refactor (duplicate/redundant import)",
+          "detail": "`JSONDecodeError` is imported from `requests.compat` at line 43 and used only as the `except` clause type at line 911. However, `RequestsJSONDecodeError` (imported at line 34) is itself a subclass of `CompatJSONDecodeError`, which means catching `JSONDecodeError` from compat is correct. The naming is confusing: two nearly identically named symbols (`JSONDecodeError` from compat and `RequestsJSONDecodeError` from exceptions) are both in scope, increasing the risk of future mixups. Consider catching `(ValueError, json.JSONDecodeError)` explicitly or just consolidate to one name.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "baseline",
+          "file": "requests/models.py",
+          "line_range": [
+            914,
+            914
+          ],
+          "severity": "nit",
+          "title": "PEP-8: inline comment should have two spaces before `#`",
+          "detail": "`if is_py2: # e is a ValueError` \u2014 single space before the `#`. PEP 8 requires two spaces before an inline comment. Minor style issue.",
+          "confidence": 0.95
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 75036,
+      "tokens_out": 1927,
+      "cost_usd": 0.254013,
+      "duration_s": 39.11778716696426,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 75036,
+    "tokens_out": 1927,
+    "cost_usd": 0.254013,
+    "duration_s": 39.1
+  }
+}

@@ -1,0 +1,90 @@
+case: httpx_1197
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: The closed-check belongs as a plain inline guard at the top of send(), not as a decorator
+    on request() — simpler, better tracebacks, and the right layer.
+  matched_finding: 0
+  note: 'the requested inline raise-guard at the top of send() never landed at the reviewed head
+    (verified: no RuntimeError in _client.py); finding 0 flags exactly the resulting use-after-close
+    hole'
+  matchable: true
+- ground_truth: g2
+  issue: 'close() should be idempotent: calling it on an already-closed client should pass silently
+    instead of erroring.'
+  matched_finding: null
+  note: implemented during review — close()/aclose() are guarded with `if not self.is_closed` at
+    the reviewed head (discussion_r472952614)
+  matchable: false
+- ground_truth: g3
+  issue: _is_closed = True should be set as the first statement of close(), not the last, to shrink
+    the race window with concurrent sends.
+  matched_finding: null
+  note: implemented during review — `_is_closed = True` is the first statement inside the guard at
+    the reviewed head (discussion_r472953172)
+  matchable: false
+- ground_truth: g4
+  issue: 'The warning class choice matters for visibility: UserWarning vs ResourceWarning was debated
+    (ResourceWarning is silenced by default; UserWarning pollutes the user''s namespace) — resolved
+    to UserWarning.'
+  matched_finding: null
+  note: the UserWarning-vs-ResourceWarning debate is not raised; finding 7 only questions the repr
+    embedding
+  matchable: true
+finding_validity:
+- finding: 0
+  title: '`send()` unconditionally resets `_is_closed = False`, defeating close guards and warning
+    logic'
+  valid: true
+  note: 'correct: no guard exists at the head and send() silently re-arms a closed client — the reviewer
+    asked for a raise here and it is absent (discussion_r472950631)'
+- finding: 1
+  title: No test for `AsyncClient.__del__` when client was never used (`is_closed=True` → no warning)
+  valid: true
+  note: 'factual gap: no test that a never-used client''s deletion is warning-free'
+- finding: 2
+  title: No test for `Client.__del__` behaviour (warning-free close or silent no-op)
+  valid: true
+  note: 'factual: Client.__del__ has no test at all; only the async warning path is covered'
+- finding: 3
+  title: '`_is_closed = True` at construction causes `close()` and `__del__` to skip transport teardown
+    for never-used clients'
+  valid: false
+  note: claims 'the old code always closed the transport in __del__' — there was no __del__ before
+    this PR; and closing a never-used pool is a no-op, so nothing is actually leaked
+- finding: 4
+  title: '`__exit__`/`__aexit__` can skip transport teardown while matching `__enter__`/`__aenter__`
+    already executed'
+  valid: uncertain
+  note: the enter/exit asymmetry is real but only reachable when close() ran inside the with-block,
+    in which case teardown already happened; protocol pedantry without practical harm
+- finding: 5
+  title: Test name uses inconsistent and verbose tense
+  valid: true
+  note: defensible naming-consistency nit; sibling tests follow test_that_X_is_Y
+- finding: 6
+  title: Double-close and double-exit paths have no test coverage
+  valid: true
+  note: 'factual: no double-close or exit-after-close test exists in the diff'
+- finding: 7
+  title: '`AsyncClient.__del__` embeds `repr(self)` in warning — risk of sensitive data exposure'
+  valid: false
+  note: 'hypothetical: httpx clients had no secret-bearing __repr__ at this revision; embedding repr
+    in unclosed-resource warnings is standard practice (aiohttp does it)'
+- finding: 8
+  title: '`Client.__del__` may interact with partially-torn-down transport during interpreter shutdown'
+  valid: uncertain
+  note: conventional __del__-hardening ask (aiohttp/asyncio guard theirs); failure mode is hypothetical
+    and exceptions in __del__ are printed, not raised
+- finding: 9
+  title: 'Docstring grammar: ''Check if the client being closed'''
+  valid: true
+  note: grammar error confirmed in diff
+- finding: 10
+  title: Test names use 'cause' instead of 'causes' (grammatical error)
+  valid: true
+  note: subject-verb error confirmed in both test names
+- finding: 11
+  title: Missing blank line in `__aexit__` after `self._is_closed = True` (inconsistent with `__exit__`)
+  valid: true
+  note: confirmed in diff; trivial but factual

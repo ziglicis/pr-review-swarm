@@ -4,56 +4,76 @@ ground_truth_matches:
 - ground_truth: g1
   issue: The rewrite silently changes user-visible behavior (whether line endings are kept/normalized
     in yielded lines) — the changed test expectations reveal it, and behavior must be preserved.
-  matched_finding: null
-  note: deliberate change accepted in review (it is the PR's title); the changed test expectations
-    pin it; no finding raises the endings-dropped compatibility concern (finding 3 notes only the
-    flush-edge behavior change and calls it intentional)
-  matchable: false
+  matched_finding: 1
+  note: 'PRESENT: docstring still says ''normalizing to \n'' but splitlines() strips terminators
+    — silent behavior change (discussion_r1014794251)'
+  matchable: true
 - ground_truth: g2
   issue: A trailing carriage return at the end of a decode() call must be buffered — it may be the
     first half of a CRLF pair split across chunks, and splitlines() alone treats it as a complete
     newline.
   matched_finding: null
-  note: implemented at the reviewed head — trailing_cr buffering is present (discussion_r1045052360)
+  note: 'NON-matchable: trailing ''\r'' is already buffered at review_sha (`self.buffer = lines.pop()
+    + ''\r''`), satisfying discussion_r1045052360'
   matchable: false
 - ground_truth: g3
   issue: Checking that the text ends with a linefeed is insufficient, since str.splitlines recognizes
     many more newline characters (vertical tab, form feed, file/group/record separators, U+2028/U+2029),
     and the tests don't cover them.
-  matched_finding: 2
-  note: the code half is fixed (NEWLINE_CHARS covers the full splitlines set) but the tests still
-    cover none of the exotic terminators — finding 2 flags exactly that residual
+  matched_finding: 3
+  note: 'PRESENT: NEWLINE_CHARS/splitlines recognise VT/FF/FS/GS/RS/NEL/U+2028/2029; tests don''t
+    cover them (discussion_r1045653671)'
   matchable: true
 - ground_truth: g4
   issue: Building the buffer by string concatenation is quadratic across many small decode() calls;
     a list buffer joined on demand is needed.
   matched_finding: null
-  note: implemented at the reviewed head — list buffer joined on demand (discussion_r1066603902)
-  matchable: false
+  note: 'PRESENT: string buffer with `self.buffer + text` concat (O(n^2) across small chunks); no
+    finding flags it (discussion_r1066603902)'
+  matchable: true
 - ground_truth: g5
   issue: flush() returns the buffered line but doesn't reset the buffer and trailing-CR state, so
     a second flush repeats output.
   matched_finding: null
-  note: implemented at the reviewed head — flush() resets both buffer and trailing_cr (discussion_r1067360513)
+  note: 'NON-matchable: flush() already resets `self.buffer = ''''` at review_sha, so a second flush
+    returns [] (discussion_r1067360513)'
   matchable: false
 finding_validity:
 - finding: 0
-  title: Empty string produced when input is only newline characters
+  title: Incorrect buffer reconstruction when last char is '\r'
   valid: false
-  note: 'false premise: str.splitlines() returns [''''] (not []) for ''\n'' — it is [] only for empty
-    text, which the `if not text` guard already excludes; reproducer executed against the head implementation
-    returns [''abc''] with no IndexError'
+  note: 'buffer reconstruction is correct: splitlines(''ab\r'')==[''ab''], pop()+''\r'' rebuilds
+    it properly'
 - finding: 1
-  title: NEWLINE_CHARS constant defined inside the method on every call
-  valid: false
-  note: 'factually wrong mechanism: a string literal is a compile-time constant in CPython — no per-call
-    allocation, just LOAD_CONST; and the maintainers kept it method-local'
-- finding: 2
-  title: No tests for exotic Unicode/vertical-tab newline characters supported by splitlines()
+  title: Docstring still says lines are normalized to '\n', but the new implementation doesn't normalize
   valid: true
-  note: correct residual of g3
+  note: 'g1: docstring says normalized to \n but impl strips terminators'
+- finding: 2
+  title: NEWLINE_CHARS defined as a local variable inside decode() on every call
+  valid: uncertain
+  note: NEWLINE_CHARS 'every call' — compile-time constant; overstated
 - finding: 3
-  title: '`flush()` returns `['''']` when only `trailing_cr` is set and buffer is empty'
+  title: splitlines() recognises many more line-ending characters than the old code, broadening the
+    API contract silently
+  valid: true
+  note: 'g3: splitlines recognises many more line endings'
+- finding: 4
+  title: Missing test coverage for incremental \r\r\n split across chunk boundaries
+  valid: true
+  note: 'coverage gap: \r\r\n split across chunks untested'
+- finding: 5
+  title: lines.pop() on an empty list when input is exactly '\r'
   valid: false
-  note: 'non-issue observation: flush() returning [''''] for a lone trailing \r exactly matches ''\r''.splitlines()
-    == [''''] — the PR''s stated contract; deliberate behavior change with flush resetting both fields'
+  note: splitlines('\r')==[''] not [], so lines.pop() does not fail on input '\r'
+- finding: 6
+  title: flush() loses a trailing '\r' that was legitimately buffered
+  valid: uncertain
+  note: flush dropping a trailing '\r' terminator is correct behavior, not a loss
+- finding: 7
+  title: No tests for the newly-supported splitlines() boundaries (\x0b, \x0c, \u2028, etc.)
+  valid: true
+  note: 'g3 coverage: extended splitlines boundaries untested'
+- finding: 8
+  title: 'Typo: ''seperator'' should be ''separator'''
+  valid: true
+  note: typo confirmed

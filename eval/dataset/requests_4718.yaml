@@ -3,6 +3,10 @@ repo: psf/requests
 pr: 4718
 title: Strip Authorization header whenever root URL changes
 pre_merge_sha: 857e9b7ac20c3accf4cc328f594aecb8b6a644a6
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: 3fbdd888a6406108edcf0633637dac8cbff757bc
 changed_lines: 55
 selected_because: >
   Security fix (credential leak on https->http redirect) with a substantive

@@ -4,58 +4,54 @@ ground_truth_matches:
 - ground_truth: g1
   issue: The helper's "get chunk" naming misrepresents what it does — it returns a modified body
     iterable that skips leading empty chunks, so it should be named accordingly (e.g. _skip_leading_empty_chunks).
-  matched_finding: null
-  note: fixed during review — the helper is already named _skip_leading_empty_chunks at the reviewed
-    head (discussion_r399778004)
-  matchable: false
+  matched_finding: 2
+  note: 'PRESENT: helper named `_get_non_empty_chunk` (misleading — returns a modified body iterable);
+    florimondmanca flagged the name at review_sha (discussion_r399778004)'
+  matchable: true
 - ground_truth: g2
   issue: PEP 3333 permits sending headers early when Content-Length is 0 — reviewers debated whether
     that exception needs explicit handling and settled on pragmatically skipping it.
   matched_finding: null
-  note: review settled on pragmatically skipping the Content-Length:0 early-header exception; no
-    finding raises it either (discussion_r399773077)
-  matchable: true
+  note: 'NON-matchable: the PEP 3333 Content-Length-0 early-header edge (discussion_r399773077) was
+    debated and resolved as pragmatically skipped — not a defect'
+  matchable: false
 - ground_truth: g3
   issue: New tests duplicate what tests/test_wsgi.py already covers; the existing echo_body_with_response_stream
     fixture should be refactored into a true generator instead of adding parallel tests elsewhere.
-  matched_finding: null
-  note: largely addressed during review — the tests were folded into tests/test_wsgi.py; the remaining
-    ask (make echo_body_with_response_stream a true generator) is not raised by any finding
-  matchable: false
+  matched_finding: 6
+  note: 'PRESENT: new tests redundantly assert both text and content; florimondmanca raised it at
+    review_sha (discussion_r399710687)'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: AssertionError when generator WSGI app yields zero items (start_response never called)
-  valid: false
-  note: 'wrong: with output=[] the generator body still executes on first next() (runs to completion),
-    calling start_response; the assert passes — flagged critical at 0.82 confidence'
-- finding: 1
-  title: _skip_leading_empty_chunks discards close() when all chunks are empty, violating PEP 3333
-  valid: false
-  note: 'wrong mechanism: exhausting a generator runs its finally blocks, so the [] branch loses
-    nothing for generators; the real close() issue is the chain branch (full run''s finding got this
-    right)'
-- finding: 2
-  title: application_factory departs from the existing convention of plain top-level WSGI app functions
-    in tests
+  title: start_response not guaranteed to have been called after _get_non_empty_chunk
   valid: uncertain
-  note: defensible readability opinion; the factory layout is what review accepted
-- finding: 3
-  title: Refactoring removed list-returning WSGI app test coverage; _skip_leading_empty_chunks fast
-    path only indirectly tested
+  note: start_response-not-guaranteed — real edge, overstated
+- finding: 1
+  title: 'Resource leak: iterator is not closed when all chunks are empty'
   valid: true
-  note: 'accurate and properly narrowed: echo_body still covers list returns, but no plain-list app
-    with leading empties exists'
+  note: close() not called when all chunks empty — real PEP 3333 gap
+- finding: 2
+  title: Misleading function name and uninformative docstring on _get_non_empty_chunk
+  valid: true
+  note: 'g1: misleading function name + uninformative docstring'
+- finding: 3
+  title: Missing tests for list-based WSGI apps with leading empty chunks and completely empty generators
+  valid: true
+  note: 'coverage gap: list-based leading-empty + completely-empty untested'
 - finding: 4
-  title: Missing return type annotation on _skip_leading_empty_chunks
-  valid: false
-  note: 'factually wrong: the diff shows ''-> typing.Iterable:'' — the return annotation is present,
-    merely unparameterised'
+  title: application_factory breaks convention of standalone, named test helpers
+  valid: uncertain
+  note: application_factory convention — subjective
 - finding: 5
-  title: Slightly imprecise wording in inline comment near assertion
-  valid: false
-  note: pedantic wording nit; 'served' is not misleading
+  title: No direct unit test for _get_non_empty_chunk with multiple non-empty chunks
+  valid: true
+  note: 'coverage gap: no direct unit test for the helper with multiple chunks'
 - finding: 6
-  title: Local variable name output in tests shadows the same name used inside application_factory
-    closure
-  valid: false
-  note: acknowledged non-bug; cosmetic shadowing observation
+  title: New tests assert both response.text and response.content redundantly
+  valid: true
+  note: 'g3: redundant text+content assertion'
+- finding: 7
+  title: Inline comment duplicates information that belongs in the helper's docstring
+  valid: uncertain
+  note: inline comment duplicates docstring — subjective

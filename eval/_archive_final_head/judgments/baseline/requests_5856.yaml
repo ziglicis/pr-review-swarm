@@ -1,0 +1,71 @@
+case: requests_5856
+experiment: baseline
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'The Python 2 json path is broken: json.JSONDecodeError doesn''t exist on Python 2, so the
+    except-clause handling falls over with an AttributeError (caught via failing CI during review).'
+  matched_finding: null
+  note: fixed during review — compat.py sets JSONDecodeError = ValueError on py2 and models handles
+    both branches (discussion_r667104578)
+  matchable: false
+- ground_truth: g2
+  issue: 'The new JSONDecodeError must fit the exception hierarchy: subclass the catch-all RequestException
+    (so users can catch everything requests throws) and preserve/proxy the original underlying exception''s
+    info.'
+  matched_finding: null
+  note: subclassing landed; the residual init gap (msg/doc/pos never set) was only caught by the
+    full run; baseline's finding 2 hedges about py2 where no issue exists
+  matchable: true
+- ground_truth: g3
+  issue: Unrelated changes bundled into the PR (formatting/spacing tweaks, doc edits) that reviewers
+    repeatedly asked to revert as scope creep.
+  matched_finding: null
+  note: reviewers' scope-creep complaint; some unrelated formatting still remains at the head (HISTORY
+    bullet restyle, compat.py blank-line removal, prepare_body re-indent); not raised
+  matchable: true
+- ground_truth: g4
+  issue: The simplejson/json resolution logic is duplicated across several files; JSONDecodeError
+    should be resolved once in compat.py and imported from there.
+  matched_finding: null
+  note: fixed during review — JSONDecodeError resolved once in compat.py (discussion_r671444604)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: JSONDecodeError from the fast-path (UTF-detected branch) is not caught and re-raised as
+    RequestsJSONDecodeError
+  valid: true
+  note: 'verified against the head: the guess_json_utf fast path only catches UnicodeDecodeError,
+    so raw json/simplejson JSONDecodeError escapes unwrapped — vindicated by the requests 2.27.0
+    changelog entry fixing exactly this'
+- finding: 1
+  title: Python 2 branch uses `e.message` which is deprecated/unavailable for newer ValueError subclasses
+  valid: uncertain
+  note: deprecated-and-fragile is right; in practice .message works for the single-arg errors both
+    backends raise
+- finding: 2
+  title: MRO / __init__ conflict when CompatJSONDecodeError is ValueError (Python 2)
+  valid: uncertain
+  note: 'hedged speculation about the wrong Python: py2''s ValueError has no custom init, so the
+    interplay it worries about is fine; the real init gap is on py3'
+- finding: 3
+  title: New test only covers the fallback decode path, not the UTF-detected fast path
+  valid: true
+  note: factual, and connects the test's path to the unwrapped fast-path bug
+- finding: 4
+  title: Test does not verify inheritance / backwards-compatibility catches
+  valid: true
+  note: 'factual: no inheritance assertions'
+- finding: 5
+  title: simplejson's JSONDecodeError is used as the compat alias even though models.py no longer
+    uses simplejson for decoding
+  valid: false
+  note: describes intended catch-compatibility behavior and concludes it works; non-finding
+- finding: 6
+  title: JSONDecodeError imported from compat is unused in models.py after refactor (duplicate/redundant
+    import)
+  valid: false
+  note: 'self-refuting: the title says unused, the detail concedes it is used and correct'
+- finding: 7
+  title: 'PEP-8: inline comment should have two spaces before `#`'
+  valid: true
+  note: confirmed

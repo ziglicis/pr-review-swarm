@@ -5,47 +5,48 @@ ground_truth_matches:
   issue: Comparing scheme+host alone would strip the Authorization header on http->https upgrade
     redirects too; browsers keep credentials on secure upgrades, so stripping there breaks a common
     legitimate pattern and the logic must special-case the upgrade.
-  matched_finding: null
-  note: fixed during review — the http→https standard-port exemption is at the reviewed head (discussion_r199569417)
-  matchable: false
+  matched_finding: 0
+  note: 'PRESENT: at review_sha the logic strips auth on scheme change incl http->https upgrade;
+    bmerry/nateprewitt debating the RFC-7235 upgrade exception here (discussion_r199569417)'
+  matchable: true
 - ground_truth: g2
   issue: 'The origin comparison must normalize implicit vs explicit ports: urlparse returns port
     None for implicit defaults, so http://example.com:80 -> https://example.com must be treated the
     same as http://example.com -> https://example.com.'
-  matched_finding: 0
-  note: the reviewer's port-normalization concern was only fixed inside the upgrade branch; the standard
-    case still treats :80 vs implicit as different origins and strips auth on a same-origin redirect
-    — this residual is live at the head (and survives in requests to this day); finding 0 flags it
-    precisely (finding 1 is a second instance of the same class)
+  matched_finding: 4
+  note: 'PRESENT: port comparison doesn''t normalise implicit vs explicit default ports (discussion_r209665887)'
   matchable: true
 - ground_truth: g3
   issue: The redirect-stripping logic grew complex enough that it should be extracted into its own
     dedicated method rather than living inline.
   matched_finding: null
-  note: fixed during review — logic extracted into should_strip_auth (discussion_r209668067)
-  matchable: false
+  note: 'PRESENT: the stripping logic is dense/inline, not yet extracted to should_strip_auth (discussion_r209668067)'
+  matchable: true
 - ground_truth: g4
   issue: Tests should explicitly assert the Authorization header is absent from the redirected request
     (and verify it was not sent on the wire), not just check a falsey value.
   matched_finding: null
-  note: fixed during review — the test asserts 'Authorization' not in headers (discussion_r198935315)
-  matchable: false
+  note: 'PRESENT: tests assert a falsey Authorization rather than its absence (discussion_r198935315);
+    unmatched'
+  matchable: true
 finding_validity:
 - finding: 0
-  title: Explicit default port vs implicit port comparison incorrectly strips auth on same-origin
-    redirect
+  title: http→https upgrade redirect no longer sends Authorization header
   valid: true
-  note: 'verified: the g2 residual, precisely stated'
+  note: 'g1: http->https upgrade redirect no longer sends Authorization'
 - finding: 1
-  title: Explicit port equivalents (e.g., http:80 and https:443) not normalised before comparison
-  valid: true
-  note: a correct second instance of the same normalization bug class (e.g. https:443 → https implicit);
-    left unmerged with finding 0
+  title: scheme comparison is case-sensitive and may miss http→HTTP redirects
+  valid: false
+  note: urlparse lowercases the scheme, so http->HTTP can't occur — case-sensitivity claim is wrong
 - finding: 2
-  title: Missing unit test for same-origin redirect (no stripping)
+  title: No test for port-change-only redirect
   valid: true
-  note: 'factual: the hot same-origin path has no unit test'
+  note: 'coverage gap: port-change-only redirect untested'
 - finding: 3
-  title: Missing test for same-scheme, same-host, same-port redirect (should NOT strip auth)
+  title: New test only covers https→http downgrade, not http→https upgrade
   valid: true
-  note: verbatim duplicate of finding 2 — content valid, dedupe failure noted
+  note: 'coverage gap: test only covers downgrade, not upgrade'
+- finding: 4
+  title: No unit test for default-port vs explicit-port edge case
+  valid: true
+  note: 'g2: no unit test for default-vs-explicit-port edge'

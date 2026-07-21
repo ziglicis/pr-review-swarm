@@ -1,0 +1,61 @@
+case: httpx_887
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: The helper's "get chunk" naming misrepresents what it does — it returns a modified body
+    iterable that skips leading empty chunks, so it should be named accordingly (e.g. _skip_leading_empty_chunks).
+  matched_finding: null
+  note: fixed during review — the helper is already named _skip_leading_empty_chunks at the reviewed
+    head (discussion_r399778004)
+  matchable: false
+- ground_truth: g2
+  issue: PEP 3333 permits sending headers early when Content-Length is 0 — reviewers debated whether
+    that exception needs explicit handling and settled on pragmatically skipping it.
+  matched_finding: null
+  note: review settled on pragmatically skipping the Content-Length:0 early-header exception; no
+    finding raises it either (discussion_r399773077)
+  matchable: true
+- ground_truth: g3
+  issue: New tests duplicate what tests/test_wsgi.py already covers; the existing echo_body_with_response_stream
+    fixture should be refactored into a true generator instead of adding parallel tests elsewhere.
+  matched_finding: null
+  note: largely addressed during review — the tests were folded into tests/test_wsgi.py; the remaining
+    ask (make echo_body_with_response_stream a true generator) is not raised by any finding
+  matchable: false
+finding_validity:
+- finding: 0
+  title: AssertionError when generator WSGI app yields zero items (start_response never called)
+  valid: false
+  note: 'wrong: with output=[] the generator body still executes on first next() (runs to completion),
+    calling start_response; the assert passes — flagged critical at 0.82 confidence'
+- finding: 1
+  title: _skip_leading_empty_chunks discards close() when all chunks are empty, violating PEP 3333
+  valid: false
+  note: 'wrong mechanism: exhausting a generator runs its finally blocks, so the [] branch loses
+    nothing for generators; the real close() issue is the chain branch (full run''s finding got this
+    right)'
+- finding: 2
+  title: application_factory departs from the existing convention of plain top-level WSGI app functions
+    in tests
+  valid: uncertain
+  note: defensible readability opinion; the factory layout is what review accepted
+- finding: 3
+  title: Refactoring removed list-returning WSGI app test coverage; _skip_leading_empty_chunks fast
+    path only indirectly tested
+  valid: true
+  note: 'accurate and properly narrowed: echo_body still covers list returns, but no plain-list app
+    with leading empties exists'
+- finding: 4
+  title: Missing return type annotation on _skip_leading_empty_chunks
+  valid: false
+  note: 'factually wrong: the diff shows ''-> typing.Iterable:'' — the return annotation is present,
+    merely unparameterised'
+- finding: 5
+  title: Slightly imprecise wording in inline comment near assertion
+  valid: false
+  note: pedantic wording nit; 'served' is not misleading
+- finding: 6
+  title: Local variable name output in tests shadows the same name used inside application_factory
+    closure
+  valid: false
+  note: acknowledged non-bug; cosmetic shadowing observation

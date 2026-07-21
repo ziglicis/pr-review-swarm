@@ -1,0 +1,624 @@
+{
+  "case": "httpx_3139",
+  "experiment": "no-tools",
+  "pr_url": "https://github.com/encode/httpx/pull/3139",
+  "head_sha": "7a2f185334b599451961115cc4f69df336f26632",
+  "sha_matches_dataset": true,
+  "timestamp": 1784181718,
+  "summary": "This PR adds zstd (Zstandard) decoding support to httpx via a new `ZStandardDecoder` class and related compat/configuration changes. The implementation has several correctness issues (empty-body handling, potential infinite loop, test data type bugs) and a number of style/coverage gaps that should be addressed before merging.",
+  "findings": [
+    {
+      "agent": "correctness, test_coverage",
+      "file": "httpx/_decoders.py",
+      "line_start": 174,
+      "line_end": 178,
+      "severity": "major",
+      "title": "ZStandardDecoder.flush() incorrectly raises DecodingError on empty/no-data responses",
+      "detail": "When `flush()` is called on a freshly-constructed `ZStandardDecoder` that has never received data (e.g. a 204 No Content or empty body), `self.decompressor.eof` is `False` because no input was ever fed to it, causing the code to raise `DecodingError('Zstandard data is incomplete')` even though an empty body is perfectly valid.\n\nThe BrotliDecoder avoids this via a `self.seen_data` guard in `flush()`. The same pattern must be applied here: add a `self.seen_data = False` flag to `__init__`, set it to `True` in `decode()`, and return `b\"\"` early in `flush()` when `not self.seen_data`.\n\nRelated: the flush-raises-DecodingError branch is marked `# pragma: no cover` and untested (f14), and `b'zstd'` is absent from the parametrized `test_empty_content` and `test_decoding_errors` test cases (f17), so the fix also needs corresponding tests.",
+      "confidence": 0.92
+    },
+    {
+      "agent": "correctness, test_coverage",
+      "file": "httpx/_decoders.py",
+      "line_start": 165,
+      "line_end": 172,
+      "severity": "major",
+      "title": "Potential infinite loop in multi-frame decode loop if unused_data does not shrink",
+      "detail": "The `while self.decompressor.eof and self.decompressor.unused_data:` loop creates a new decompressor on each iteration and feeds `unused_data` into it. If `decompress()` succeeds but consumes zero bytes (e.g. trailing garbage that is not a valid zstd frame but does not raise), `unused_data` never shrinks and the loop runs forever.\n\nA safeguard is needed: record the length of `unused_data` before each iteration and break (or raise) if it has not decreased. Alternatively, adopt the same pattern used by urllib3's zstd implementation. Additionally, there is no test for a plain multi-frame stream (two concatenated zstd frames without a skippable frame in between), so the general chaining path is only partially covered.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "style",
+      "file": "CHANGELOG.md",
+      "line_start": 9,
+      "line_end": 9,
+      "severity": "minor",
+      "title": "Changelog 'Added' section uses wrong heading level (## instead of ###)",
+      "detail": "The project's changelog convention nests section headings (`### Added`, `### Fixed`, etc.) as H3 under H2 version headings. The new entry uses `## Added` (H2), making it appear as a sibling of the version heading and breaking the established hierarchy.",
+      "confidence": 0.98
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_decoders.py",
+      "line_start": 151,
+      "line_end": 156,
+      "severity": "minor",
+      "title": "Incomplete placeholder text in ZStandardDecoder ImportError message",
+      "detail": "The `ImportError` message reads `\"Using 'ZStandardDecoder', ...\"` \u2014 the `...` is unfinished placeholder text. All other similar messages in the codebase are complete, descriptive sentences explaining the purpose of the optional dependency. Expand the message to match the established style.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "correctness",
+      "file": "tests/test_decoders.py",
+      "line_start": 91,
+      "line_end": 100,
+      "severity": "minor",
+      "title": "test_zstd_decoding_error passes a str instead of bytes as content",
+      "detail": "The `content` argument is set to the plain Python string `\"this_is_not_zstd_compressed_data\"` instead of `b\"this_is_not_zstd_compressed_data\"`. Depending on how `httpx.Response` handles this, the test may fail with a `TypeError` before ever reaching the zstd decoder, meaning the test does not actually verify that invalid compressed *bytes* raise `httpx.DecodingError`. Change the literal to a bytes literal.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "test_coverage",
+      "file": "httpx/_decoders.py",
+      "line_start": 153,
+      "line_end": 157,
+      "severity": "minor",
+      "title": "ZStandardDecoder.__init__ ImportError branch untested",
+      "detail": "The guard that raises `ImportError` when `zstd is None` (lines 153\u2013157) is marked `# pragma: no cover` and is never exercised by any test. While pragmatic in CI environments where `zstandard` is always installed, there is no test that instantiates `ZStandardDecoder` with `zstd` patched to `None` to verify the error message and guard logic.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "test_coverage",
+      "file": "httpx/_decoders.py",
+      "line_start": 370,
+      "line_end": 371,
+      "severity": "minor",
+      "title": "SUPPORTED_DECODERS.pop('zstd') branch when zstd unavailable untested",
+      "detail": "The branch removing `'zstd'` from `SUPPORTED_DECODERS` when the package is not installed is marked `# pragma: no cover` and has no test verifying that a `Content-Encoding: zstd` response is handled gracefully (passed through undecoded) when `zstandard` is unavailable.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_compat.py",
+      "line_start": 27,
+      "line_end": 27,
+      "severity": "minor",
+      "title": "Zstd except clause missing # pragma: no cover and uses inconsistent comment convention",
+      "detail": "The brotli block above consistently annotates bare except lines with `# pragma: no cover`. The zstd block uses `except (AttributeError, ImportError, ValueError):  # Defensive:` \u2014 a different inline comment convention not present elsewhere in the file \u2014 and omits `# pragma: no cover`, making coverage annotation inconsistent.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "correctness",
+      "file": "httpx/_compat.py",
+      "line_start": 34,
+      "line_end": 35,
+      "severity": "minor",
+      "title": "Unguarded re.search() result can cause AttributeError on malformed zstd.__version__",
+      "detail": "`re.search(r'^([0-9]+)\\.([0-9]+)', zstd.__version__).groups()` calls `.groups()` directly without checking whether `re.search` returned `None`. If `zstd.__version__` does not match (unusual build strings, pre-release tags, etc.) this raises `AttributeError`. The `# type: ignore[union-attr]` comment acknowledges but suppresses the type error rather than handling it. A proper fix: `m = re.search(...); if m is None: zstd = None` (or wrap in try/except) to gracefully fall back.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "correctness",
+      "file": "tests/test_decoders.py",
+      "line_start": 103,
+      "line_end": 122,
+      "severity": "minor",
+      "title": "test_zstd_multiframe passes io.BytesIO as content, may not be reliably supported",
+      "detail": "`content=io.BytesIO(data)` is passed to `httpx.Response`. The `content` parameter typically expects `bytes` or a recognised httpx streaming type; a raw `io.BytesIO` object may work by coincidence or may silently bypass the decoder entirely, making the assertion `response.content == b\"foobar\"` unreliable. Pass the compressed data directly as `bytes`.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "style",
+      "file": "pyproject.toml",
+      "line_start": 55,
+      "line_end": 57,
+      "severity": "nit",
+      "title": "zstd optional-dependency block uses 2-space indentation instead of 4-space",
+      "detail": "All other `[project.optional-dependencies]` list items use 4-space indentation. The new `zstd` block uses 2-space indentation (`  \"zstandard>=0.18.0\"`), which is inconsistent with the established style.",
+      "confidence": 0.97
+    },
+    {
+      "agent": "style",
+      "file": "docs/index.md",
+      "line_start": 142,
+      "line_end": 142,
+      "severity": "nit",
+      "title": "Awkward phrasing: 'brotli and zstandard decoders support'",
+      "detail": "'To include the optional brotli and zstandard decoders support, use:' reads awkwardly. A cleaner phrasing is: 'To include optional brotli and zstandard decoder support, use:' (drop the extra article, make 'decoder' singular).",
+      "confidence": 0.8
+    },
+    {
+      "agent": "style",
+      "file": "docs/quickstart.md",
+      "line_start": 103,
+      "line_end": 104,
+      "severity": "nit",
+      "title": "Asymmetric singular/plural 'encoding' vs 'encodings' in zstd description",
+      "detail": "The brotli sentence uses 'encoding' (singular) while the new zstd sentence uses 'encodings' (plural). For consistency both sentences should use the same grammatical number.",
+      "confidence": 0.72
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_decoders.py",
+      "line_start": 175,
+      "line_end": 175,
+      "severity": "nit",
+      "title": "Inline comment uses non-standard 'note:' prefix",
+      "detail": "`ret = self.decompressor.flush()  # note: this is a no-op` \u2014 the `note:` prefix is not used elsewhere in this file. Consider `# this is a no-op` or remove the prefix entirely.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_decoders.py",
+      "line_start": 103,
+      "line_end": 113,
+      "severity": "nit",
+      "title": "Spaces in hex strings inside bytes.fromhex() inconsistent with rest of test file",
+      "detail": "`bytes.fromhex()` calls in `test_zstd_multiframe` include spaces in the hex string (e.g. `\"50 2A 4D 18\"`), which is valid in Python 3.7+ but inconsistent with other hex strings in the test file that use no spaces. If the spaces are intentional for readability, a brief comment to that effect would help; otherwise remove them for consistency.",
+      "confidence": 0.5
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            174,
+            178
+          ],
+          "severity": "major",
+          "title": "ZStandardDecoder.flush() raises DecodingError on empty/no-data responses",
+          "detail": "When `flush()` is called on a freshly-constructed `ZStandardDecoder` that has never received any data (e.g. a 204 No Content response or an empty body), `self.decompressor.eof` will be `False` because no input was ever fed to it. This causes the code to raise `DecodingError(\"Zstandard data is incomplete\")` even though an empty body is perfectly valid.\n\nThe BrotliDecoder avoids this by guarding `flush()` with `if not self.seen_data: return b\"\"`. The same pattern should be applied here:\n\n```python\ndef flush(self) -> bytes:\n    ret = self.decompressor.flush()  # note: this is a no-op\n    if not self.decompressor.eof:\n        raise DecodingError(\"Zstandard data is incomplete\")\n    return bytes(ret)\n```\n\nNeeds a `self.seen_data` flag (set in `decode()`) and an early return in `flush()` when no data was seen.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            166,
+            169
+          ],
+          "severity": "major",
+          "title": "Infinite loop possible when unused_data does not shrink",
+          "detail": "The `while self.decompressor.eof and self.decompressor.unused_data:` loop creates a new decompressor and feeds `unused_data` into it on each iteration. If the last frame's `unused_data` is non-empty but is not itself a valid zstd frame (e.g. trailing garbage bytes), the new `decompressor.decompress()` call may raise, which is caught. However, if `decompress()` succeeds but consumes zero bytes and again leaves `unused_data` unchanged, the loop becomes infinite.\n\nThe urllib3 reference implementation avoids this by using a `for` loop with `itertools` or by checking that the new decompressor consumed the data. Recommend adding a safeguard ensuring `unused_data` is strictly shrinking each iteration, or switching to the same pattern as urllib3.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "minor",
+          "title": "Regex match can return None, causing AttributeError on malformed __version__",
+          "detail": "The expression `re.search(r\"^([0-9]+)\\.([0-9]+)\", zstd.__version__).groups()` calls `.groups()` directly on the result of `re.search()`. If `zstd.__version__` does not match the pattern (e.g. a dev build like `\"0.18.0.dev0\"` that somehow fails to match, or a completely different format), `re.search` returns `None` and `.groups()` raises `AttributeError`, which is not caught.\n\nThe `# type: ignore[union-attr]` comment acknowledges this but suppresses the type error rather than handling it. A guard such as `m = re.search(...); if m is None: zstd = None` or wrapping in a try/except would make this robust.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            91,
+            100
+          ],
+          "severity": "minor",
+          "title": "test_zstd_decoding_error passes a str instead of bytes as content",
+          "detail": "The `content` argument is set to a plain Python `str` (\"this_is_not_zstd_compressed_data\") instead of `bytes`. Depending on how `httpx.Response` handles this, the test may raise a `TypeError` (or similar) before ever reaching the zstd decoder, meaning the test is not actually verifying that invalid *compressed bytes* raise `httpx.DecodingError`. It should be `b\"this_is_not_zstd_compressed_data\"` to properly exercise the decoder error path.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            103,
+            122
+          ],
+          "severity": "minor",
+          "title": "test_zstd_multiframe passes an io.BytesIO instead of bytes as content, may not be supported",
+          "detail": "Line 117 assigns `compressed_body = io.BytesIO(data)` and then passes it as the `content=` argument to `httpx.Response`. The `content` parameter typically expects `bytes` or an async/sync byte-stream understood by httpx. Passing a raw `io.BytesIO` object may work by coincidence (if httpx iterates it) or may silently produce wrong results. The test then calls `response.read()` to force loading, but if `content=io.BytesIO(...)` is not a supported type, the bytes may never be fed through the decoder at all, making the assertion `response.content == b\"foobar\"` unreliable. The data should be passed as plain `bytes` (`data` directly) or via a proper streaming mechanism.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 31202,
+      "tokens_out": 1359,
+      "cost_usd": 0.11399100000000001,
+      "duration_s": 28.228564749937505,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [],
+      "tool_calls": 0,
+      "tokens_in": 7017,
+      "tokens_out": 33,
+      "cost_usd": 0.021546,
+      "duration_s": 1.78996791690588,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "CHANGELOG.md",
+          "line_range": [
+            9,
+            9
+          ],
+          "severity": "minor",
+          "title": "Changelog 'Added' section uses wrong heading level",
+          "detail": "The existing changelog convention uses `###` (H3) for section headings like `### Added`, `### Fixed`, etc., nested under `##` version headings. The new entry uses `## Added` (H2), which breaks the established hierarchy and makes it appear as a sibling of version headings.",
+          "confidence": 0.98
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            151,
+            156
+          ],
+          "severity": "minor",
+          "title": "Incomplete/placeholder ImportError message in ZStandardDecoder.__init__",
+          "detail": "The ImportError message reads `\"Using 'ZStandardDecoder', ...\"` \u2014 the `...` appears to be unfinished placeholder text, unlike the complete, descriptive error messages found elsewhere in the codebase. It should be expanded to explain what the decoder is for, similar to how the BrotliDecoder (if present) or other optional-dep errors are phrased.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            175,
+            175
+          ],
+          "severity": "nit",
+          "title": "Inline comment style inconsistent with surrounding code",
+          "detail": "`ret = self.decompressor.flush()  # note: this is a no-op` \u2014 the inline comment starts with lowercase `note:`. Surrounding inline comments in this file (e.g. `# Defensive:`) and the broader codebase tend not to use this `note:` prefix. Consider just `# this is a no-op` or drop the prefix to stay consistent.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            27,
+            27
+          ],
+          "severity": "minor",
+          "title": "Bare `except` comment style differs from brotli pattern",
+          "detail": "The brotli block uses `except ImportError:  # pragma: no cover` on bare except lines, keeping `# pragma: no cover` annotations consistent. The zstd block uses `except (AttributeError, ImportError, ValueError):  # Defensive:` which introduces a different inline comment convention (`# Defensive:`) not present in the surrounding brotli code. The `# pragma: no cover` annotation is also absent from the zstd except clause, making coverage annotation inconsistent with the brotli pattern above.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "pyproject.toml",
+          "line_range": [
+            55,
+            57
+          ],
+          "severity": "nit",
+          "title": "Indentation of zstd optional-dependency block differs from siblings",
+          "detail": "All other `[project.optional-dependencies]` entries use 4-space indentation for their list items (e.g., `    \"brotli; ...\"`, `    \"h2>=3,<5\"`). The new `zstd` block uses 2-space indentation (`  \"zstandard>=0.18.0\"`), which is inconsistent with the established style.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "style",
+          "file": "docs/quickstart.md",
+          "line_range": [
+            103,
+            104
+          ],
+          "severity": "nit",
+          "title": "Asymmetric sentence structure when describing zstd support",
+          "detail": "The brotli and zstd sentences in the paragraph are slightly asymmetric: '...the `brotli` response encoding will be supported. If `zstandard` is installed, then `zstd` response encodings will also be supported.' The first uses the singular 'encoding' while the second uses 'encodings'. For consistency with the surrounding text and the brotli sentence, both should use the same number.",
+          "confidence": 0.72
+        },
+        {
+          "agent": "style",
+          "file": "docs/index.md",
+          "line_range": [
+            142,
+            142
+          ],
+          "severity": "nit",
+          "title": "Slightly awkward phrasing: 'brotli and zstandard decoders support'",
+          "detail": "The updated heading reads 'To include the optional brotli and zstandard decoders support, use:'. A more natural phrasing would be 'To include optional brotli and zstandard decoder support, use:' (drop the duplicate article and reorder 'decoder support').",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            103,
+            113
+          ],
+          "severity": "nit",
+          "title": "Spaces in hex string inside bytes.fromhex()",
+          "detail": "`bytes.fromhex(...)` in `test_zstd_multiframe` passes hex strings that include spaces (e.g. `\"50 2A 4D 18\"`). While Python's `bytes.fromhex()` accepts spaces in Python 3.7+, the hex strings in the rest of the test file use no spaces. This is a minor stylistic inconsistency, though here the spaces are used intentionally as a readability device with inline comments \u2014 if that intent is to be preserved, a brief explanatory comment at the top of the block would help.",
+          "confidence": 0.5
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 21335,
+      "tokens_out": 1281,
+      "cost_usd": 0.08322,
+      "duration_s": 26.869028375018388,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            153,
+            157
+          ],
+          "severity": "minor",
+          "title": "ZStandardDecoder.__init__ ImportError branch not covered",
+          "detail": "The branch where `zstd is None` (lines 153\u2013157) raises an ImportError, but is marked `# pragma: no cover`. There is no test that exercises importing/instantiating ZStandardDecoder without the zstandard package available (e.g. by temporarily setting zstd to None). This means the error message and the guard logic are untested.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            174,
+            178
+          ],
+          "severity": "minor",
+          "title": "ZStandardDecoder.flush() incomplete-stream DecodingError branch not covered",
+          "detail": "The `flush()` method raises `DecodingError('Zstandard data is incomplete')` when `not self.decompressor.eof`, but this is marked `# pragma: no cover` (line 177). There is no test that feeds a truncated/incomplete zstd stream and then calls `flush()`, so this error path is never exercised.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            370,
+            371
+          ],
+          "severity": "minor",
+          "title": "SUPPORTED_DECODERS.pop('zstd') branch when zstd is None not covered",
+          "detail": "The branch that removes 'zstd' from SUPPORTED_DECODERS when the zstandard package is not installed (lines 370\u2013371) is marked `# pragma: no cover`. There is no test that verifies the 'zstd' key is absent from SUPPORTED_DECODERS when zstd is unavailable, or that a response with Content-Encoding: zstd passes through undecoded in that situation.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            165,
+            172
+          ],
+          "severity": "minor",
+          "title": "ZStandardDecoder multi-frame loop with skippable frame only partially tested",
+          "detail": "The `test_zstd_multiframe` test exercises the while-loop in `decode()` for a skippable frame between two zstd frames. However, there is no test for a stream consisting of more than two concatenated zstd data frames without a skippable frame in between, leaving the general multi-frame chaining path only partially covered.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            218,
+            225
+          ],
+          "severity": "minor",
+          "title": "'zstd' not included in parametrized empty-content and decoding-error tests",
+          "detail": "The `test_empty_content`, `test_decoders_empty_cases`, and `test_decoding_errors` parametrized tests do not include `b'zstd'` as a parameter value. This means an empty zstd-encoded body and a body of random bytes advertised as zstd are not tested, unlike gzip, deflate, and brotli which all have these edge cases covered.",
+          "confidence": 0.95
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 24978,
+      "tokens_out": 817,
+      "cost_usd": 0.087189,
+      "duration_s": 16.811938958009705,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness, test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            174,
+            178
+          ],
+          "severity": "major",
+          "title": "ZStandardDecoder.flush() incorrectly raises DecodingError on empty/no-data responses",
+          "detail": "When `flush()` is called on a freshly-constructed `ZStandardDecoder` that has never received data (e.g. a 204 No Content or empty body), `self.decompressor.eof` is `False` because no input was ever fed to it, causing the code to raise `DecodingError('Zstandard data is incomplete')` even though an empty body is perfectly valid.\n\nThe BrotliDecoder avoids this via a `self.seen_data` guard in `flush()`. The same pattern must be applied here: add a `self.seen_data = False` flag to `__init__`, set it to `True` in `decode()`, and return `b\"\"` early in `flush()` when `not self.seen_data`.\n\nRelated: the flush-raises-DecodingError branch is marked `# pragma: no cover` and untested (f14), and `b'zstd'` is absent from the parametrized `test_empty_content` and `test_decoding_errors` test cases (f17), so the fix also needs corresponding tests.",
+          "confidence": 0.92
+        },
+        {
+          "agent": "correctness, test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            165,
+            172
+          ],
+          "severity": "major",
+          "title": "Potential infinite loop in multi-frame decode loop if unused_data does not shrink",
+          "detail": "The `while self.decompressor.eof and self.decompressor.unused_data:` loop creates a new decompressor on each iteration and feeds `unused_data` into it. If `decompress()` succeeds but consumes zero bytes (e.g. trailing garbage that is not a valid zstd frame but does not raise), `unused_data` never shrinks and the loop runs forever.\n\nA safeguard is needed: record the length of `unused_data` before each iteration and break (or raise) if it has not decreased. Alternatively, adopt the same pattern used by urllib3's zstd implementation. Additionally, there is no test for a plain multi-frame stream (two concatenated zstd frames without a skippable frame in between), so the general chaining path is only partially covered.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "CHANGELOG.md",
+          "line_range": [
+            9,
+            9
+          ],
+          "severity": "minor",
+          "title": "Changelog 'Added' section uses wrong heading level (## instead of ###)",
+          "detail": "The project's changelog convention nests section headings (`### Added`, `### Fixed`, etc.) as H3 under H2 version headings. The new entry uses `## Added` (H2), making it appear as a sibling of the version heading and breaking the established hierarchy.",
+          "confidence": 0.98
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            151,
+            156
+          ],
+          "severity": "minor",
+          "title": "Incomplete placeholder text in ZStandardDecoder ImportError message",
+          "detail": "The `ImportError` message reads `\"Using 'ZStandardDecoder', ...\"` \u2014 the `...` is unfinished placeholder text. All other similar messages in the codebase are complete, descriptive sentences explaining the purpose of the optional dependency. Expand the message to match the established style.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            91,
+            100
+          ],
+          "severity": "minor",
+          "title": "test_zstd_decoding_error passes a str instead of bytes as content",
+          "detail": "The `content` argument is set to the plain Python string `\"this_is_not_zstd_compressed_data\"` instead of `b\"this_is_not_zstd_compressed_data\"`. Depending on how `httpx.Response` handles this, the test may fail with a `TypeError` before ever reaching the zstd decoder, meaning the test does not actually verify that invalid compressed *bytes* raise `httpx.DecodingError`. Change the literal to a bytes literal.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            153,
+            157
+          ],
+          "severity": "minor",
+          "title": "ZStandardDecoder.__init__ ImportError branch untested",
+          "detail": "The guard that raises `ImportError` when `zstd is None` (lines 153\u2013157) is marked `# pragma: no cover` and is never exercised by any test. While pragmatic in CI environments where `zstandard` is always installed, there is no test that instantiates `ZStandardDecoder` with `zstd` patched to `None` to verify the error message and guard logic.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            370,
+            371
+          ],
+          "severity": "minor",
+          "title": "SUPPORTED_DECODERS.pop('zstd') branch when zstd unavailable untested",
+          "detail": "The branch removing `'zstd'` from `SUPPORTED_DECODERS` when the package is not installed is marked `# pragma: no cover` and has no test verifying that a `Content-Encoding: zstd` response is handled gracefully (passed through undecoded) when `zstandard` is unavailable.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            27,
+            27
+          ],
+          "severity": "minor",
+          "title": "Zstd except clause missing # pragma: no cover and uses inconsistent comment convention",
+          "detail": "The brotli block above consistently annotates bare except lines with `# pragma: no cover`. The zstd block uses `except (AttributeError, ImportError, ValueError):  # Defensive:` \u2014 a different inline comment convention not present elsewhere in the file \u2014 and omits `# pragma: no cover`, making coverage annotation inconsistent.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_compat.py",
+          "line_range": [
+            34,
+            35
+          ],
+          "severity": "minor",
+          "title": "Unguarded re.search() result can cause AttributeError on malformed zstd.__version__",
+          "detail": "`re.search(r'^([0-9]+)\\.([0-9]+)', zstd.__version__).groups()` calls `.groups()` directly without checking whether `re.search` returned `None`. If `zstd.__version__` does not match (unusual build strings, pre-release tags, etc.) this raises `AttributeError`. The `# type: ignore[union-attr]` comment acknowledges but suppresses the type error rather than handling it. A proper fix: `m = re.search(...); if m is None: zstd = None` (or wrap in try/except) to gracefully fall back.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "correctness",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            103,
+            122
+          ],
+          "severity": "minor",
+          "title": "test_zstd_multiframe passes io.BytesIO as content, may not be reliably supported",
+          "detail": "`content=io.BytesIO(data)` is passed to `httpx.Response`. The `content` parameter typically expects `bytes` or a recognised httpx streaming type; a raw `io.BytesIO` object may work by coincidence or may silently bypass the decoder entirely, making the assertion `response.content == b\"foobar\"` unreliable. Pass the compressed data directly as `bytes`.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "style",
+          "file": "pyproject.toml",
+          "line_range": [
+            55,
+            57
+          ],
+          "severity": "nit",
+          "title": "zstd optional-dependency block uses 2-space indentation instead of 4-space",
+          "detail": "All other `[project.optional-dependencies]` list items use 4-space indentation. The new `zstd` block uses 2-space indentation (`  \"zstandard>=0.18.0\"`), which is inconsistent with the established style.",
+          "confidence": 0.97
+        },
+        {
+          "agent": "style",
+          "file": "docs/index.md",
+          "line_range": [
+            142,
+            142
+          ],
+          "severity": "nit",
+          "title": "Awkward phrasing: 'brotli and zstandard decoders support'",
+          "detail": "'To include the optional brotli and zstandard decoders support, use:' reads awkwardly. A cleaner phrasing is: 'To include optional brotli and zstandard decoder support, use:' (drop the extra article, make 'decoder' singular).",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "docs/quickstart.md",
+          "line_range": [
+            103,
+            104
+          ],
+          "severity": "nit",
+          "title": "Asymmetric singular/plural 'encoding' vs 'encodings' in zstd description",
+          "detail": "The brotli sentence uses 'encoding' (singular) while the new zstd sentence uses 'encodings' (plural). For consistency both sentences should use the same grammatical number.",
+          "confidence": 0.72
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_decoders.py",
+          "line_range": [
+            175,
+            175
+          ],
+          "severity": "nit",
+          "title": "Inline comment uses non-standard 'note:' prefix",
+          "detail": "`ret = self.decompressor.flush()  # note: this is a no-op` \u2014 the `note:` prefix is not used elsewhere in this file. Consider `# this is a no-op` or remove the prefix entirely.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_decoders.py",
+          "line_range": [
+            103,
+            113
+          ],
+          "severity": "nit",
+          "title": "Spaces in hex strings inside bytes.fromhex() inconsistent with rest of test file",
+          "detail": "`bytes.fromhex()` calls in `test_zstd_multiframe` include spaces in the hex string (e.g. `\"50 2A 4D 18\"`), which is valid in Python 3.7+ but inconsistent with other hex strings in the test file that use no spaces. If the spaces are intentional for readability, a brief comment to that effect would help; otherwise remove them for consistency.",
+          "confidence": 0.5
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 4157,
+      "tokens_out": 2687,
+      "cost_usd": 0.052776,
+      "duration_s": 44.62342187506147,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 88689,
+    "tokens_out": 6177,
+    "cost_usd": 0.358722,
+    "duration_s": 118.3
+  }
+}

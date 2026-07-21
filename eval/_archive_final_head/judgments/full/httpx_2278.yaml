@@ -1,0 +1,93 @@
+case: httpx_2278
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: When the user supplies a Content-Type header without a boundary, setdefault won't overwrite
+    it, and the request goes out with no multipart boundary at all — violating the spec so no server
+    can parse it; the boundary must be injected into the existing header.
+  matched_finding: null
+  note: 'MISSED though live at the reviewed head: with a user Content-Type lacking a boundary, setdefault
+    keeps the user header while the body uses a random boundary — unparseable request. The system
+    analyzed the exact mechanism and concluded ''correct'' instead of flagging it (finding 6); findings
+    3/12 flag the missing body assertion that would have exposed it'
+  matchable: true
+- ground_truth: g2
+  issue: RFC 2046 allows the boundary parameter to be quoted; the parser must strip quotes (and handle
+    mixed-case/whitespace) rather than only accepting the bare token form.
+  matched_finding: null
+  note: fixed during review — strip(b'"') and the quoted-boundary parametrized tests are present
+    at the reviewed head (discussion_r945186942)
+  matchable: false
+- ground_truth: g3
+  issue: The boundary should be extracted from headers upstream in _models.py and passed down, removing
+    the content_type parameter from encode_request/encode_multipart_data signatures entirely.
+  matched_finding: null
+  note: implemented during review — extraction lives in _models.py and encode_request/encode_multipart_data
+    take boundary, not content_type (discussion_r945184961)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: User-supplied boundary used without RFC 2046 validation — multipart injection and DoS risk
+  valid: uncertain
+  note: the boundary comes from the caller's own header — no trust boundary is crossed; RFC-validation
+    is a defensible robustness ask httpx itself never added
+- finding: 1
+  title: Splitting on `;` breaks quoted-string boundary values containing semicolons
+  valid: true
+  note: technically correct RFC 2046 gap (quoted-string may contain ';'); parser falls back to a
+    random boundary producing a body/header mismatch; self-acknowledged as rare
+- finding: 2
+  title: Missing unit tests for `get_multipart_boundary_from_content_type` edge-case branches
+  valid: true
+  note: 'factual: the helper has no direct unit tests, only client-level coverage'
+- finding: 3
+  title: test_multipart_header_without_boundary does not verify the auto-generated boundary was used
+    in the body
+  valid: true
+  note: factual, and this is exactly the assertion that would have exposed the g1 mismatch
+- finding: 4
+  title: No test for explicit multipart boundary via direct `httpx.Request()` construction
+  valid: true
+  note: factual; marginal
+- finding: 5
+  title: Boundary quoted-string stripping with `strip(b'"')` silently truncates or mishandles edge-case
+    values
+  valid: true
+  note: strip-all semantics accurately described; its boundary="" example is the same empty-boundary
+    hole the baseline found
+- finding: 6
+  title: MultipartStream reconstructs Content-Type internally but user-supplied header is preserved
+    via setdefault — behaviour is correct but fragile
+  valid: uncertain
+  note: accurate mechanism analysis that stops at 'correct but fragile' — it walked up to the g1
+    bug and did not flag it; no actionable defect claimed
+- finding: 7
+  title: Boundary is unconditionally extracted from Content-Type even when `files` is None
+  valid: uncertain
+  note: factual but self-described as harmless; speculative confusion
+- finding: 8
+  title: Case-insensitive boundary= prefix check is correct but implementation is fragile
+  valid: false
+  note: reports that something is correct — a non-finding
+- finding: 9
+  title: Outer `if b";" in content_type` guard is redundant
+  valid: true
+  note: 'factual: the split loop already yields the whole value when no semicolon exists; guard is
+    redundant'
+- finding: 10
+  title: Magic constant `len(b"boundary=")` duplicated — prefer a named constant
+  valid: uncertain
+  note: two occurrences of a literal hardly warrant a constant; subjective
+- finding: 11
+  title: Inline comment uses lower-case first letter — inconsistent with surrounding style
+  valid: true
+  note: trivial but factual against the file's sentence-case comment style
+- finding: 12
+  title: test_multipart_header_without_boundary omits body-content assertion present in sibling tests
+  valid: true
+  note: factual; duplicate angle of finding 3 the synthesizer left unmerged
+- finding: 13
+  title: Parametrize style inconsistent within the file
+  valid: false
+  note: ('key') is just a parenthesized string, semantically identical; suggesting the old tests
+    be updated is out of scope

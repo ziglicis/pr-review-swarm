@@ -4,96 +4,97 @@ ground_truth_matches:
 - ground_truth: g1
   issue: 'The Python 2 json path is broken: json.JSONDecodeError doesn''t exist on Python 2, so the
     except-clause handling falls over with an AttributeError (caught via failing CI during review).'
-  matched_finding: null
-  note: fixed during review — compat.py sets JSONDecodeError = ValueError on py2 and models handles
-    both branches (discussion_r667104578)
-  matchable: false
+  matched_finding: 2
+  note: 'PRESENT at review_sha: models.py:917 `except json.JSONDecodeError` fails on py2 where the
+    attr doesn''t exist (discussion_r667104578, CI-caught)'
+  matchable: true
 - ground_truth: g2
   issue: 'The new JSONDecodeError must fit the exception hierarchy: subclass the catch-all RequestException
     (so users can catch everything requests throws) and preserve/proxy the original underlying exception''s
     info.'
-  matched_finding: null
-  note: subclassing landed; finding 5 speculates a py2 MRO TypeError that does not occur — the real
-    residual (py3 init gap) was only caught by the full run
+  matched_finding: 1
+  note: 'PRESENT: `class JSONDecodeError(StandardJSONDecodeError, SimpleJSONDecodeError)` does not
+    subclass RequestException (discussion_r667095839)'
   matchable: true
 - ground_truth: g3
   issue: Unrelated changes bundled into the PR (formatting/spacing tweaks, doc edits) that reviewers
     repeatedly asked to revert as scope creep.
-  matched_finding: 13
-  note: finding 13 flags one concrete instance of the bundled unrelated formatting (the removed compat.py
-    blank line) — the reviewers' scope-creep complaint (discussion_r667094313)
+  matched_finding: null
+  note: 'PRESENT: sigmavirus24 left 11 ''Please revert this'' comments on tangential formatting (models.py
+    180/187/231/315/391/446/509/785/843/957/961); no experiment flagged the changes as out-of-scope'
   matchable: true
 - ground_truth: g4
   issue: The simplejson/json resolution logic is duplicated across several files; JSONDecodeError
     should be resolved once in compat.py and imported from there.
   matched_finding: null
-  note: fixed during review — JSONDecodeError resolved once in compat.py (discussion_r671444604)
+  note: 'NON-matchable: the ''consolidate JSON-type resolution in compat.py'' concern (discussion_r671444604)
+    was raised against later commit 64b3f189; at 0045b835 the logic lives only in exceptions.py,
+    no cross-file duplication yet'
   matchable: false
 finding_validity:
 - finding: 0
-  title: JSONDecodeError from guess_json_utf early-return path propagates unwrapped
+  title: Renaming `complexjson` import to `json` causes name collision, breaking json.dumps() at
+    runtime
   valid: true
-  note: 'verified against the head: the guess_json_utf fast path only catches UnicodeDecodeError,
-    so raw json/simplejson JSONDecodeError escapes unwrapped — vindicated by the requests 2.27.0
-    changelog entry fixing exactly this'
+  note: '`from .compat import json` collides with json= param, breaks json.dumps at runtime'
 - finding: 1
-  title: No tests verify JSONDecodeError inheritance/aliasing guarantees
+  title: JSONDecodeError does not inherit from RequestException, breaking the stated catch invariant
   valid: true
-  note: 'factual: no inheritance assertions'
+  note: 'g2: no RequestException in the MRO'
 - finding: 2
-  title: requests.exceptions.JSONDecodeError does not subclass both json.JSONDecodeError and simplejson.JSONDecodeError;
-    simplejson branch untested
+  title: except json.JSONDecodeError fails on Python 2 where json.JSONDecodeError does not exist
   valid: true
-  note: 'real subtlety: with simplejson installed, except json.JSONDecodeError no longer catches
-    requests'' exception'
+  note: 'g1: py2 json.JSONDecodeError catch'
 - finding: 3
-  title: Python 2 branch untested and uses deprecated `.message` attribute
-  valid: uncertain
-  note: '''removed from BaseException in 2.6+'' is wrong (deprecated, present in 2.7); the fragility
-    is real, the mechanism stated is not'
+  title: Unconditional import of simplejson causes ImportError in environments without simplejson
+    installed
+  valid: true
+  note: unconditional simplejson import
 - finding: 4
-  title: 'Test coverage gaps: only one trigger path tested; None-content and invalid-JSON-text paths
-    missing'
+  title: Tests make live network requests instead of mocked responses, making them unreliable and
+    environment-dependent
   valid: true
-  note: factual, including the observation that bytes/20 may fail at charset detection instead of
-    JSON parsing
+  note: live network tests
 - finding: 5
-  title: Potential MRO conflict when CompatJSONDecodeError is ValueError on Python 2
-  valid: false
-  note: 'no MRO conflict exists: IOError and ValueError share the py2 StandardError hierarchy and
-    linearize fine'
+  title: JSON decode errors from the UTF-detected encoding path are not wrapped and propagate as
+    raw json.JSONDecodeError
+  valid: true
+  note: UTF-detected path not wrapped
 - finding: 6
-  title: Exception chaining suppressed — original exception context lost
-  valid: false
-  note: raise ... from is a SyntaxError on Python 2, which this codebase still supported; implicit
-    __context__ survives on py3 anyway
+  title: SimpleJSONDecodeError falls back to bare Exception, causing unexpected MRO and over-broad
+    inheritance
+  valid: true
+  note: SimpleJSONDecodeError=Exception broadens MRO
 - finding: 7
-  title: Import-time simplejson inconsistency possible in mocked test environments
-  valid: false
-  note: contrived sys.modules mid-import mocking race
+  title: No tests cover the Python 2 or simplejson-absent fallback paths in the exception hierarchy
+  valid: true
+  note: 'coverage gap: py2/simplejson-absent fallback untested'
 - finding: 8
-  title: 'Docstring style inconsistency: lowercase ''json'' and missing trailing period'
+  title: JSONDecodeError MRO on Python 2 without simplejson is degenerate and unexpected
   valid: true
-  note: confirmed
+  note: py2-without-simplejson MRO is genuinely degenerate ((ValueError, Exception))
 - finding: 9
-  title: '"python" should be capitalised to "Python" in documentation'
-  valid: true
-  note: trivial factual
-- finding: 10
-  title: Missing newline at end of file
-  valid: true
-  note: confirmed missing EOF newline (though the claim that the prior version had one is wrong —
-    it was missing before too)
-- finding: 11
-  title: New import should be merged into the existing grouped import block
+  title: JSONDecodeError raised without exception chaining, discarding the original traceback
   valid: uncertain
-  note: aliased import could be folded in; separate line arguably clearer
+  note: no raise-from — but py2 forbids raise-from syntactically; mild
+- finding: 10
+  title: No test verifies JSONDecodeError is importable from the top-level requests namespace
+  valid: true
+  note: 'factual coverage gap: top-level importability untested'
+- finding: 11
+  title: JSONDecodeError docstring style inconsistent with surrounding exceptions
+  valid: true
+  note: docstring inconsistency real
 - finding: 12
-  title: Missing second space before inline comment (PEP 8)
-  valid: true
-  note: confirmed
+  title: Intermediate alias names StandardJSONDecodeError / SimpleJSONDecodeError leak into the public
+    module namespace
+  valid: uncertain
+  note: alias leak subjective
 - finding: 13
-  title: Blank line removed between import block and surrounding code
-  valid: true
-  note: 'confirmed: unrelated blank-line removal — the one finding touching the reviewers'' scope-creep
-    complaint'
+  title: 'Import ordering: new import breaks existing alphabetical/grouping convention'
+  valid: uncertain
+  note: import-ordering nit subjective
+- finding: 14
+  title: Test URLs are magic strings and inline comments don't align with project conventions
+  valid: uncertain
+  note: magic test URLs — subjective nit

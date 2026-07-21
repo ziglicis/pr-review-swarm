@@ -1,0 +1,422 @@
+{
+  "case": "requests_3984",
+  "experiment": "no-tools",
+  "pr_url": "https://github.com/psf/requests/pull/3984",
+  "head_sha": "458df8f4f432956003a81a5285129e6dbf9b40b0",
+  "sha_matches_dataset": true,
+  "timestamp": 1784217414,
+  "summary": "This PR fixes a bug in `iter_lines()` where a `\\r\\n` pair split across two chunks would produce a spurious extra empty line. The core logic appears correct based on careful analysis by the correctness reviewers, who could not find a genuine correctness bug in the implementation. The main actionable gaps are in test coverage (edge cases at stream boundaries and longer multi-boundary sequences) and minor style issues. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "findings": [
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 818,
+      "line_end": 819,
+      "severity": "major",
+      "title": "No test for the `continue` path when the `\\n`-only chunk is the last chunk in the stream",
+      "detail": "The branch `if not chunk: continue` (line 818-819) is only exercised incidentally in the sequence `[b'a\\r', b'\\n', b'\\nb']`. There is no test asserting correct output when the `\\n`-only chunk is the final chunk in the stream, e.g. `[b'a\\r', b'\\n']`. Without this, the guard that prevents a trailing empty line when the stream ends after a lone `\\n` (completing a split CRLF) is untested in isolation.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 813,
+      "line_end": 814,
+      "severity": "minor",
+      "title": "No test for multiple consecutive CR+LF splits across more than two chunk boundaries",
+      "detail": "The fix relies on `last_chunk_ends_with_cr` being correctly reset on every iteration. A sequence where every chunk boundary splits a CRLF pair \u2014 e.g. `[b'a\\r', b'\\nb\\r', b'\\nc']` \u2014 is absent from the parametrized test matrix. Adding such a case would give confidence that the flag is correctly threaded through longer streaming scenarios.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 779,
+      "line_end": 780,
+      "severity": "minor",
+      "title": "No test for `iter_lines` with `decode_unicode=False` and a non-CRLF delimiter",
+      "detail": "The new code selects `carriage_return` and `line_feed` based on `decode_unicode`, but the parametrized tests only check `delimiter=b'\\r\\n'` for raw bytes. A non-CRLF byte delimiter (e.g. `b'|'`) with `decode_unicode=False` is not covered, leaving the `carriage_return`/`line_feed` selection path for the non-splitlines branch only partially exercised.",
+      "confidence": 0.5
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1394,
+      "line_end": 1396,
+      "severity": "nit",
+      "title": "Comment/block order for `decode_unicode=True` vs `None` is reversed relative to the sibling test function",
+      "detail": "In `test_response_lines` the `decode_unicode=None` block comes before `decode_unicode=True`. In `test_response_lines_parametrized` the order is reversed. Keeping the order consistent would make the two test functions easier to compare.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1335,
+      "line_end": 1335,
+      "severity": "nit",
+      "title": "Long assertion line should be split for consistency with surrounding style",
+      "detail": "The assertion `assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')` is notably longer than surrounding lines. A few lines later (lines 1342/1346) the same test function already splits result computation and assertion \u2014 applying the same pattern here would be consistent.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 817,
+      "line_end": 819,
+      "severity": "nit",
+      "title": "Inline comment on `if not chunk: continue` duplicates the block comment above",
+      "detail": "The block comment at lines 803\u2013808 already explains the CRLF-splitting scenario. The inline comment on the `if not chunk: continue` guard repeats what the code makes self-evident, which is inconsistent with the file's convention of avoiding redundant inline comments.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 779,
+      "line_end": 814,
+      "severity": "nit",
+      "title": "Minor style: single-use variables and verbose constant names",
+      "detail": "Two small style observations: (1) `carriage_return` and `line_feed` are always set as a pair and a brief inline comment at the point of use could reduce their scope. (2) `skip_first_char` is assigned and checked on the immediately following line; inlining it as `if last_chunk_ends_with_cr and chunk.startswith(line_feed):` would match the file's general avoidance of single-use named temporaries. Both are very minor and do not affect correctness.",
+      "confidence": 0.55
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1322,
+      "line_end": 1325,
+      "severity": "nit",
+      "title": "Mixed use of `def` and `lambda` for mock callables in the same test file",
+      "detail": "`mock_iter_content` is now defined with `def` while nearby untouched tests use `lambda` for one-liner mocks. The `def` form is more readable for the conditional body here, so this is purely a consistency nit rather than a real issue.",
+      "confidence": 0.45
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "last_chunk_ends_with_cr not updated when chunk is skipped entirely",
+          "detail": "When `skip_first_char` is True and the chunk is only `b'\\n'` (or `u'\\n'`), after stripping the first character the chunk becomes empty and we `continue` (line 819). However, `last_chunk_ends_with_cr` was already set to `chunk.endswith(carriage_return)` on line 814 *before* the strip. At that point `chunk` is still `b'\\n'`, so `last_chunk_ends_with_cr` gets set to `False` correctly \u2014 that part is fine. BUT: if a chunk is e.g. `b'\\nfoo\\r'` (starts with `\\n` after a trailing `\\r`, and also ends with `\\r`), `last_chunk_ends_with_cr` is set to `True` correctly. So that edge case is fine too.\n\nThe real problem is a different ordering issue: `last_chunk_ends_with_cr` is evaluated on line 814 using the *original* `chunk` (before the `skip_first_char` strip on line 816). Consider the sequence: chunk = `b'\\n'` (sole char). `skip_first_char=True`, so we enter the block. `last_chunk_ends_with_cr = chunk.endswith(b'\\r')` \u2192 False (chunk is `b'\\n'`). Then `chunk = chunk[1:]` \u2192 `b''`. We `continue`. `last_chunk_ends_with_cr` is correctly False here.\n\nHowever there is a subtler issue: when `chunk` is, say, `b'\\n\\r'` (starts with `\\n`, ends with `\\r`): `skip_first_char=True`, `last_chunk_ends_with_cr = b'\\n\\r'.endswith(b'\\r')` \u2192 True. Then `chunk = chunk[1:]` \u2192 `b'\\r'`. We do NOT continue (chunk is non-empty). Then `lines = b'\\r'.splitlines()` \u2192 `[b'']`. `incomplete_line` check: `lines[-1]` is `b''` which is falsy, so `incomplete_line` is False. We yield `b''`. But `last_chunk_ends_with_cr` is True (set from original chunk ending with `\\r`), so the *next* chunk's leading `\\n` will correctly be skipped. This is actually correct.\n\nThe real ordering bug: `last_chunk_ends_with_cr` should be computed on the *post-strip* chunk, not the pre-strip chunk. Consider chunk = `b'\\n\\r'`. After stripping \u2192 `b'\\r'`. `last_chunk_ends_with_cr` correctly becomes True (since original chunk also ends with `\\r`). OK, same result.\n\nBut consider chunk = `b'\\n'` exactly. Pre-strip ends with `\\n` \u2192 `last_chunk_ends_with_cr = False`. Post-strip is empty \u2192 `continue`. Next chunk does not have its leading `\\n` skipped \u2014 correct, since the CR was already consumed.\n\nActually the ordering IS wrong for this case: chunk = `b'\\nfoo'` where previous chunk ended with `\\r`. `skip_first_char=True`. `last_chunk_ends_with_cr = b'\\nfoo'.endswith(b'\\r')` \u2192 False. `chunk = b'foo'`. This is correct.\n\nAfter more careful analysis, the actual bug is: `last_chunk_ends_with_cr` is set on line 814 from the original chunk, but should reflect whether the *effective* (post-strip) chunk ends with `\\r`. In the case where `skip_first_char=True` and `chunk = b'\\n\\r'`, pre-strip the chunk ends with `\\r` \u2192 `last_chunk_ends_with_cr=True`. Post-strip chunk is `b'\\r'` which also ends with `\\r`. Same result \u2014 no bug here.\n\nIn the case where `skip_first_char=False` (normal path), `last_chunk_ends_with_cr` is set from the unmodified chunk \u2014 correct.\n\nConclusion: the ordering is actually fine in all cases because whether the original chunk ends with `\\r` is the same as whether the stripped chunk ends with `\\r` (stripping a leading `\\n` doesn't affect the tail). No bug here.\n\nHowever, the `continue` on line 819 skips updating `last_chunk_ends_with_cr` *only* in the code path where the chunk is entirely `\\n` \u2014 but `last_chunk_ends_with_cr` was already set on line 814 before the `continue`. So it IS updated. No bug.\n\nRe-examining: everything looks correct. Let me look for real bugs.",
+          "confidence": 0.3
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            814,
+            816
+          ],
+          "severity": "major",
+          "title": "last_chunk_ends_with_cr computed from pre-strip chunk when chunk consists solely of '\\n'",
+          "detail": "When the previous chunk ends with '\\r' and the current chunk is exactly b'\\n' (or u'\\n'), `skip_first_char` is True and `last_chunk_ends_with_cr` is set to False (since b'\\n'.endswith(b'\\r') is False) on line 814. Then chunk is stripped to b'' and we `continue` on line 819. This is correct \u2014 the CR/LF pair is consumed and `last_chunk_ends_with_cr` is correctly set to False. No bug here.\n\nNow consider: previous chunk ends with '\\r', current chunk is b'\\n\\r' (LF followed by CR). `skip_first_char=True`. Line 814: `last_chunk_ends_with_cr = b'\\n\\r'.endswith(b'\\r')` \u2192 True. Line 816: `chunk = b'\\r'`. We don't continue. `lines = b'\\r'.splitlines()` \u2192 `[b'']`. `incomplete_line`: `lines[-1]` = `b''` which is falsy \u2192 `incomplete_line = False`. So we do NOT set pending, and we yield `b''`. `last_chunk_ends_with_cr` is True. Next chunk's leading '\\n' would be skipped. This is correct behavior: the '\\r' at end of this chunk is a lone CR line-break (yielding an empty line `b''`), and the next '\\n' if any would be part of another CRLF.\n\nWait \u2014 is yielding `b''` correct here? The original data between the two CR/LFs is just `b''` (empty line). Yes, `b'\\r\\n\\r'.splitlines()` \u2192 `[b'', b'']`. But we already consumed the first `\\r\\n` pair (the leading `\\n` was skipped), so data is effectively `b'\\r'`, which splitlines gives `[b'']`. That's one empty line, which is correct.\n\nAll the logic appears to be correct. Let me look for an actual edge-case bug.",
+          "confidence": 0.2
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            837,
+            837
+          ],
+          "severity": "major",
+          "title": "incomplete_line check uses chunk[-1] which may refer to pre-strip chunk end, but chunk is modified",
+          "detail": "On line 837, `incomplete_line = lines[-1] and lines[-1][-1] == chunk[-1]`. After the potential strip on line 816 (`chunk = chunk[1:]`), `chunk` now refers to the post-strip chunk. The `chunk[-1]` on line 837 is the last byte/char of the stripped chunk. This is the correct value to compare against \u2014 we want to know if the last line produced by `splitlines()` ends at the same position as the last character of our effective chunk. This is correct.",
+          "confidence": 0.2
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "major",
+          "title": "carriage_return/line_feed set to bytes when decode_unicode=None but data could be unicode if encoding was set",
+          "detail": "The variables `carriage_return` and `line_feed` are set to byte literals when `decode_unicode` is falsy (None or False). This is correct because `iter_content` with `decode_unicode=None/False` returns bytes. No bug here.",
+          "confidence": 0.1
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "critical",
+          "title": "When chunk becomes empty after stripping '\\n', last_chunk_ends_with_cr is not re-evaluated on next non-empty chunk",
+          "detail": "Scenario: chunks = [b'\\r', b'\\n', b'\\r\\n', b'data']\n\n1. chunk=b'\\r': `last_chunk_ends_with_cr=True`. splitlines\u2192[b'']. `incomplete_line`: lines[-1]=b'' falsy \u2192 False. yields b''. `last_chunk_ends_with_cr=True`.\n2. chunk=b'\\n': `skip_first_char = True and b'\\n'.startswith(b'\\n')` \u2192 True. `last_chunk_ends_with_cr = b'\\n'.endswith(b'\\r')` \u2192 False. `chunk=b''`. `not chunk` \u2192 True \u2192 `continue`.\n3. chunk=b'\\r\\n': `skip_first_char = False and ...` \u2192 False (last_chunk_ends_with_cr is False). `last_chunk_ends_with_cr = b'\\r\\n'.endswith(b'\\r')` \u2192 False (ends with b'\\n'). `lines = b'\\r\\n'.splitlines()` \u2192 `[b'']`. yields b''.\n4. chunk=b'data': normal processing.\n\nExpected: b'\\r' + b'\\n' + b'\\r\\n' + b'data' = b'\\r\\n\\r\\ndata'. splitlines() \u2192 [b'', b'', b'data']. \u2713 We get b'', b'', b'data'. Correct.\n\nActually this seems fine. Let me try another scenario that might reveal the real bug.\n\nScenario: chunks = [b'a\\r', b'\\n\\r', b'\\nb']\nExpected full data: b'a\\r\\n\\r\\nb'. splitlines() \u2192 [b'a', b'', b'b'].\n\n1. chunk=b'a\\r': `last_chunk_ends_with_cr=True`. lines=[b'a']. incomplete_line: lines[-1]=b'a', lines[-1][-1]=ord('a')=97, chunk[-1]=ord('\\r')=13 \u2192 97\u226013 \u2192 incomplete_line=False. yields b'a'. last_chunk_ends_with_cr=True.\n2. chunk=b'\\n\\r': skip_first_char=True (last_chunk_ends_with_cr=True, chunk starts with b'\\n'). last_chunk_ends_with_cr = b'\\n\\r'.endswith(b'\\r') \u2192 True. chunk=b'\\r'. Not empty. lines=b'\\r'.splitlines()=[b'']. incomplete_line: b'' is falsy \u2192 False. yields b''. last_chunk_ends_with_cr=True.\n3. chunk=b'\\nb': skip_first_char=True. last_chunk_ends_with_cr=b'\\nb'.endswith(b'\\r')\u2192False. chunk=b'b'. lines=b'b'.splitlines()=[b'b']. incomplete_line: b'b'[-1]=98==chunk[-1]=98 \u2192 True. pending=b'b'. lines=[]. nothing yielded.\n4. End: yield pending b'b'.\n\nResult: [b'a', b'', b'b'] \u2713 Correct!\n\nI cannot find a correctness bug in the core logic. The implementation appears to correctly handle all edge cases.",
+          "confidence": 0.15
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 7988,
+      "tokens_out": 3074,
+      "cost_usd": 0.070074,
+      "duration_s": 50.836824249941856,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [],
+      "tool_calls": 0,
+      "tokens_in": 4445,
+      "tokens_out": 33,
+      "cost_usd": 0.01383,
+      "duration_s": 2.534170167054981,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "Ternary expressions for constants could be computed once via a helper or comment",
+          "detail": "The two variables `carriage_return` and `line_feed` are always set as a pair and used only together. The existing codebase avoids introducing helper locals for such small byte/str duality \u2014 a single inline comment explaining `b'\\r'`/`u'\\r'` at the point of use (lines 813-814) would be consistent with the surrounding style and reduce the scope of two variables that live for the entire function. This is a very minor style point, but the names are also slightly verbose for what is effectively a one-time character constant.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "nit",
+          "title": "`skip_first_char` variable is used immediately and only once \u2014 could be inlined",
+          "detail": "The boolean `skip_first_char` is assigned and then checked on the very next line. The surrounding code (and broader file style) generally avoids introducing named temporaries for single-use boolean expressions. Inlining it as `if last_chunk_ends_with_cr and chunk.startswith(line_feed):` would be more consistent with the existing style and avoids an extra name in the local scope. The current name is clear, but the intermediate variable adds a small layer of indirection that the rest of the function doesn't use.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            817,
+            819
+          ],
+          "severity": "nit",
+          "title": "Inline comment on the `if not chunk: continue` line duplicates the block comment above",
+          "detail": "The block comment at lines 803\u2013808 already explains the CRLF-splitting scenario thoroughly. The inline comment `# it's possible that after stripping the '\\n' then chunk becomes empty` repeats what is already clear from the code itself, which is inconsistent with the file's convention of avoiding redundant inline comments on self-evident guards.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1322,
+            1325
+          ],
+          "severity": "nit",
+          "title": "`mock_iter_content` defined with `def` but the original used a `lambda` \u2014 inconsistency within the same test file",
+          "detail": "The surrounding untouched test code and the original version of these tests used `lambda` for one-liner mock callables. The change upgrades to `def` (which is fine for multi-line bodies), but the resulting function is still short and the file mixes both styles. The `def` form is actually more readable here given the conditional, so this is purely a nit about the now-inconsistent style across nearby tests that still use `lambda`.",
+          "confidence": 0.45
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1335,
+            1335
+          ],
+          "severity": "nit",
+          "title": "Line exceeds typical line length visible in the surrounding file",
+          "detail": "`assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')` is quite long. The surrounding test file keeps lines reasonably short. Splitting the assertion into a separate `result = \u2026` / `assert result == \u2026` pair (as done on lines 1342 and 1346) would be consistent with the style used just a few lines later in the same function.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1394,
+            1396
+          ],
+          "severity": "nit",
+          "title": "Comment `# decode_unicode=True, output unicode strings` precedes the non-unicode block in the test",
+          "detail": "The comment order at lines 1394\u20131400 is `decode_unicode=True` first, then `decode_unicode=None`. In the `test_response_lines` function immediately above (lines 1331\u20131357) the order is consistently `decode_unicode=None` first, then `decode_unicode=True`. The reversal in `test_response_lines_parametrized` is a minor stylistic inconsistency within the same test class.",
+          "confidence": 0.75
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 6139,
+      "tokens_out": 1084,
+      "cost_usd": 0.034677,
+      "duration_s": 24.035971750039607,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "No test for chunk that is exactly '\\n' after a CR-ending chunk becoming empty after strip",
+          "detail": "The branch at line 818 (`if not chunk: continue`) handles the case where stripping the leading '\\n' leaves an empty chunk. The new parametrized test case `[b'a\\r', b'\\n', b'\\nb']` covers a multi-chunk sequence but does not isolate the scenario where the CR chunk is followed by a chunk that is *only* '\\n' (so the stripped chunk becomes empty AND there is no subsequent data). For example, chunks like `[b'a\\r', b'\\n']` (CR ends last chunk, next chunk is solely '\\n') where the stream ends immediately after are not directly tested. The `continue` path is reached in the sequence `[b'a\\r', b'\\n', b'\\nb']` only incidentally; there is no test asserting the output when the '\\n'-only chunk is the last chunk in the stream.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "No test covering iter_lines with decode_unicode=False and a custom non-CRLF delimiter",
+          "detail": "The new code computes `carriage_return` and `line_feed` based on `decode_unicode`. The parametrized tests only check `delimiter=b'\\r\\n'` for raw bytes. A non-CRLF byte delimiter (e.g. `b'|'`) with `decode_unicode=False` is not tested, which means the `carriage_return`/`line_feed` selection path for the non-splitlines branch is not fully exercised.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "minor",
+          "title": "No test for multiple consecutive CR+LF splits across more than two chunk boundaries",
+          "detail": "The fix tracks only `last_chunk_ends_with_cr`. A case where every chunk boundary has a split CRLF pair (e.g. `[b'a\\r', b'\\nb\\r', b'\\nc']`) is not present in the parametrized test matrix, leaving the cumulative correctness of `last_chunk_ends_with_cr` reset between iterations untested for longer sequences.",
+          "confidence": 0.65
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 34179,
+      "tokens_out": 644,
+      "cost_usd": 0.112197,
+      "duration_s": 15.062465958064422,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            818,
+            819
+          ],
+          "severity": "major",
+          "title": "No test for the `continue` path when the `\\n`-only chunk is the last chunk in the stream",
+          "detail": "The branch `if not chunk: continue` (line 818-819) is only exercised incidentally in the sequence `[b'a\\r', b'\\n', b'\\nb']`. There is no test asserting correct output when the `\\n`-only chunk is the final chunk in the stream, e.g. `[b'a\\r', b'\\n']`. Without this, the guard that prevents a trailing empty line when the stream ends after a lone `\\n` (completing a split CRLF) is untested in isolation.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "minor",
+          "title": "No test for multiple consecutive CR+LF splits across more than two chunk boundaries",
+          "detail": "The fix relies on `last_chunk_ends_with_cr` being correctly reset on every iteration. A sequence where every chunk boundary splits a CRLF pair \u2014 e.g. `[b'a\\r', b'\\nb\\r', b'\\nc']` \u2014 is absent from the parametrized test matrix. Adding such a case would give confidence that the flag is correctly threaded through longer streaming scenarios.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "No test for `iter_lines` with `decode_unicode=False` and a non-CRLF delimiter",
+          "detail": "The new code selects `carriage_return` and `line_feed` based on `decode_unicode`, but the parametrized tests only check `delimiter=b'\\r\\n'` for raw bytes. A non-CRLF byte delimiter (e.g. `b'|'`) with `decode_unicode=False` is not covered, leaving the `carriage_return`/`line_feed` selection path for the non-splitlines branch only partially exercised.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1394,
+            1396
+          ],
+          "severity": "nit",
+          "title": "Comment/block order for `decode_unicode=True` vs `None` is reversed relative to the sibling test function",
+          "detail": "In `test_response_lines` the `decode_unicode=None` block comes before `decode_unicode=True`. In `test_response_lines_parametrized` the order is reversed. Keeping the order consistent would make the two test functions easier to compare.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1335,
+            1335
+          ],
+          "severity": "nit",
+          "title": "Long assertion line should be split for consistency with surrounding style",
+          "detail": "The assertion `assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')` is notably longer than surrounding lines. A few lines later (lines 1342/1346) the same test function already splits result computation and assertion \u2014 applying the same pattern here would be consistent.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            817,
+            819
+          ],
+          "severity": "nit",
+          "title": "Inline comment on `if not chunk: continue` duplicates the block comment above",
+          "detail": "The block comment at lines 803\u2013808 already explains the CRLF-splitting scenario. The inline comment on the `if not chunk: continue` guard repeats what the code makes self-evident, which is inconsistent with the file's convention of avoiding redundant inline comments.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            814
+          ],
+          "severity": "nit",
+          "title": "Minor style: single-use variables and verbose constant names",
+          "detail": "Two small style observations: (1) `carriage_return` and `line_feed` are always set as a pair and a brief inline comment at the point of use could reduce their scope. (2) `skip_first_char` is assigned and checked on the immediately following line; inlining it as `if last_chunk_ends_with_cr and chunk.startswith(line_feed):` would match the file's general avoidance of single-use named temporaries. Both are very minor and do not affect correctness.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1322,
+            1325
+          ],
+          "severity": "nit",
+          "title": "Mixed use of `def` and `lambda` for mock callables in the same test file",
+          "detail": "`mock_iter_content` is now defined with `def` while nearby untouched tests use `lambda` for one-liner mocks. The `def` form is more readable for the conditional body here, so this is purely a consistency nit rather than a real issue.",
+          "confidence": 0.45
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 5482,
+      "tokens_out": 1670,
+      "cost_usd": 0.041496,
+      "duration_s": 30.547842249972746,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 58233,
+    "tokens_out": 6505,
+    "cost_usd": 0.272274,
+    "duration_s": 123.0
+  }
+}

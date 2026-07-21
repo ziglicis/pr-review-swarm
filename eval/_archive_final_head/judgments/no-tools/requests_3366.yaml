@@ -1,0 +1,95 @@
+case: requests_3366
+experiment: no-tools
+ground_truth_matches:
+- ground_truth: g1
+  issue: 'Header validation must handle both unicode and byte-string headers: matching a native-string
+    regex against an opaque bytestring misbehaves on Python 3, so separate byte and str regexes are
+    required.'
+  matched_finding: null
+  note: fixed during review — separate _CLEAN_HEADER_REGEX_BYTE/_STR exist at the reviewed head (discussion_r69270130)
+  matchable: false
+- ground_truth: g2
+  issue: The compiled regexes are created inside the function, losing the benefit of re.compile;
+    they should be hoisted to module scope with underscore-prefixed names.
+  matched_finding: null
+  note: fixed during review — regexes are module-level, compiled, underscore-prefixed (discussion_r69313226)
+  matchable: false
+- ground_truth: g3
+  issue: Using the validity check as a filter() predicate misrepresents what it does (nothing is
+    filtered); rename to check_header_validity and call it in the single loop that sets headers.
+  matched_finding: null
+  note: fixed during review — renamed check_header_validity and called in the single prepare_headers
+    loop (discussion_r69365861)
+  matchable: false
+- ground_truth: g4
+  issue: 'The byte-string regex is missing an escaped backslash: ''\S'' in a plain (non-raw) byte
+    string needs to be ''\\S'' to mean the regex class.'
+  matched_finding: null
+  note: fixed during review — the byte regex has the escaped backslash b'^\\S...' at the reviewed
+    head (discussion_r69381140)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Byte-branch of `check_header_validity` is not tested for invalid inputs
+  valid: true
+  note: 'factual: no negative bytes test'
+- finding: 1
+  title: Header name is never validated — CR/LF injection via header name is possible
+  valid: true
+  note: 'factual: only the value is validated; modern requests validates both name and value (HEADER_VALIDATORS)'
+- finding: 2
+  title: Regex `$` anchor allows values ending with `\n` to bypass validation
+  valid: true
+  note: 'verified: ''foo\n'' matches both regexes because $ matches before a single trailing newline
+    — a real validation bypass'
+- finding: 3
+  title: Non-string/non-bytes header values crash with `TypeError` instead of `InvalidHeader`
+  valid: true
+  note: verified TypeError; this shipped as the real requests 2.11 integer-header regression (#3477),
+    hotfixed in 2.11.1
+- finding: 4
+  title: Test labeled 'tab' uses spaces, not a tab character — tab case is untested
+  valid: true
+  note: 'confirmed: spaces not tab'
+- finding: 5
+  title: Headers added after `prepare_headers` are never validated
+  valid: uncertain
+  note: real residual paths, but arguably outside the PR's declared scope (user headers dict) and
+    those values are mostly library-generated
+- finding: 6
+  title: Partial `self.headers` state left on `InvalidHeader` exception mid-iteration
+  valid: uncertain
+  note: factual partial-state observation; reusing a PreparedRequest after a failed prepare is contrived
+- finding: 7
+  title: No regression test for `prepare_headers(None)` / `prepare_headers({})` after refactor
+  valid: uncertain
+  note: implicitly exercised by nearly every existing test; no dedicated assertion though
+- finding: 8
+  title: Missing space after comma in test method signature
+  valid: true
+  note: confirmed in diff
+- finding: 9
+  title: Trailing whitespace on import line
+  valid: true
+  note: confirmed in diff
+- finding: 10
+  title: Only one blank line between `check_header_validity` and `urldefragauth`
+  valid: true
+  note: 'confirmed: single blank line'
+- finding: 11
+  title: Unused `r =` assignment inside `pytest.raises` blocks
+  valid: true
+  note: factual dead assignments
+- finding: 12
+  title: Byte regex uses double-escaped string instead of raw byte string
+  valid: false
+  note: rb'' literals are a SyntaxError on Python 2, which requests still supported — the double-escaped
+    bytes literal was the compatible choice (br'' would have worked, but that is not what was suggested)
+- finding: 13
+  title: Missing blank line before new module-level regex constants
+  valid: true
+  note: 'confirmed: single blank line; duplicate of finding 10''s sibling location left unmerged'
+- finding: 14
+  title: Unnecessary intermediate `header` variable in loop
+  valid: uncertain
+  note: the tuple is passed whole to the checker; intermediate variable arguably deliberate

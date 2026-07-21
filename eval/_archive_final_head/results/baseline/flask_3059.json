@@ -1,0 +1,185 @@
+{
+  "case": "flask_3059",
+  "experiment": "baseline",
+  "pr_url": "https://github.com/pallets/flask/pull/3059",
+  "head_sha": "25de45cbb6fc7304f67b685034151f9ac6ea0df5",
+  "sha_matches_dataset": true,
+  "timestamp": 1784180367,
+  "summary": "",
+  "findings": [
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 987,
+      "line_end": 987,
+      "severity": "major",
+      "title": "`get_send_file_max_age` receives a raw PathLike object when called from `send_static_file`",
+      "detail": "`send_static_file` at line 987 calls `self.get_send_file_max_age(filename)` before passing `filename` to `send_from_directory`. At this point, `filename` may still be a PathLike object (e.g. `FakePath('index.html')`), because the fspath conversion only happens inside `send_from_directory`. The default `get_send_file_max_age` implementation just returns a constant, but subclasses that do string operations on the filename (e.g. checking the file extension with `name.lower().endswith('.js')`) will break. The `fspath()` conversion should happen at the entry point of `send_static_file`, before the call to `get_send_file_max_age`. The test at line 707 (`app.send_static_file(FakePath('index.html'))`) does not exercise a custom `get_send_file_max_age`, so this is untested.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 545,
+      "line_end": 546,
+      "severity": "major",
+      "title": "`hasattr(\u2026, '__fspath__')` used instead of calling `fspath()` unconditionally, causing inconsistency with `send_from_directory`",
+      "detail": "In `send_file`, the PathLike conversion is guarded by `hasattr(filename_or_fp, '__fspath__')`, but in `send_from_directory` (lines 715-716) the conversion is done with an unconditional `fspath()` call (which handles the case where there is no `__fspath__` by returning the object unchanged). This inconsistency means the two code paths have different semantics. More critically, `os.fspath()` is the canonical way to convert PathLike objects; checking `__fspath__` manually and then calling `fspath()` anyway is redundant \u2014 just call `fspath()` directly. This is also a correctness issue: if someone passes a `bytes`-returning PathLike, the `hasattr` guard will match but `fspath()` will return `bytes` (on Python 3.6+), which will then fail the `isinstance(filename_or_fp, string_types)` check and fall into the file-object branch, silently treating the path as a file object.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/_compat.py",
+      "line_start": 107,
+      "line_end": 108,
+      "severity": "major",
+      "title": "Fallback `fspath()` does not validate the return type like `os.fspath()` does",
+      "detail": "The real `os.fspath()` (Python 3.6+) raises `TypeError` if an object's `__fspath__` does not return a `str` or `bytes`. The fallback implementation in the `except ImportError` block simply returns whatever `path.__fspath__()` returns, with no type check. If a user provides a PathLike whose `__fspath__` returns a non-string (e.g. an int or another custom object), the fallback will silently pass the bad value along to `send_file`, which will then fail with a confusing error later rather than a clear `TypeError` at the `fspath` call-site. Additionally, if `path` is a plain `str` or `bytes` (i.e. already a path), `os.fspath()` returns it as-is, but the fallback also does this correctly via the `else` branch. This is still a behavioural difference from the stdlib implementation that should be documented or fixed.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 715,
+      "line_end": 716,
+      "severity": "minor",
+      "title": "Missing `fspath` call for `send_from_directory` in docstring changelog",
+      "detail": "The docstring for `send_from_directory` (lines 688-713) does not include a `.. versionchanged:: 1.1` note for PathLike support, even though `send_file` has one. Users reading the `send_from_directory` docs will not know PathLike objects are now accepted.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "flask/helpers.py",
+      "line_start": 545,
+      "line_end": 546,
+      "severity": "minor",
+      "title": "Redundant double-lookup: `hasattr(\u2026, '__fspath__')` then `fspath()`",
+      "detail": "The check `hasattr(filename_or_fp, '__fspath__')` followed immediately by `fspath(filename_or_fp)` is redundant. `fspath()` already handles objects without `__fspath__` (the fallback returns them unchanged). A single unconditional call to `fspath()` is cleaner and keeps the logic consistent with the `send_from_directory` implementation.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_helpers.py",
+      "line_start": 543,
+      "line_end": 550,
+      "severity": "minor",
+      "title": "Test for `send_file` with PathLike does not cover the `as_attachment` path or `bytes`-returning PathLike",
+      "detail": "`test_send_file_pathlike` only tests the happy path (reading a file, checking MIME type and data). There is no test covering: (1) a PathLike whose `__fspath__` returns `bytes` (important because `os.fspath` on Python 3.6 accepts both `str` and `bytes` returns), (2) a PathLike passed alongside `as_attachment` to confirm `attachment_filename` is set correctly, (3) a PathLike passed to `send_file` as an absolute path.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "baseline",
+      "file": "CHANGES.rst",
+      "line_start": 18,
+      "line_end": 19,
+      "severity": "nit",
+      "title": "Changelog entry contains a typo: 'as describe' should be 'as described'",
+      "detail": "Line 18 reads '`send_file` supports `PathLike` objects as describe in PEP 0519'. The correct phrasing is 'as described in'.",
+      "confidence": 1.0
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "baseline",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            987,
+            987
+          ],
+          "severity": "major",
+          "title": "`get_send_file_max_age` receives a raw PathLike object when called from `send_static_file`",
+          "detail": "`send_static_file` at line 987 calls `self.get_send_file_max_age(filename)` before passing `filename` to `send_from_directory`. At this point, `filename` may still be a PathLike object (e.g. `FakePath('index.html')`), because the fspath conversion only happens inside `send_from_directory`. The default `get_send_file_max_age` implementation just returns a constant, but subclasses that do string operations on the filename (e.g. checking the file extension with `name.lower().endswith('.js')`) will break. The `fspath()` conversion should happen at the entry point of `send_static_file`, before the call to `get_send_file_max_age`. The test at line 707 (`app.send_static_file(FakePath('index.html'))`) does not exercise a custom `get_send_file_max_age`, so this is untested.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            545,
+            546
+          ],
+          "severity": "major",
+          "title": "`hasattr(\u2026, '__fspath__')` used instead of calling `fspath()` unconditionally, causing inconsistency with `send_from_directory`",
+          "detail": "In `send_file`, the PathLike conversion is guarded by `hasattr(filename_or_fp, '__fspath__')`, but in `send_from_directory` (lines 715-716) the conversion is done with an unconditional `fspath()` call (which handles the case where there is no `__fspath__` by returning the object unchanged). This inconsistency means the two code paths have different semantics. More critically, `os.fspath()` is the canonical way to convert PathLike objects; checking `__fspath__` manually and then calling `fspath()` anyway is redundant \u2014 just call `fspath()` directly. This is also a correctness issue: if someone passes a `bytes`-returning PathLike, the `hasattr` guard will match but `fspath()` will return `bytes` (on Python 3.6+), which will then fail the `isinstance(filename_or_fp, string_types)` check and fall into the file-object branch, silently treating the path as a file object.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/_compat.py",
+          "line_range": [
+            107,
+            108
+          ],
+          "severity": "major",
+          "title": "Fallback `fspath()` does not validate the return type like `os.fspath()` does",
+          "detail": "The real `os.fspath()` (Python 3.6+) raises `TypeError` if an object's `__fspath__` does not return a `str` or `bytes`. The fallback implementation in the `except ImportError` block simply returns whatever `path.__fspath__()` returns, with no type check. If a user provides a PathLike whose `__fspath__` returns a non-string (e.g. an int or another custom object), the fallback will silently pass the bad value along to `send_file`, which will then fail with a confusing error later rather than a clear `TypeError` at the `fspath` call-site. Additionally, if `path` is a plain `str` or `bytes` (i.e. already a path), `os.fspath()` returns it as-is, but the fallback also does this correctly via the `else` branch. This is still a behavioural difference from the stdlib implementation that should be documented or fixed.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            715,
+            716
+          ],
+          "severity": "minor",
+          "title": "Missing `fspath` call for `send_from_directory` in docstring changelog",
+          "detail": "The docstring for `send_from_directory` (lines 688-713) does not include a `.. versionchanged:: 1.1` note for PathLike support, even though `send_file` has one. Users reading the `send_from_directory` docs will not know PathLike objects are now accepted.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "flask/helpers.py",
+          "line_range": [
+            545,
+            546
+          ],
+          "severity": "minor",
+          "title": "Redundant double-lookup: `hasattr(\u2026, '__fspath__')` then `fspath()`",
+          "detail": "The check `hasattr(filename_or_fp, '__fspath__')` followed immediately by `fspath(filename_or_fp)` is redundant. `fspath()` already handles objects without `__fspath__` (the fallback returns them unchanged). A single unconditional call to `fspath()` is cleaner and keeps the logic consistent with the `send_from_directory` implementation.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            543,
+            550
+          ],
+          "severity": "minor",
+          "title": "Test for `send_file` with PathLike does not cover the `as_attachment` path or `bytes`-returning PathLike",
+          "detail": "`test_send_file_pathlike` only tests the happy path (reading a file, checking MIME type and data). There is no test covering: (1) a PathLike whose `__fspath__` returns `bytes` (important because `os.fspath` on Python 3.6 accepts both `str` and `bytes` returns), (2) a PathLike passed alongside `as_attachment` to confirm `attachment_filename` is set correctly, (3) a PathLike passed to `send_file` as an absolute path.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "baseline",
+          "file": "CHANGES.rst",
+          "line_range": [
+            18,
+            19
+          ],
+          "severity": "nit",
+          "title": "Changelog entry contains a typo: 'as describe' should be 'as described'",
+          "detail": "Line 18 reads '`send_file` supports `PathLike` objects as describe in PEP 0519'. The correct phrasing is 'as described in'.",
+          "confidence": 1.0
+        }
+      ],
+      "tool_calls": 4,
+      "tokens_in": 73729,
+      "tokens_out": 1894,
+      "cost_usd": 0.249597,
+      "duration_s": 40.62128133303486,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 73729,
+    "tokens_out": 1894,
+    "cost_usd": 0.249597,
+    "duration_s": 40.6
+  }
+}

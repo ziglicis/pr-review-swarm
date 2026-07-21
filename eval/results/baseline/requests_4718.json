@@ -2,50 +2,60 @@
   "case": "requests_4718",
   "experiment": "baseline",
   "pr_url": "https://github.com/psf/requests/pull/4718",
-  "head_sha": "857e9b7ac20c3accf4cc328f594aecb8b6a644a6",
+  "head_sha": "3fbdd888a6406108edcf0633637dac8cbff757bc",
   "sha_matches_dataset": true,
-  "timestamp": 1784180955,
+  "timestamp": 1784589925,
   "summary": "",
   "findings": [
     {
       "agent": "baseline",
       "file": "requests/sessions.py",
-      "line_start": 132,
-      "line_end": 132,
+      "line_start": 245,
+      "line_end": 247,
       "severity": "major",
-      "title": "Explicit default port vs implicit port comparison incorrectly strips auth on same-origin redirect",
-      "detail": "Consider a redirect from `http://example.com:80/a` to `http://example.com/b`. Both are semantically the same origin. `urlparse('http://example.com:80/a').port` returns `80`, while `urlparse('http://example.com/b').port` returns `None`. The final condition on line 132 is `old_parsed.port != new_parsed.port` \u2192 `80 != None` \u2192 `True`, which causes auth to be stripped for a same-origin redirect. Similarly, `https://example.com:443/a` \u2192 `https://example.com/b` would also incorrectly strip. The http\u2192https special case (lines 128-130) is safe because it checks both `(80, None)` and `(443, None)`, but the generic path on line 132 does not normalise default ports. A fix would be to normalise explicit default ports to `None` (or use a helper that maps scheme to default port) before comparing.",
+      "title": "http\u2192https upgrade redirect no longer sends Authorization header",
+      "detail": "RFC 7235 \u00a72.2 only mandates stripping the Authorization header when the origin (scheme+host+port) changes AND the new origin is not considered 'more trusted'. Upgrading from http to https on the same host (a very common redirect pattern, e.g. HSTS pre-loading) is generally considered a safe upgrade, but this change will now strip the Authorization header in that case. The PR strips auth for *any* scheme change, including http\u2192https on the same host and port. This is overly conservative and will silently break authentication for the common http-to-https redirect pattern. At minimum this deserves a comment and/or a more targeted fix (strip only on https\u2192http downgrades, not on upgrades).",
       "confidence": 0.9
     },
     {
       "agent": "baseline",
       "file": "requests/sessions.py",
-      "line_start": 128,
-      "line_end": 132,
+      "line_start": 245,
+      "line_end": 247,
       "severity": "major",
-      "title": "Explicit port equivalents (e.g., http:80 and https:443) not normalised before comparison",
-      "detail": "On line 132, `old_parsed.port != new_parsed.port` compares raw port values. If the original URL is `http://example.com:80/foo` and the redirect is `https://example.com:443/bar`, the special-case on lines 128-130 checks `old_parsed.port in (80, None)` (True) AND `new_parsed.port in (443, None)` (True), so it correctly returns False. That specific combination is handled. But if the original URL is `http://example.com/foo` (port=None, default 80) and the redirect is `https://example.com:443/bar` (port=443), the special-case checks `old_parsed.port in (80, None)` (None \u2192 True) and `new_parsed.port in (443, None)` (443 \u2192 True), so it correctly returns False. This is also covered by the test on line 1605. So the logic is correct for http\u2192https. However the symmetry concern exists for line 132's port comparison: `http://example.com:80` vs `http://example.com` would have ports `80` and `None` respectively, and 80 != None is True, so auth would be stripped even for the same effective origin! This is a real bug \u2014 redirecting from `http://example.com:80/a` to `http://example.com/b` (same host, same effective port) would incorrectly strip auth.",
+      "title": "scheme comparison is case-sensitive and may miss http\u2192HTTP redirects",
+      "detail": "urlparse().scheme is already lowercased by Python's urllib.parse, so in practice this is safe. However, the comment in the code says \"canonical root URL\" but the comparison doesn't normalise the scheme. In practice Python's urlparse does lowercase the scheme, so this specific concern is low risk, but the port comparison is a more real edge case: when a URL omits a default port (e.g. https://host vs https://host:443), urlparse().port returns None for the first and 443 for the second. These two URLs are semantically identical but this comparison would incorrectly strip the Authorization header because None != 443. Similarly for http://host vs http://host:80. This is a behavioural regression for anyone who redirects between scheme://host and scheme://host:default_port.",
       "confidence": 0.85
     },
     {
       "agent": "baseline",
       "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
+      "line_start": 1580,
+      "line_end": 1588,
       "severity": "minor",
-      "title": "Missing unit test for same-origin redirect (no stripping)",
-      "detail": "`test_should_strip_auth_*` tests cover host change, http downgrade, https upgrade, and port change. There is no test asserting that `should_strip_auth('http://example.com/a', 'http://example.com/b')` returns False (plain same-origin redirect). This is the hot path and should be explicitly tested.",
-      "confidence": 0.9
+      "title": "No test for port-change-only redirect",
+      "detail": "The PR adds a port comparison to the condition in `rebuild_auth`, but there is no corresponding test that verifies auth is stripped when a redirect changes only the port number (e.g. http://host:8080 \u2192 http://host:9090). This leaves a new code path untested.",
+      "confidence": 0.85
     },
     {
       "agent": "baseline",
-      "file": "requests/sessions.py",
-      "line_start": 118,
-      "line_end": 132,
+      "file": "tests/test_requests.py",
+      "line_start": 1580,
+      "line_end": 1588,
       "severity": "minor",
-      "title": "Missing test for same-scheme, same-host, same-port redirect (should NOT strip auth)",
-      "detail": "There is no unit test asserting that `should_strip_auth('http://example.com/foo', 'http://example.com/bar')` returns False (the common case of a same-origin redirect). While the code is correct for this case (hostname matches \u2192 False is NOT returned early, scheme unchanged \u2192 False, port unchanged \u2192 False, final result False), a test for this baseline would improve confidence in the function.",
-      "confidence": 0.85
+      "title": "New test only covers https\u2192http downgrade, not http\u2192https upgrade",
+      "detail": "The test `test_auth_is_stripped_on_scheme_redirect` redirects from `httpbin_secure` (https) to `httpbin` (http), which is the security-relevant direction. There is no test for the reverse (http\u2192https on the same host) to confirm whether auth is intentionally stripped or retained in that case. Since the implementation strips auth in both directions, at minimum a test (or xfail) for the http\u2192https case should exist to document the design decision.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1580,
+      "line_end": 1588,
+      "severity": "minor",
+      "title": "No unit test for default-port vs explicit-port edge case",
+      "detail": "Given the port comparison uses `urlparse().port` (which returns `None` for omitted ports), a redirect from `https://host/path` to `https://host:443/path` would result in `None != 443` being `True`, causing the Authorization header to be stripped even though the effective origin is the same. There is no test covering this edge case.",
+      "confidence": 0.8
     }
   ],
   "agent_runs": [
@@ -57,63 +67,75 @@
           "agent": "baseline",
           "file": "requests/sessions.py",
           "line_range": [
-            132,
-            132
+            245,
+            247
           ],
           "severity": "major",
-          "title": "Explicit default port vs implicit port comparison incorrectly strips auth on same-origin redirect",
-          "detail": "Consider a redirect from `http://example.com:80/a` to `http://example.com/b`. Both are semantically the same origin. `urlparse('http://example.com:80/a').port` returns `80`, while `urlparse('http://example.com/b').port` returns `None`. The final condition on line 132 is `old_parsed.port != new_parsed.port` \u2192 `80 != None` \u2192 `True`, which causes auth to be stripped for a same-origin redirect. Similarly, `https://example.com:443/a` \u2192 `https://example.com/b` would also incorrectly strip. The http\u2192https special case (lines 128-130) is safe because it checks both `(80, None)` and `(443, None)`, but the generic path on line 132 does not normalise default ports. A fix would be to normalise explicit default ports to `None` (or use a helper that maps scheme to default port) before comparing.",
+          "title": "http\u2192https upgrade redirect no longer sends Authorization header",
+          "detail": "RFC 7235 \u00a72.2 only mandates stripping the Authorization header when the origin (scheme+host+port) changes AND the new origin is not considered 'more trusted'. Upgrading from http to https on the same host (a very common redirect pattern, e.g. HSTS pre-loading) is generally considered a safe upgrade, but this change will now strip the Authorization header in that case. The PR strips auth for *any* scheme change, including http\u2192https on the same host and port. This is overly conservative and will silently break authentication for the common http-to-https redirect pattern. At minimum this deserves a comment and/or a more targeted fix (strip only on https\u2192http downgrades, not on upgrades).",
           "confidence": 0.9
         },
         {
           "agent": "baseline",
           "file": "requests/sessions.py",
           "line_range": [
-            128,
-            132
+            245,
+            247
           ],
           "severity": "major",
-          "title": "Explicit port equivalents (e.g., http:80 and https:443) not normalised before comparison",
-          "detail": "On line 132, `old_parsed.port != new_parsed.port` compares raw port values. If the original URL is `http://example.com:80/foo` and the redirect is `https://example.com:443/bar`, the special-case on lines 128-130 checks `old_parsed.port in (80, None)` (True) AND `new_parsed.port in (443, None)` (True), so it correctly returns False. That specific combination is handled. But if the original URL is `http://example.com/foo` (port=None, default 80) and the redirect is `https://example.com:443/bar` (port=443), the special-case checks `old_parsed.port in (80, None)` (None \u2192 True) and `new_parsed.port in (443, None)` (443 \u2192 True), so it correctly returns False. This is also covered by the test on line 1605. So the logic is correct for http\u2192https. However the symmetry concern exists for line 132's port comparison: `http://example.com:80` vs `http://example.com` would have ports `80` and `None` respectively, and 80 != None is True, so auth would be stripped even for the same effective origin! This is a real bug \u2014 redirecting from `http://example.com:80/a` to `http://example.com/b` (same host, same effective port) would incorrectly strip auth.",
+          "title": "scheme comparison is case-sensitive and may miss http\u2192HTTP redirects",
+          "detail": "urlparse().scheme is already lowercased by Python's urllib.parse, so in practice this is safe. However, the comment in the code says \"canonical root URL\" but the comparison doesn't normalise the scheme. In practice Python's urlparse does lowercase the scheme, so this specific concern is low risk, but the port comparison is a more real edge case: when a URL omits a default port (e.g. https://host vs https://host:443), urlparse().port returns None for the first and 443 for the second. These two URLs are semantically identical but this comparison would incorrectly strip the Authorization header because None != 443. Similarly for http://host vs http://host:80. This is a behavioural regression for anyone who redirects between scheme://host and scheme://host:default_port.",
           "confidence": 0.85
         },
         {
           "agent": "baseline",
           "file": "tests/test_requests.py",
           "line_range": [
-            1593,
-            1612
+            1580,
+            1588
           ],
           "severity": "minor",
-          "title": "Missing unit test for same-origin redirect (no stripping)",
-          "detail": "`test_should_strip_auth_*` tests cover host change, http downgrade, https upgrade, and port change. There is no test asserting that `should_strip_auth('http://example.com/a', 'http://example.com/b')` returns False (plain same-origin redirect). This is the hot path and should be explicitly tested.",
-          "confidence": 0.9
+          "title": "No test for port-change-only redirect",
+          "detail": "The PR adds a port comparison to the condition in `rebuild_auth`, but there is no corresponding test that verifies auth is stripped when a redirect changes only the port number (e.g. http://host:8080 \u2192 http://host:9090). This leaves a new code path untested.",
+          "confidence": 0.85
         },
         {
           "agent": "baseline",
-          "file": "requests/sessions.py",
+          "file": "tests/test_requests.py",
           "line_range": [
-            118,
-            132
+            1580,
+            1588
           ],
           "severity": "minor",
-          "title": "Missing test for same-scheme, same-host, same-port redirect (should NOT strip auth)",
-          "detail": "There is no unit test asserting that `should_strip_auth('http://example.com/foo', 'http://example.com/bar')` returns False (the common case of a same-origin redirect). While the code is correct for this case (hostname matches \u2192 False is NOT returned early, scheme unchanged \u2192 False, port unchanged \u2192 False, final result False), a test for this baseline would improve confidence in the function.",
-          "confidence": 0.85
+          "title": "New test only covers https\u2192http downgrade, not http\u2192https upgrade",
+          "detail": "The test `test_auth_is_stripped_on_scheme_redirect` redirects from `httpbin_secure` (https) to `httpbin` (http), which is the security-relevant direction. There is no test for the reverse (http\u2192https on the same host) to confirm whether auth is intentionally stripped or retained in that case. Since the implementation strips auth in both directions, at minimum a test (or xfail) for the http\u2192https case should exist to document the design decision.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1580,
+            1588
+          ],
+          "severity": "minor",
+          "title": "No unit test for default-port vs explicit-port edge case",
+          "detail": "Given the port comparison uses `urlparse().port` (which returns `None` for omitted ports), a redirect from `https://host/path` to `https://host:443/path` would result in `None != 443` being `True`, causing the Authorization header to be stripped even though the effective origin is the same. There is no test covering this edge case.",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 4,
-      "tokens_in": 63940,
-      "tokens_out": 2059,
-      "cost_usd": 0.222705,
-      "duration_s": 39.522527958033606,
+      "tokens_in": 72967,
+      "tokens_out": 1179,
+      "cost_usd": 0.236586,
+      "duration_s": 25.488946167053655,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 63940,
-    "tokens_out": 2059,
-    "cost_usd": 0.222705,
-    "duration_s": 39.5
+    "tokens_in": 72967,
+    "tokens_out": 1179,
+    "cost_usd": 0.236586,
+    "duration_s": 25.5
   }
 }

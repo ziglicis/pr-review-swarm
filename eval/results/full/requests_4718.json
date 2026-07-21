@@ -2,130 +2,70 @@
   "case": "requests_4718",
   "experiment": "full",
   "pr_url": "https://github.com/psf/requests/pull/4718",
-  "head_sha": "857e9b7ac20c3accf4cc328f594aecb8b6a644a6",
+  "head_sha": "3fbdd888a6406108edcf0633637dac8cbff757bc",
   "sha_matches_dataset": true,
-  "timestamp": 1784217997,
-  "summary": "This PR introduces a `should_strip_auth` helper in `sessions.py` to decide whether the `Authorization` header should be removed when following redirects, replacing inline logic in `rebuild_auth`. The logic correctly handles hostname changes, scheme changes, and the http\u2192https upgrade exemption. The main outstanding issues are a port normalization bug that conflates explicit default ports with implicit ones, several test coverage gaps (especially around pure port-change redirects and the explicit-standard-port combination), and a handful of minor style nits. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "timestamp": 1784590473,
+  "summary": "This PR extends `rebuild_auth` to strip the Authorization header when the scheme or port changes on a redirect, in addition to the existing hostname check. The logic is conceptually correct but has a notable bug with implicit vs. explicit default ports that could cause spurious header stripping, and the new port-change branch lacks test coverage. A few style and secondary test-coverage issues are also present.",
   "findings": [
+    {
+      "agent": "test_coverage",
+      "file": "requests/sessions.py",
+      "line_start": 246,
+      "line_end": 247,
+      "severity": "major",
+      "title": "Port-change redirect stripping has no test coverage",
+      "detail": "The new `or original_parsed.port != redirect_parsed.port` branch has no corresponding test. The PR adds a test for scheme changes and retains the hostname-change test, but there is no test that redirects to the same scheme and host on a different port and verifies the Authorization header is stripped (positive case), nor one that confirms the header is retained when the port is unchanged (negative case). This leaves a significant portion of the new logic unverified.",
+      "confidence": 0.95
+    },
     {
       "agent": "correctness, security",
       "file": "requests/sessions.py",
-      "line_start": 132,
-      "line_end": 132,
+      "line_start": 245,
+      "line_end": 247,
       "severity": "major",
-      "title": "Port comparison treats explicit default port as different from implicit default port",
-      "detail": "The final `return` on line 132 compares `old_parsed.port != new_parsed.port` using raw `urlparse` values, where `.port` is `None` when no port is specified. This means a redirect from `http://example.com:80/foo` to `http://example.com/bar` returns `True` (strip auth), even though port 80 is HTTP's default and the two URLs refer to the same server. Similarly, `https://example.com:443/foo` \u2192 `https://example.com/bar` would incorrectly strip auth.\n\nNote: the https\u2192http downgrade cases (f5) were analyzed and found to be correctly handled \u2014 the scheme check on the same line catches all relevant cases. The pure same-scheme explicit-vs-implicit default-port mismatch (e.g. `http://example.com:80` \u2192 `http://example.com`) is the concrete remaining bug.\n\nFix: normalize ports before comparison by resolving `None` to the scheme's default (80 for http, 443 for https), or compare after normalizing the netloc.",
-      "confidence": 0.88
-    },
-    {
-      "agent": "style, test_coverage",
-      "file": "tests/test_requests.py",
-      "line_start": 1610,
-      "line_end": 1612,
-      "severity": "major",
-      "title": "test_should_strip_auth_port_change changes scheme AND port \u2014 no pure port-change test exists",
-      "detail": "The test `test_should_strip_auth_port_change` uses `http://example.com:1234/foo` \u2192 `https://example.com:4321/bar`, which changes both scheme and port simultaneously. This makes the test name misleading and leaves the `old_parsed.port != new_parsed.port` branch on line 132 untested in isolation (same-scheme, different-port, e.g. `http://example.com:1234` \u2192 `http://example.com:5678`). Either rename the test to reflect that it covers a combined scheme+port change, and add a new test for the pure port-change case (same scheme, different port), so the relevant branch of line 132 is exercised independently.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "test_coverage",
-      "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
-      "severity": "major",
-      "title": "No integration test for auth stripping on http\u2192https redirect with non-standard ports",
-      "detail": "Unit tests for `should_strip_auth` cover non-standard-port cases, but there is no integration/end-to-end test that performs an actual http\u2192https redirect with a non-standard port and verifies the `Authorization` header is physically absent in the forwarded request via `rebuild_auth`. Unit coverage of the helper alone does not guarantee the wiring in `rebuild_auth` works correctly for this path.",
-      "confidence": 0.65
-    },
-    {
-      "agent": "test_coverage",
-      "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
-      "severity": "major",
-      "title": "No test for http\u2192https upgrade with both explicit standard ports (http:80 \u2192 https:443)",
-      "detail": "The special-case branch at lines 128-130 permits auth forwarding for http (port 80 or None) \u2192 https (port 443 or None). Existing tests check one explicit port at a time, but never the combination `http://example.com:80/foo` \u2192 `https://example.com:443/bar` where both sides use explicit standard ports. This combination path through the branch is not exercised.",
-      "confidence": 0.6
+      "title": "Port comparison gives false positives for implicit default ports",
+      "detail": "Python's `urlparse` returns `None` for `.port` when no port is explicitly specified in the URL (e.g. `https://example.com` \u2192 `port=None`), but returns the integer `443` when stated explicitly (e.g. `https://example.com:443` \u2192 `port=443`). Because `None != 443` evaluates to `True`, a redirect from `https://host/` to `https://host:443/` (or `http://host/` to `http://host:80/`) will incorrectly trigger the port-change branch and strip the Authorization header even though the canonical authority is identical. No credentials are leaked, but users whose servers redirect to a canonically explicit-port form will silently lose authentication on every redirect. The fix is to normalise the port before comparing by substituting the scheme's default port when `.port` is `None`, e.g.: `DEFAULT_PORTS = {'https': 443, 'http': 80}` and then comparing `(DEFAULT_PORTS.get(scheme) if parsed.port is None else parsed.port)` for both sides.",
+      "confidence": 0.92
     },
     {
       "agent": "security",
       "file": "requests/sessions.py",
-      "line_start": 118,
-      "line_end": 132,
+      "line_start": 250,
+      "line_end": 253,
       "severity": "minor",
-      "title": "No guard against relative or malformed URLs reaching should_strip_auth",
-      "detail": "If `old_url` or `new_url` is a relative or opaque URI, `urlparse().hostname` returns `None` for both. The hostname check on line 122 then passes (no strip triggered), and the subsequent scheme/port checks may also fail to trigger, potentially forwarding auth to an unintended destination. While `resolve_redirects` is expected to always provide fully-qualified absolute URLs, there is no assertion or guard inside `should_strip_auth` itself to enforce this precondition. Consider adding a guard (e.g. early return `True` if either hostname is `None`) or at minimum a docstring note about the precondition.",
-      "confidence": 0.55
-    },
-    {
-      "agent": "test_coverage",
-      "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
-      "severity": "minor",
-      "title": "No test for rebuild_auth short-circuit when Authorization header is absent",
-      "detail": "`rebuild_auth` only calls `should_strip_auth` when an `Authorization` header is present. There is no test verifying that `rebuild_auth` does not error and does not call `should_strip_auth` when no `Authorization` header exists and a redirect crosses scheme/host, exercising the short-circuit path.",
-      "confidence": 0.5
-    },
-    {
-      "agent": "test_coverage",
-      "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
-      "severity": "minor",
-      "title": "No test for should_strip_auth when one hostname is None (malformed URL edge case)",
-      "detail": "There is no test where one URL has a missing or `None` hostname (e.g. a relative URL or malformed URL), so the behavior of `should_strip_auth` in this edge case is untested. This is related to the guard concern in f1.",
-      "confidence": 0.4
-    },
-    {
-      "agent": "style",
-      "file": "requests/sessions.py",
-      "line_start": 119,
-      "line_end": 119,
-      "severity": "nit",
-      "title": "Docstring missing trailing period",
-      "detail": "The docstring `\"\"\"Decide whether Authorization header should be removed when redirecting\"\"\"` has no trailing period, inconsistent with other method docstrings in the file (e.g. `\"\"\"Receives a Response. Returns a generator of Responses or Requests.\"\"\"`). Add a period for consistency.",
+      "title": "netrc lookup may re-introduce credentials after scheme-downgrade strip",
+      "detail": "After correctly stripping the Authorization header on a scheme downgrade (e.g. https \u2192 http), `rebuild_auth` unconditionally queries `.netrc` for the new (potentially http) URL and re-applies any matching credentials. If the user's `.netrc` contains an entry for the http host, credentials will be re-sent in plaintext over the downgraded connection, defeating the purpose of the strip. This is a pre-existing design issue not introduced by this PR, but the PR's expanded stripping logic makes it more likely to be encountered. Consider skipping the netrc lookup when the scheme has been explicitly downgraded (https \u2192 http).",
       "confidence": 0.75
     },
     {
+      "agent": "test_coverage",
+      "file": "tests/test_requests.py",
+      "line_start": 1580,
+      "line_end": 1588,
+      "severity": "minor",
+      "title": "Scheme-redirect test is integration-only and covers only one direction",
+      "detail": "The sole coverage for the scheme-change branch is the new integration test `test_auth_is_stripped_on_scheme_redirect`, which requires live `httpbin_secure` and `httpbin` fixtures plus an SSL CA bundle, making it fragile in environments without SSL fixtures. There is no isolated/unit-level test (e.g. using `RedirectSession` or direct `rebuild_auth` calls) that exercises the scheme comparison independently. Additionally, only the https\u2192http downgrade direction is tested; the symmetric http\u2192https case is absent. While the condition is symmetric in the code, an explicit test for the reverse direction would confirm correctness and guard against future asymmetric changes.",
+      "confidence": 0.72
+    },
+    {
       "agent": "style",
       "file": "tests/test_requests.py",
-      "line_start": 1593,
-      "line_end": 1612,
+      "line_start": 1580,
+      "line_end": 1588,
       "severity": "nit",
-      "title": "Tests instantiate full Session rather than SessionRedirectMixin",
-      "detail": "The new `should_strip_auth` unit tests create a full `requests.Session()` to test a single mixin method. Since `SessionRedirectMixin` is already imported (line 29), using it directly would be lighter and more consistent with the intent of testing the mixin's behavior in isolation.",
-      "confidence": 0.6
-    },
-    {
-      "agent": "security",
-      "file": "requests/sessions.py",
-      "line_start": 128,
-      "line_end": 130,
-      "severity": "nit",
-      "title": "http\u2192https exemption logic is correct but asymmetry is worth documenting",
-      "detail": "The special-case block at lines 128-130 exempts auth stripping only for http\u2192https upgrades on standard ports, not for https\u2192http downgrades (which always strip via the scheme check on line 132). This asymmetry is intentional and correct from a security standpoint. A brief comment explaining the asymmetry would help future maintainers avoid accidentally 'fixing' it.",
-      "confidence": 0.55
+      "title": "Missing trailing comma after last keyword argument in new test",
+      "detail": "Every other multi-line `requests.get(...)` call in the test file ends each keyword argument line with a trailing comma, including the last argument before the closing parenthesis. The new `test_auth_is_stripped_on_scheme_redirect` test omits the trailing comma after `verify=httpbin_ca_bundle` (line ~1585), which is inconsistent with the established convention in the file.",
+      "confidence": 0.8
     },
     {
       "agent": "style",
       "file": "requests/sessions.py",
-      "line_start": 122,
-      "line_end": 123,
+      "line_start": 245,
+      "line_end": 247,
       "severity": "nit",
-      "title": "Variable naming inconsistent with pre-existing conventions in the file",
-      "detail": "The new code uses `old_parsed` / `new_parsed` while the surrounding pre-existing code used `original_parsed` / `redirect_parsed`. The new names are arguably cleaner, but the inconsistency is worth noting. Consider aligning with the existing convention or updating all usages for consistency.",
-      "confidence": 0.45
-    },
-    {
-      "agent": "security",
-      "file": "requests/sessions.py",
-      "line_start": 122,
-      "line_end": 123,
-      "severity": "nit",
-      "title": "IDN / Unicode hostname normalization not performed before comparison",
-      "detail": "`urlparse().hostname` lowercases hostnames but does not perform IDNA normalization. Two hostnames that are IDNA-equivalent (e.g. a Unicode label vs its punycode form) will compare as unequal strings, causing unnecessary auth stripping. The reverse direction (homoglyph attack) correctly causes stripping, so there is no security regression \u2014 only a minor correctness/UX issue for users with internationalized hostnames. Worth documenting as a known limitation.",
-      "confidence": 0.4
+      "title": "Dense multi-condition `if` should be extracted into a named variable",
+      "detail": "The new three-part condition is correct but dense inline. The surrounding codebase style (e.g. `merge_setting`) prefers extracting compound boolean expressions into named variables. Introducing an intermediate variable such as `same_origin = (original_parsed.scheme == redirect_parsed.scheme and original_parsed.hostname == redirect_parsed.hostname and original_parsed.port == redirect_parsed.port)` followed by `if not same_origin:` would improve readability and directly echo the PR description's own \"canonical root URL\" language.",
+      "confidence": 0.6
     }
   ],
   "agent_runs": [
@@ -137,20 +77,20 @@
           "agent": "correctness",
           "file": "requests/sessions.py",
           "line_range": [
-            132,
-            132
+            245,
+            247
           ],
           "severity": "major",
-          "title": "Port comparison treats explicit default port as different from implicit default port",
-          "detail": "The final `return` on line 132 compares `old_parsed.port != new_parsed.port` using the raw `urlparse` values, where `.port` is `None` when no port is specified in the URL. This means `http://example.com:80/foo` \u2192 `http://example.com/bar` returns `True` (strip auth), even though port 80 is the default for HTTP and the two URLs refer to the same server. Similarly, `https://example.com:443/foo` \u2192 `https://example.com/bar` would incorrectly strip auth.\n\nThe special-case http\u2192https block (lines 128-130) already handles `old_parsed.port in (80, None)` and `new_parsed.port in (443, None)`, but the general same-scheme case at line 132 does no such normalization.\n\nFix: normalize the port before comparison, e.g. resolve `None` to the scheme's default port (80 for http, 443 for https) before comparing, or use a helper like `netloc` comparison after normalizing default ports.",
-          "confidence": 0.92
+          "title": "Port comparison may give false positives for implicit default ports",
+          "detail": "Python's `urllib.parse.urlparse` (and the `urlparse` shim used here) returns `None` for `.port` when no port is explicitly specified in the URL, even if the scheme implies a well-known port. This means that a redirect from `https://example.com` (port=None) to `https://example.com:443` (port=443) \u2014 or vice versa \u2014 will trigger the `original_parsed.port != redirect_parsed.port` branch and unnecessarily strip the Authorization header even though the canonical authority is identical. Similarly, a redirect between `http://example.com` (port=None) and `http://example.com:80` (port=80) would incorrectly strip the header. The comparison should normalise the port by falling back to the scheme's default port (80 for http, 443 for https) before comparing, e.g. by using a helper that maps scheme\u2192default port and substitutes it when `.port` is None.",
+          "confidence": 0.9
         }
       ],
-      "tool_calls": 2,
-      "tokens_in": 20843,
-      "tokens_out": 1058,
-      "cost_usd": 0.078399,
-      "duration_s": 22.01298745814711,
+      "tool_calls": 3,
+      "tokens_in": 13008,
+      "tokens_out": 657,
+      "cost_usd": 0.048879,
+      "duration_s": 14.819604791002348,
       "skip_or_error_reason": null
     },
     {
@@ -161,68 +101,32 @@
           "agent": "security",
           "file": "requests/sessions.py",
           "line_range": [
-            118,
-            132
-          ],
-          "severity": "major",
-          "title": "Case-sensitive hostname comparison may allow auth leakage across equivalent hostnames",
-          "detail": "urlparse().hostname lowercases the hostname (RFC 3986 \u00a73.2.2 says hostnames are case-insensitive), so the comparison on line 122 (`old_parsed.hostname != new_parsed.hostname`) should be safe in practice. However, the comparison on line 132 uses `.scheme` via urlparse which is also lowercased, so that part is fine too. BUT there is a subtlety: if either URL is malformed or has a non-ASCII IDN hostname, urlparse may return surprising results. More concretely: if `old_url` or `new_url` has no hostname (e.g. it is a relative URL or opaque URI that somehow reaches this function), `old_parsed.hostname` returns `None` for both and the hostname check on line 122 passes (no strip), then the scheme check on line 132 may also not trigger, causing auth to be forwarded to an unexpected destination. The function has no guard against malformed or relative URLs. Verify that `resolve_redirects` always produces a fully-qualified absolute URL before calling `rebuild_auth`/`should_strip_auth`.",
-          "confidence": 0.6
-        },
-        {
-          "agent": "security",
-          "file": "requests/sessions.py",
-          "line_range": [
-            128,
-            130
-          ],
-          "severity": "major",
-          "title": "http\u2192https upgrade exception does not guard against non-standard source ports, enabling auth forwarding from a non-standard http port to https",
-          "detail": "The special-case exemption at lines 128-130 allows auth to be forwarded only when `old_parsed.port in (80, None)` AND `new_parsed.port in (443, None)`. This looks correct and the tests at line 1607-1608 in test_requests.py confirm it. However, consider the reverse port-normalisation issue: a URL written as `http://example.com:80/foo` has `old_parsed.port == 80`, so the exception fires and returns `False` (no strip). But a URL written as `https://example.com:443/bar` also has `new_parsed.port == 443`, so the exception fires too. These are all handled. The real gap is that the check only covers *this specific* http\u2192https upgrade path. An http\u2192https upgrade where the destination is a non-standard port (e.g. 8443) correctly strips auth (line 132 catches it). This logic appears correct, but the asymmetry \u2014 where http\u2192https on standard ports is exempted but https\u2192http is never exempted \u2014 is intentional and correct for the security fix. No action needed beyond confirming the tests cover the port edge cases (they do).",
-          "confidence": 0.3
-        },
-        {
-          "agent": "security",
-          "file": "requests/sessions.py",
-          "line_range": [
-            122,
-            123
+            245,
+            247
           ],
           "severity": "minor",
-          "title": "No stripping of auth on redirect to a URL-encoded / percent-encoded variant of a different hostname",
-          "detail": "urlparse().hostname does not perform IDNA normalisation or Unicode normalisation. An attacker-controlled redirect server could respond with a `Location:` header whose hostname is a Unicode homoglyph or an IDNA-equivalent of a different host (e.g. `xn--` encoded variant vs plain ASCII). urlparse will compare these as unequal strings even if they resolve to the same address, which would incorrectly strip auth. Conversely, two superficially different Unicode hostnames that IDNA-resolve to the same punycode label would be compared as different strings, stripping auth unnecessarily (a correctness issue, not a security issue). The security concern is the homoglyph direction, where `example.com` and `\u0435xample.com` (Cyrillic \u0435) compare as unequal \u2014 this correctly causes stripping, so the security outcome is safe. This is a low-severity note for awareness.",
-          "confidence": 0.4
+          "title": "Implicit vs. explicit default port allows Authorization header to be incorrectly stripped on same-origin redirect",
+          "detail": "urlparse returns `None` for the port when it is the scheme's default (e.g. `https://host/` \u2192 port=None), but returns the integer `443` when it is stated explicitly (e.g. `https://host:443/`). Because `None != 443` is True, a redirect from `https://host/` to `https://host:443/` (or vice-versa) will trigger unnecessary stripping of the Authorization header. This is a false positive: credentials are not leaked, but users whose servers redirect to the canonical explicit-port form will silently lose authentication on every redirect. The fix is to normalise the port by substituting the default port when the parsed value is None (e.g. using `{'https': 443, 'http': 80}.get(scheme)`).",
+          "confidence": 0.85
         },
         {
           "agent": "security",
           "file": "requests/sessions.py",
           "line_range": [
-            255,
-            258
+            250,
+            253
           ],
           "severity": "minor",
-          "title": "Proxy-Authorization header is not considered in should_strip_auth / rebuild_auth",
-          "detail": "The `rebuild_auth` method correctly strips the `Authorization` header when crossing root URLs. However, a caller could set a `Proxy-Authorization` header directly on the request (not via proxy configuration). The `rebuild_proxies` method at line 295 unconditionally deletes `Proxy-Authorization` before re-adding it from the proxy config, so this is handled for proxy auth. But if a user manually set `Proxy-Authorization` without going through the proxy config, it will be deleted even on same-host redirects. This is existing behavior unchanged by this PR; noting for awareness but not a regression introduced here.",
-          "confidence": 0.3
-        },
-        {
-          "agent": "security",
-          "file": "requests/sessions.py",
-          "line_range": [
-            118,
-            132
-          ],
-          "severity": "critical",
-          "title": "https\u2192http downgrade with explicit port 80 on destination is NOT stripped \u2014 auth leaks in plaintext",
-          "detail": "Consider the redirect: `https://example.com/foo` \u2192 `http://example.com:80/bar`. Walk through the logic:\n1. `old_parsed.hostname == new_parsed.hostname` \u2192 both `example.com`, so line 122 does NOT return True (no strip from hostname check).\n2. The special-case at line 128 checks `old_parsed.scheme == 'http'` \u2192 False (old is https), so the block is skipped.\n3. Line 132: `old_parsed.port != new_parsed.port` \u2192 `None != 80` \u2192 **True**, so it returns True (strip). \u2713\n\nNow consider: `https://example.com:443/foo` \u2192 `http://example.com/bar`.\n1. Hostname same \u2192 no strip from line 122.\n2. Special-case: `old_parsed.scheme == 'http'` \u2192 False, skipped.\n3. Line 132: `old_parsed.port != new_parsed.port` \u2192 `443 != None` \u2192 **True**, strip. \u2713\n\nNow consider: `https://example.com/foo` \u2192 `http://example.com/bar` (the core https\u2192http downgrade).\n1. Hostname same.\n2. Special-case: old scheme is 'https', not 'http' \u2192 skipped.\n3. Line 132: `old_parsed.port != new_parsed.port` \u2192 `None != None` \u2192 False. `old_parsed.scheme != new_parsed.scheme` \u2192 `'https' != 'http'` \u2192 **True** \u2192 returns True (strip). \u2713\n\nAll https\u2192http cases appear correctly handled. Retracting this as critical \u2014 the logic is sound. Setting to nit to document that the analysis was done.",
-          "confidence": 0.15
+          "title": "netrc re-applies credentials after scheme-downgrade strip, potentially re-introducing plaintext credential exposure",
+          "detail": "After correctly stripping the Authorization header on a scheme change (e.g. https \u2192 http), rebuild_auth unconditionally queries .netrc for the new (potentially http) URL and re-applies any credentials it finds (line 251-253). If the user's .netrc contains an entry for the http host, credentials will be re-sent in plaintext over the downgraded connection, defeating the purpose of the strip. This is a pre-existing design issue that the PR did not address. Consider skipping the netrc lookup when the scheme has been downgraded (https \u2192 http).",
+          "confidence": 0.75
         }
       ],
       "tool_calls": 1,
-      "tokens_in": 15301,
-      "tokens_out": 1811,
-      "cost_usd": 0.073068,
-      "duration_s": 42.44890554109588,
+      "tokens_in": 12818,
+      "tokens_out": 1352,
+      "cost_usd": 0.058734,
+      "duration_s": 30.993567375000566,
       "skip_or_error_reason": null
     },
     {
@@ -233,56 +137,32 @@
           "agent": "style",
           "file": "requests/sessions.py",
           "line_range": [
-            119,
-            119
+            245,
+            247
           ],
           "severity": "nit",
-          "title": "Docstring missing period at end of sentence",
-          "detail": "The docstring `\"\"\"Decide whether Authorization header should be removed when redirecting\"\"\"` has no trailing period. All other method docstrings in the file end with a period (e.g. `\"\"\"Receives a Response. Returns a generator of Responses or Requests.\"\"\"`). Add a period for consistency.",
-          "confidence": 0.75
-        },
-        {
-          "agent": "style",
-          "file": "requests/sessions.py",
-          "line_range": [
-            122,
-            123
-          ],
-          "severity": "nit",
-          "title": "Intermediate variables `old_parsed`/`new_parsed` use slightly inconsistent naming versus previous local variables",
-          "detail": "The removed code used `original_parsed` / `redirect_parsed` as its local names. While `old_parsed` / `new_parsed` is arguably clearer, within the rest of the file the pattern is `original_parsed` / `redirect_parsed`. The new names are fine on their own, but it is a minor inconsistency with the nearby conventions that existed just lines away. Low-priority, but worth noting.",
-          "confidence": 0.45
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1593,
-            1612
-          ],
-          "severity": "nit",
-          "title": "Unit tests for `should_strip_auth` instantiate a full `Session` rather than `SessionRedirectMixin`",
-          "detail": "The existing style sample already imports `SessionRedirectMixin` (line 29) and the surrounding tests that exercise mixin-level behaviour tend to operate at the mixin level. Creating a full `requests.Session()` just to test a single mixin method is slightly heavier than necessary and inconsistent with that import. Consider using `SessionRedirectMixin()` directly, or at minimum document why a full Session is used.",
+          "title": "Multi-condition `if` could use a helper variable for clarity",
+          "detail": "The existing code used a simple single-condition `if`. The new three-part condition is correct but somewhat dense inline. The surrounding style (e.g. the `merge_setting` function) prefers extracting compound boolean expressions into named variables or helper functions. A small intermediate variable such as `same_origin = (original_parsed.scheme == redirect_parsed.scheme and original_parsed.hostname == redirect_parsed.hostname and original_parsed.port == redirect_parsed.port)` and then `if not same_origin:` would match that style and make the intent immediately clear. The term \"same origin\" or \"same root\" also echoes the PR description's own language (\"canonical root URL\").",
           "confidence": 0.6
         },
         {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1610,
-            1612
+            1580,
+            1588
           ],
           "severity": "nit",
-          "title": "`test_should_strip_auth_port_change` changes scheme as well as port, making the test name misleading",
-          "detail": "The test is named `test_should_strip_auth_port_change` but the URLs used (`http://\u2026:1234` \u2192 `https://\u2026:4321`) change both the scheme AND the port. A pure port-change test would keep the scheme the same (e.g. `http://\u2026:1234` \u2192 `http://\u2026:4321`). Either rename the test or adjust the URLs so the name accurately describes what is being exercised.",
-          "confidence": 0.9
+          "title": "New test method is missing a trailing comma after `verify=httpbin_ca_bundle`",
+          "detail": "Every other multi-line `requests.get(...)` call in the test file (e.g. lines 1573-1576 in the same hunk) ends each keyword argument line with a trailing comma, including the last one before the closing parenthesis. The new test omits the trailing comma after `verify=httpbin_ca_bundle` (line 1585), which is inconsistent with that convention.",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4662,
-      "tokens_out": 683,
-      "cost_usd": 0.024231,
-      "duration_s": 13.589938500197604,
+      "tokens_in": 3539,
+      "tokens_out": 434,
+      "cost_usd": 0.017127,
+      "duration_s": 9.14096162491478,
       "skip_or_error_reason": null
     },
     {
@@ -293,68 +173,44 @@
           "agent": "test_coverage",
           "file": "requests/sessions.py",
           "line_range": [
-            128,
-            130
+            246,
+            247
           ],
           "severity": "major",
-          "title": "No test for http\u2192https upgrade with explicit standard ports on both sides simultaneously",
-          "detail": "The special-case branch at lines 128-130 allows http (port 80 or None) \u2192 https (port 443 or None). The existing tests check each side individually (http:80\u2192https, http\u2192https:443) but never test the combination http:80\u2192https:443 (both explicit standard ports). This is a minor gap but the branch combination is not fully exercised.",
-          "confidence": 0.6
+          "title": "Port-change redirect stripping not covered by any test",
+          "detail": "The new `or original_parsed.port != redirect_parsed.port` branch (line 246) has no corresponding test. The PR adds a test for scheme changes (https\u2192http) and keeps the hostname-change test, but there is no test that redirects to the same scheme and host on a different port and verifies the Authorization header is stripped. Both the positive case (header stripped) and negative case (same port \u2192 header retained) are absent.",
+          "confidence": 0.95
         },
         {
           "agent": "test_coverage",
           "file": "requests/sessions.py",
           "line_range": [
-            118,
-            132
-          ],
-          "severity": "major",
-          "title": "No test for same-scheme, same-host, port change without scheme change (pure port-change redirect)",
-          "detail": "test_should_strip_auth_port_change tests 'http://example.com:1234/foo' \u2192 'https://example.com:4321/bar', which is both a port AND scheme change. There is no test covering same-scheme port changes, e.g. http://example.com:1234 \u2192 http://example.com:5678, which exercises only the `old_parsed.port != new_parsed.port` part of line 132.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/sessions.py",
-          "line_range": [
-            118,
-            132
+            247,
+            247
           ],
           "severity": "minor",
-          "title": "No test for should_strip_auth when Authorization header is absent (rebuild_auth path)",
-          "detail": "The refactored rebuild_auth (line 255) only calls should_strip_auth when 'Authorization' is present. There is no test that verifies rebuild_auth does NOT call should_strip_auth (i.e., does not error) when Authorization is absent and a redirect crosses scheme/host, exercising the short-circuit behaviour.",
-          "confidence": 0.5
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/sessions.py",
-          "line_range": [
-            122,
-            123
-          ],
-          "severity": "minor",
-          "title": "No test for should_strip_auth when hostnames are identical but one is None",
-          "detail": "The hostname comparison on line 122-123 returns True if hostnames differ. There is no test where one URL has a missing/None hostname (e.g. a relative URL or malformed URL), verifying the behaviour in edge cases that could surface via unusual redirect targets.",
-          "confidence": 0.4
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/sessions.py",
-          "line_range": [
-            128,
-            130
-          ],
-          "severity": "major",
-          "title": "No integration test covering auth retention on http\u2192https upgrade with non-standard ports (should strip)",
-          "detail": "The unit tests for should_strip_auth cover the non-standard-port cases (lines 1607-1608), but there is no integration/end-to-end test that actually performs an http\u2192https redirect with a non-standard port and verifies the Authorization header is removed in practice via rebuild_auth.",
+          "title": "No unit-level (mock-based) test for scheme-change stripping to complement integration test",
+          "detail": "The only coverage for the scheme-change branch is the new integration test `test_auth_is_stripped_on_scheme_redirect`, which requires both `httpbin_secure` and `httpbin` fixtures and an SSL CA bundle. There is no isolated/unit-level test (e.g. using `RedirectSession` or direct `rebuild_auth` calls) exercising the scheme comparison, making the test fragile and leaving the logic uncovered in environments without the SSL fixtures.",
           "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1580,
+            1588
+          ],
+          "severity": "minor",
+          "title": "Scheme redirect test only covers https\u2192http downgrade; http\u2192https upgrade not tested",
+          "detail": "The new `test_auth_is_stripped_on_scheme_redirect` test redirects from https to http. The symmetric case (http\u2192https) is a different code path in practice and is not exercised. While the condition is symmetric in the code, an explicit test for the http\u2192https direction would confirm correctness for that scenario and is absent.",
+          "confidence": 0.65
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 30569,
-      "tokens_out": 760,
-      "cost_usd": 0.103107,
-      "duration_s": 16.12635074998252,
+      "tokens_in": 29130,
+      "tokens_out": 508,
+      "cost_usd": 0.09501,
+      "duration_s": 12.199563541216776,
       "skip_or_error_reason": null
     },
     {
@@ -362,162 +218,90 @@
       "status": "ok",
       "findings": [
         {
+          "agent": "test_coverage",
+          "file": "requests/sessions.py",
+          "line_range": [
+            246,
+            247
+          ],
+          "severity": "major",
+          "title": "Port-change redirect stripping has no test coverage",
+          "detail": "The new `or original_parsed.port != redirect_parsed.port` branch has no corresponding test. The PR adds a test for scheme changes and retains the hostname-change test, but there is no test that redirects to the same scheme and host on a different port and verifies the Authorization header is stripped (positive case), nor one that confirms the header is retained when the port is unchanged (negative case). This leaves a significant portion of the new logic unverified.",
+          "confidence": 0.95
+        },
+        {
           "agent": "correctness, security",
           "file": "requests/sessions.py",
           "line_range": [
-            132,
-            132
+            245,
+            247
           ],
           "severity": "major",
-          "title": "Port comparison treats explicit default port as different from implicit default port",
-          "detail": "The final `return` on line 132 compares `old_parsed.port != new_parsed.port` using raw `urlparse` values, where `.port` is `None` when no port is specified. This means a redirect from `http://example.com:80/foo` to `http://example.com/bar` returns `True` (strip auth), even though port 80 is HTTP's default and the two URLs refer to the same server. Similarly, `https://example.com:443/foo` \u2192 `https://example.com/bar` would incorrectly strip auth.\n\nNote: the https\u2192http downgrade cases (f5) were analyzed and found to be correctly handled \u2014 the scheme check on the same line catches all relevant cases. The pure same-scheme explicit-vs-implicit default-port mismatch (e.g. `http://example.com:80` \u2192 `http://example.com`) is the concrete remaining bug.\n\nFix: normalize ports before comparison by resolving `None` to the scheme's default (80 for http, 443 for https), or compare after normalizing the netloc.",
-          "confidence": 0.88
-        },
-        {
-          "agent": "style, test_coverage",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1610,
-            1612
-          ],
-          "severity": "major",
-          "title": "test_should_strip_auth_port_change changes scheme AND port \u2014 no pure port-change test exists",
-          "detail": "The test `test_should_strip_auth_port_change` uses `http://example.com:1234/foo` \u2192 `https://example.com:4321/bar`, which changes both scheme and port simultaneously. This makes the test name misleading and leaves the `old_parsed.port != new_parsed.port` branch on line 132 untested in isolation (same-scheme, different-port, e.g. `http://example.com:1234` \u2192 `http://example.com:5678`). Either rename the test to reflect that it covers a combined scheme+port change, and add a new test for the pure port-change case (same scheme, different port), so the relevant branch of line 132 is exercised independently.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1593,
-            1612
-          ],
-          "severity": "major",
-          "title": "No integration test for auth stripping on http\u2192https redirect with non-standard ports",
-          "detail": "Unit tests for `should_strip_auth` cover non-standard-port cases, but there is no integration/end-to-end test that performs an actual http\u2192https redirect with a non-standard port and verifies the `Authorization` header is physically absent in the forwarded request via `rebuild_auth`. Unit coverage of the helper alone does not guarantee the wiring in `rebuild_auth` works correctly for this path.",
-          "confidence": 0.65
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1593,
-            1612
-          ],
-          "severity": "major",
-          "title": "No test for http\u2192https upgrade with both explicit standard ports (http:80 \u2192 https:443)",
-          "detail": "The special-case branch at lines 128-130 permits auth forwarding for http (port 80 or None) \u2192 https (port 443 or None). Existing tests check one explicit port at a time, but never the combination `http://example.com:80/foo` \u2192 `https://example.com:443/bar` where both sides use explicit standard ports. This combination path through the branch is not exercised.",
-          "confidence": 0.6
+          "title": "Port comparison gives false positives for implicit default ports",
+          "detail": "Python's `urlparse` returns `None` for `.port` when no port is explicitly specified in the URL (e.g. `https://example.com` \u2192 `port=None`), but returns the integer `443` when stated explicitly (e.g. `https://example.com:443` \u2192 `port=443`). Because `None != 443` evaluates to `True`, a redirect from `https://host/` to `https://host:443/` (or `http://host/` to `http://host:80/`) will incorrectly trigger the port-change branch and strip the Authorization header even though the canonical authority is identical. No credentials are leaked, but users whose servers redirect to a canonically explicit-port form will silently lose authentication on every redirect. The fix is to normalise the port before comparing by substituting the scheme's default port when `.port` is `None`, e.g.: `DEFAULT_PORTS = {'https': 443, 'http': 80}` and then comparing `(DEFAULT_PORTS.get(scheme) if parsed.port is None else parsed.port)` for both sides.",
+          "confidence": 0.92
         },
         {
           "agent": "security",
           "file": "requests/sessions.py",
           "line_range": [
-            118,
-            132
+            250,
+            253
           ],
           "severity": "minor",
-          "title": "No guard against relative or malformed URLs reaching should_strip_auth",
-          "detail": "If `old_url` or `new_url` is a relative or opaque URI, `urlparse().hostname` returns `None` for both. The hostname check on line 122 then passes (no strip triggered), and the subsequent scheme/port checks may also fail to trigger, potentially forwarding auth to an unintended destination. While `resolve_redirects` is expected to always provide fully-qualified absolute URLs, there is no assertion or guard inside `should_strip_auth` itself to enforce this precondition. Consider adding a guard (e.g. early return `True` if either hostname is `None`) or at minimum a docstring note about the precondition.",
-          "confidence": 0.55
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1593,
-            1612
-          ],
-          "severity": "minor",
-          "title": "No test for rebuild_auth short-circuit when Authorization header is absent",
-          "detail": "`rebuild_auth` only calls `should_strip_auth` when an `Authorization` header is present. There is no test verifying that `rebuild_auth` does not error and does not call `should_strip_auth` when no `Authorization` header exists and a redirect crosses scheme/host, exercising the short-circuit path.",
-          "confidence": 0.5
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1593,
-            1612
-          ],
-          "severity": "minor",
-          "title": "No test for should_strip_auth when one hostname is None (malformed URL edge case)",
-          "detail": "There is no test where one URL has a missing or `None` hostname (e.g. a relative URL or malformed URL), so the behavior of `should_strip_auth` in this edge case is untested. This is related to the guard concern in f1.",
-          "confidence": 0.4
-        },
-        {
-          "agent": "style",
-          "file": "requests/sessions.py",
-          "line_range": [
-            119,
-            119
-          ],
-          "severity": "nit",
-          "title": "Docstring missing trailing period",
-          "detail": "The docstring `\"\"\"Decide whether Authorization header should be removed when redirecting\"\"\"` has no trailing period, inconsistent with other method docstrings in the file (e.g. `\"\"\"Receives a Response. Returns a generator of Responses or Requests.\"\"\"`). Add a period for consistency.",
+          "title": "netrc lookup may re-introduce credentials after scheme-downgrade strip",
+          "detail": "After correctly stripping the Authorization header on a scheme downgrade (e.g. https \u2192 http), `rebuild_auth` unconditionally queries `.netrc` for the new (potentially http) URL and re-applies any matching credentials. If the user's `.netrc` contains an entry for the http host, credentials will be re-sent in plaintext over the downgraded connection, defeating the purpose of the strip. This is a pre-existing design issue not introduced by this PR, but the PR's expanded stripping logic makes it more likely to be encountered. Consider skipping the netrc lookup when the scheme has been explicitly downgraded (https \u2192 http).",
           "confidence": 0.75
         },
         {
+          "agent": "test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1580,
+            1588
+          ],
+          "severity": "minor",
+          "title": "Scheme-redirect test is integration-only and covers only one direction",
+          "detail": "The sole coverage for the scheme-change branch is the new integration test `test_auth_is_stripped_on_scheme_redirect`, which requires live `httpbin_secure` and `httpbin` fixtures plus an SSL CA bundle, making it fragile in environments without SSL fixtures. There is no isolated/unit-level test (e.g. using `RedirectSession` or direct `rebuild_auth` calls) that exercises the scheme comparison independently. Additionally, only the https\u2192http downgrade direction is tested; the symmetric http\u2192https case is absent. While the condition is symmetric in the code, an explicit test for the reverse direction would confirm correctness and guard against future asymmetric changes.",
+          "confidence": 0.72
+        },
+        {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1593,
-            1612
+            1580,
+            1588
           ],
           "severity": "nit",
-          "title": "Tests instantiate full Session rather than SessionRedirectMixin",
-          "detail": "The new `should_strip_auth` unit tests create a full `requests.Session()` to test a single mixin method. Since `SessionRedirectMixin` is already imported (line 29), using it directly would be lighter and more consistent with the intent of testing the mixin's behavior in isolation.",
-          "confidence": 0.6
-        },
-        {
-          "agent": "security",
-          "file": "requests/sessions.py",
-          "line_range": [
-            128,
-            130
-          ],
-          "severity": "nit",
-          "title": "http\u2192https exemption logic is correct but asymmetry is worth documenting",
-          "detail": "The special-case block at lines 128-130 exempts auth stripping only for http\u2192https upgrades on standard ports, not for https\u2192http downgrades (which always strip via the scheme check on line 132). This asymmetry is intentional and correct from a security standpoint. A brief comment explaining the asymmetry would help future maintainers avoid accidentally 'fixing' it.",
-          "confidence": 0.55
+          "title": "Missing trailing comma after last keyword argument in new test",
+          "detail": "Every other multi-line `requests.get(...)` call in the test file ends each keyword argument line with a trailing comma, including the last argument before the closing parenthesis. The new `test_auth_is_stripped_on_scheme_redirect` test omits the trailing comma after `verify=httpbin_ca_bundle` (line ~1585), which is inconsistent with the established convention in the file.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "requests/sessions.py",
           "line_range": [
-            122,
-            123
+            245,
+            247
           ],
           "severity": "nit",
-          "title": "Variable naming inconsistent with pre-existing conventions in the file",
-          "detail": "The new code uses `old_parsed` / `new_parsed` while the surrounding pre-existing code used `original_parsed` / `redirect_parsed`. The new names are arguably cleaner, but the inconsistency is worth noting. Consider aligning with the existing convention or updating all usages for consistency.",
-          "confidence": 0.45
-        },
-        {
-          "agent": "security",
-          "file": "requests/sessions.py",
-          "line_range": [
-            122,
-            123
-          ],
-          "severity": "nit",
-          "title": "IDN / Unicode hostname normalization not performed before comparison",
-          "detail": "`urlparse().hostname` lowercases hostnames but does not perform IDNA normalization. Two hostnames that are IDNA-equivalent (e.g. a Unicode label vs its punycode form) will compare as unequal strings, causing unnecessary auth stripping. The reverse direction (homoglyph attack) correctly causes stripping, so there is no security regression \u2014 only a minor correctness/UX issue for users with internationalized hostnames. Worth documenting as a known limitation.",
-          "confidence": 0.4
+          "title": "Dense multi-condition `if` should be extracted into a named variable",
+          "detail": "The new three-part condition is correct but dense inline. The surrounding codebase style (e.g. `merge_setting`) prefers extracting compound boolean expressions into named variables. Introducing an intermediate variable such as `same_origin = (original_parsed.scheme == redirect_parsed.scheme and original_parsed.hostname == redirect_parsed.hostname and original_parsed.port == redirect_parsed.port)` followed by `if not same_origin:` would improve readability and directly echo the PR description's own \"canonical root URL\" language.",
+          "confidence": 0.6
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4206,
-      "tokens_out": 2417,
-      "cost_usd": 0.048873,
-      "duration_s": 40.63555983407423,
+      "tokens_in": 2564,
+      "tokens_out": 1370,
+      "cost_usd": 0.028242,
+      "duration_s": 19.745615999912843,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 75581,
-    "tokens_out": 6729,
-    "cost_usd": 0.327678,
-    "duration_s": 134.8
+    "tokens_in": 61059,
+    "tokens_out": 4321,
+    "cost_usd": 0.247992,
+    "duration_s": 86.9
   }
 }

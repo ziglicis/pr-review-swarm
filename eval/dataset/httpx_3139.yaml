@@ -3,6 +3,11 @@ repo: encode/httpx
 pr: 3139
 title: Add support for zstd decoding
 pre_merge_sha: 7a2f185334b599451961115cc4f69df336f26632
+# reviewed SHA: earliest commit a reviewer commented on (the initial
+# proposed change, before review fixes). Ground truth is verified present
+# at this commit during judging; items raised against later commits are
+# marked non-matchable.
+review_sha: 01b4c6d1176e3c84a37445632fb9980aebbb5ffa
 changed_lines: 174
 selected_because: >
   Dependency-adding feature (optional zstandard extra) with reviewer

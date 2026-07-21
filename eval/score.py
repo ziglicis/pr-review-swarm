@@ -119,12 +119,15 @@ def render_report(scores: dict[str, dict], calib: list[dict],
            "Matching of system findings to human review comments is manual judgment, "
            "documented per case in `eval/judgments/` (SPEC §5.2). Precision counts "
            "`uncertain` verdicts against the system.", "",
-           "Recall is reported over **matchable** ground truth: dataset SHAs are the "
-           "final pre-merge heads, where most reviewer-raised issues were already "
-           "fixed by the author during review and are therefore unfindable by any "
-           "reviewer of that code. Each item's status is recorded per case as "
-           "`matchable:` in the judgment files. Raw recall over all ground truth is "
-           "shown for completeness.", ""]
+           "Recall is reported over **matchable** ground truth. Each case is reviewed "
+           "at its `review_sha` — the commit reviewers most engaged with, before "
+           "their feedback was applied (see the dataset files). An item is matchable "
+           "when its flagged code is actually present at that commit, verified by code "
+           "inspection during judging; issues raised against a different commit, or "
+           "already fixed by `review_sha`, are marked non-matchable. Raw recall over "
+           "all ground truth is shown for completeness. The prior evaluation at the "
+           "final pre-merge head (where most issues were already fixed) is archived "
+           "under `eval/_archive_final_head/`.", ""]
 
     out += ["## Headline", "",
             "| experiment | cases | recall (matchable GT) | raw recall | "

@@ -4,88 +4,76 @@ ground_truth_matches:
 - ground_truth: g1
   issue: Decompressed chunks should be assembled with io.BytesIO rather than repeated bytes concatenation.
   matched_finding: null
-  note: fixed during review — decode() already assembles chunks with io.BytesIO at the reviewed head
-    (discussion_r1518812137)
+  note: 'NON-matchable: decode already assembles via `data_parts=[...]; b''''.join(...)` (list-join
+    avoids repeated concat) at review_sha; the BytesIO concern (discussion_r1518812137) was addressed
+    earlier'
   matchable: false
 - ground_truth: g2
   issue: The runtime zstandard version guard in _compat.py is questioned as overly defensive vs pinning
     >=0.18 in requirements; kept because the extra is optional and an old zstandard may already be
     installed — a genuine design disagreement documented in review.
   matched_finding: null
-  note: design debate resolved by keeping the guard (documented in review); no finding raises the
-    version-guard-vs-requirements-pin question (discussion_r1524997549)
+  note: 'NON-matchable: the runtime version-guard ''overly defensive'' point (discussion_r1524997549)
+    is a design disagreement the maintainers resolved by keeping the guard — not a defect'
   matchable: false
 - ground_truth: g3
   issue: Test coverage for the new decoder paths is incomplete and needs addressing before merge.
-  matched_finding: 5
-  note: finding 5 (with 6) flags untested new-decoder branches; the strongest gap (empty-body parametrization)
-    was only caught by the baseline run
+  matched_finding: 1
+  note: 'PRESENT: new zstd decoder paths (flush/error/multiframe/empty) are untested at review_sha
+    (discussion_r1525274642)'
   matchable: true
 finding_validity:
 - finding: 0
-  title: ZStandardDecoder.flush() incorrectly raises DecodingError on empty/no-data responses
+  title: zstd sentinel uses `False` instead of `None`, and `SUPPORTED_DECODERS` is never cleaned
+    up when zstd is unavailable
   valid: true
-  note: 'verified: fresh decompressobj eof=False → flush() raises on an empty streamed body; Brotli
-    guards with seen_data'
+  note: sentinel False + SUPPORTED_DECODERS never cleared for zstd
 - finding: 1
-  title: Potential infinite loop in multi-frame decode loop if unused_data does not shrink
-  valid: false
-  note: 'not constructible: eof=True requires a complete consumed frame, so unused_data strictly
-    shrinks each iteration'
+  title: ZStandardDecoder error paths (flush incomplete-stream, decode error) are untested
+  valid: true
+  note: 'g3: flush/decode error paths untested'
 - finding: 2
-  title: 'Changelog ''Added'' section uses wrong heading level (## instead of ###)'
+  title: Multi-frame zstd decoding loop is untested and has no infinite-loop guard
   valid: true
-  note: confirmed heading-level break
+  note: 'g3: multi-frame untested (the no-guard note is fine as coverage)'
 - finding: 3
-  title: Incomplete placeholder text in ZStandardDecoder ImportError message
+  title: '`test_empty_content` and `test_decoders_empty_cases` do not cover `zstd`'
   valid: true
-  note: verified placeholder text at the SHA
+  note: 'g3: empty-content tests exclude zstd'
 - finding: 4
-  title: test_zstd_decoding_error passes a str instead of bytes as content
-  valid: false
-  note: str content is accepted httpx API — no TypeError, and the test does exercise the decoder
+  title: Streaming (chunked) zstd decoding is untested
+  valid: true
+  note: 'g3: streaming chunked decode untested'
 - finding: 5
-  title: ZStandardDecoder.__init__ ImportError branch untested
-  valid: uncertain
-  note: the branch is pragma-no-cover by deliberate choice; a mock-based test is a defensible ask
-    but counters the project's explicit exclusion
+  title: Regex match result not checked for None before calling .groups()
+  valid: true
+  note: regex .groups() not None-checked — real
 - finding: 6
-  title: SUPPORTED_DECODERS.pop('zstd') branch when zstd unavailable untested
-  valid: uncertain
-  note: the branch is pragma-no-cover by deliberate choice; a mock-based test is a defensible ask
-    but counters the project's explicit exclusion
+  title: Version-check fallback path and the resulting ImportError in ZStandardDecoder are untested
+  valid: true
+  note: 'g3: version fallback + ImportError untested'
 - finding: 7
-  title: 'Zstd except clause missing # pragma: no cover and uses inconsistent comment convention'
-  valid: false
-  note: _compat.py is excluded from coverage entirely (stated in its own module docstring); pragma
-    annotations there are moot
+  title: '`import re` added solely for a one-off version parse that could use str.split()'
+  valid: uncertain
+  note: import re vs str.split — subjective
 - finding: 8
-  title: Unguarded re.search() result can cause AttributeError on malformed zstd.__version__
+  title: Incomplete/placeholder ImportError message in ZStandardDecoder.__init__
   valid: true
-  note: 'verified control flow: the else clause sits outside the except, so .groups() on None raises
-    an uncaught AttributeError at import time'
+  note: truncated ImportError message confirmed
 - finding: 9
-  title: test_zstd_multiframe passes io.BytesIO as content, may not be reliably supported
-  valid: false
-  note: BytesIO is a supported iterable content type; the equality assertion would fail loudly if
-    the decoder were bypassed
+  title: Inconsistent indentation for new `zstd` optional-dependency entry
+  valid: true
+  note: pyproject indentation confirmed
 - finding: 10
-  title: zstd optional-dependency block uses 2-space indentation instead of 4-space
-  valid: true
-  note: confirmed in diff
+  title: Section heading says 'brotli and zstandard' but code block only shows one pip command at
+    a time
+  valid: uncertain
+  note: docs heading vs one command — subjective
 - finding: 11
-  title: 'Awkward phrasing: ''brotli and zstandard decoders support'''
-  valid: true
-  note: defensible doc polish
+  title: Broad exception tuple `(AttributeError, ImportError, ValueError)` is undocumented
+  valid: uncertain
+  note: broad except tuple undocumented — the else clause documents the version reason; mild
 - finding: 12
-  title: Asymmetric singular/plural 'encoding' vs 'encodings' in zstd description
-  valid: true
-  note: factual singular/plural asymmetry
-- finding: 13
-  title: Inline comment uses non-standard 'note:' prefix
+  title: Line broken mid-sentence inconsistently with surrounding prose style
   valid: false
-  note: comment-prefix noise
-- finding: 14
-  title: Spaces in hex strings inside bytes.fromhex() inconsistent with rest of test file
-  valid: false
-  note: no other fromhex calls exist in the file; spaced hex is idiomatic for byte grouping
+  note: markdown line-break has no rendered effect

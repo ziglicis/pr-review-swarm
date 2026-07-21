@@ -1,0 +1,70 @@
+case: requests_3984
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: If the body ends with a CRLF split at a chunk boundary, the chunk becomes empty after stripping,
+    splitlines() returns [], and lines[-1] raises IndexError.
+  matched_finding: null
+  note: 'fixed during review — the `if not chunk: continue` guard is at the reviewed head (discussion_r112750569)'
+  matchable: false
+- ground_truth: g2
+  issue: Chunks like ['...\r', '\n', '\nmore'] strip two newline characters instead of emitting the
+    empty line — the CR flag must be reset after consuming one LF.
+  matched_finding: null
+  note: 'fixed during review — the flag is reassigned every chunk and the [b''a\r'', b''\n'', b''\nb'']
+    test case landed (discussion_r112929801); note a residual none of the experiments found: an empty
+    chunk between ''\r'' and ''\n'' resets the flag and yields a spurious empty line'
+  matchable: false
+- ground_truth: g3
+  issue: New tests use unprefixed string literals that are intended to be unicode; they must carry
+    the u'' prefix to pass on Python 2.
+  matched_finding: null
+  note: fixed during review — tests carry u'' prefixes (discussion_r112804923)
+  matchable: false
+- ground_truth: g4
+  issue: The chunk/flag handling should be restructured for readability (named condition variables,
+    single assignment site) rather than the doubled-up inline conditions.
+  matched_finding: null
+  note: addressed during review — named condition variable and single assignment site (discussion_r113172022)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Missing test coverage for key state-transition branches in the CR/LF split-chunk logic
+  valid: true
+  note: 'factual: the named branch/state combinations are absent from the parametrized matrix'
+- finding: 1
+  title: Core correctness of last_chunk_ends_with_cr / skip_first_char logic needs careful review
+  valid: false
+  note: 'a non-finding: ''no concrete failure found... needs careful review'' claims no defect'
+- finding: 2
+  title: mock_iter_content helper duplicated verbatim between two test methods
+  valid: true
+  note: factual duplication of the mock helper across the two tests
+- finding: 3
+  title: unicode_mock_data re-assigned later with a logically different dataset, risking confusion
+  valid: uncertain
+  note: the reassignment pattern pre-exists for mock_data; mild readability point
+- finding: 4
+  title: No test for iter_lines() with decode_unicode=False and non-\r\n custom delimiter
+  valid: uncertain
+  note: the new CR/LF logic is skipped entirely when a delimiter is given, so extra delimiter tests
+    would not exercise it
+- finding: 5
+  title: Named constants carriage_return / line_feed add indirection for simple single-character
+    literals
+  valid: false
+  note: argues to inline the named variables — the reviewer explicitly asked for named condition
+    variables (g4, discussion_r113172022)
+- finding: 6
+  title: Long assertion line exceeds visible convention in surrounding test code
+  valid: uncertain
+  note: weak line-length nit
+- finding: 7
+  title: Inline comment on the empty-chunk branch uses informal tone inconsistent with surrounding
+    comments
+  valid: false
+  note: comment-tone noise
+- finding: 8
+  title: Variable name skip_first_char is generic; a domain-specific name would improve readability
+  valid: uncertain
+  note: subjective naming preference on a reviewer-endorsed structure

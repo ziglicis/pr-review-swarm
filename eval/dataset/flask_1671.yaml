@@ -3,6 +3,10 @@ repo: pallets/flask
 pr: 1671
 title: Add support for serializing top-level arrays to JSON
 pre_merge_sha: daceb3e3a028b4b408c4bbdbdef0047f1de3a7c9
+# reviewed SHA: commit where the most ground-truth issues are simultaneously
+# present (the pre-fix state reviewers most engaged with). Verified by code
+# inspection during judging; GT not present here is marked non-matchable.
+review_sha: daceb3e3a028b4b408c4bbdbdef0047f1de3a7c9
 changed_lines: 231
 selected_because: >
   jsonify behavior change with a classic bare-except catch and dead-check

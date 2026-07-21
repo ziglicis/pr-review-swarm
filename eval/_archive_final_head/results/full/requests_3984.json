@@ -1,0 +1,420 @@
+{
+  "case": "requests_3984",
+  "experiment": "full",
+  "pr_url": "https://github.com/psf/requests/pull/3984",
+  "head_sha": "458df8f4f432956003a81a5285129e6dbf9b40b0",
+  "sha_matches_dataset": true,
+  "timestamp": 1784179480,
+  "summary": "This PR fixes a bug in `iter_lines()` where a `\\r\\n` pair split across two chunks generated a spurious empty line. The implementation introduces `last_chunk_ends_with_cr` / `skip_first_char` state tracking and named constants for `carriage_return` / `line_feed`. The logic appears functionally correct in the common cases, but test coverage for several edge-case state transitions and the empty-after-strip branch is thin, and there are minor style concerns around variable naming and test code duplication.",
+  "findings": [
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 813,
+      "line_end": 819,
+      "severity": "major",
+      "title": "Missing test coverage for key state-transition branches in the CR/LF split-chunk logic",
+      "detail": "Three distinct gap areas in test coverage were identified:\n\n1. **Empty-after-strip branch** (`if not chunk: continue`, lines 818\u2013819): While `[b'a\\r', b'\\n', b'\\nb']` partially exercises this path, there is no dedicated test asserting that pending data is not lost when the stripped chunk is entirely empty and more data follows.\n\n2. **CR-ending chunk NOT followed by LF** (lines 813\u2013814): No parametrized case like `[b'a\\r', b'bc']` confirms that `last_chunk_ends_with_cr=True` but `skip_first_char` correctly stays `False`, treating the lone `\\r` as a line break. Only the skip path is tested.\n\n3. **Chained CR-state transitions** (lines 813\u2013814): No case like `[b'a\\r', b'b\\r', b'\\nc']` validates multi-step `last_chunk_ends_with_cr` chaining where the first CR is NOT followed by LF but the second is.\n\nAdding explicit parametrized cases for these scenarios would both document the intended behaviour and guard against regressions.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/models.py",
+      "line_start": 813,
+      "line_end": 819,
+      "severity": "major",
+      "title": "Core correctness of last_chunk_ends_with_cr / skip_first_char logic needs careful review",
+      "detail": "**Reviewer disagreement.** Two reviewers investigated whether `last_chunk_ends_with_cr` being evaluated on the pre-strip chunk (line 814, before the leading `\\n` is removed at line 816) introduces a bug. After exhaustive case analysis, no concrete reproducible correctness failure was found for the main paths. However, the logic is subtle enough\u2014especially around the `if not chunk: continue` path\u2014that the interaction between the pre-strip flag evaluation, the pending-data prepend, and the empty-chunk skip deserves explicit documentation or a targeted unit test. One reviewer initially rated this major (confidence 0.55) but could not reproduce a failing case; the second retracted the finding (confidence 0.2). Net assessment: the code is likely correct but the ordering of operations (flag set \u2192 strip \u2192 maybe-empty \u2192 continue) is non-obvious and warrants an inline comment explaining why `last_chunk_ends_with_cr` is intentionally evaluated before stripping.",
+      "confidence": 0.4
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1322,
+      "line_end": 1325,
+      "severity": "minor",
+      "title": "mock_iter_content helper duplicated verbatim between two test methods",
+      "detail": "The `mock_iter_content` function definition is copy-pasted identically into both `test_response_lines` (around lines 1322\u20131325) and `test_response_lines_parametrized` (around lines 1385\u20131388). Consider extracting it as a shared helper function or a `pytest.fixture` to avoid duplication and keep tests DRY, consistent with the file's use of class-level helpers elsewhere.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1320,
+      "line_end": 1320,
+      "severity": "minor",
+      "title": "unicode_mock_data re-assigned later with a logically different dataset, risking confusion",
+      "detail": "`unicode_mock_data` is first assigned at line 1320 from the original `mock_data`, then `mock_data` is reassigned (line 1352) and `unicode_mock_data` is reassigned (line 1356) to a `\\n`\u2192`\\r` variant. Reusing the same name for a logically distinct dataset can cause confusion about which dataset is active at any point. Using a distinct name (e.g. `unicode_mock_data_cr`) for the second variant would clarify intent.",
+      "confidence": 0.65
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 779,
+      "line_end": 780,
+      "severity": "minor",
+      "title": "No test for iter_lines() with decode_unicode=False and non-\\r\\n custom delimiter",
+      "detail": "The new `carriage_return` / `line_feed` variables are conditioned on `decode_unicode`, but all non-None delimiter tests use `b'\\r\\n'` (bytes) or `u'\\r\\n'` (unicode). Other delimiters\u2014e.g. `b'\\n'` with `decode_unicode=False`, or unicode delimiters other than `u'\\r\\n'`\u2014are not tested, leaving the delimiter-branching logic partially uncovered for edge cases.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 779,
+      "line_end": 780,
+      "severity": "minor",
+      "title": "Named constants carriage_return / line_feed add indirection for simple single-character literals",
+      "detail": "`carriage_return` and `line_feed` are each used in only two places (lines 813\u2013814) and represent plain string literals. The rest of the codebase uses inline literals. Introducing named constants for these makes readers look up the definition unnecessarily. Consider inlining them at the call sites:\n\n```python\nskip_first_char = last_chunk_ends_with_cr and chunk.startswith(u'\\n' if decode_unicode else b'\\n')\nlast_chunk_ends_with_cr = chunk.endswith(u'\\r' if decode_unicode else b'\\r')\n```\n\nIf the variables are kept, a brief comment explaining why they are defined outside the loop (to avoid repeated conditional evaluation) would justify their existence.",
+      "confidence": 0.6
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_requests.py",
+      "line_start": 1335,
+      "line_end": 1335,
+      "severity": "nit",
+      "title": "Long assertion line exceeds visible convention in surrounding test code",
+      "detail": "Line 1335 (`assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')`) is noticeably longer than surrounding assertion lines. Consider splitting:\n\n```python\nresult = list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n'))\nassert result == unicode_mock_data.split(u'\\r\\n')\n```",
+      "confidence": 0.6
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 817,
+      "line_end": 819,
+      "severity": "nit",
+      "title": "Inline comment on the empty-chunk branch uses informal tone inconsistent with surrounding comments",
+      "detail": "The comment on line 817 (`# it's possible that after stripping the '\\n' then chunk becomes empty`) uses contractions and informal phrasing. Surrounding comments (e.g. lines 803\u2013808) use more formal constructions. Suggested rewrite: `# After stripping the leading '\\n', chunk may be empty; skip to next iteration.`",
+      "confidence": 0.55
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 813,
+      "line_end": 814,
+      "severity": "nit",
+      "title": "Variable name skip_first_char is generic; a domain-specific name would improve readability",
+      "detail": "`skip_first_char` accurately describes the mechanical operation but doesn't convey *why* the char is skipped. A name like `strip_leading_lf` or `consume_lf` would align with the domain-specific naming style used by neighbouring variables (`pending`, `last_chunk_ends_with_cr`) and make the intent self-documenting.",
+      "confidence": 0.5
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "last_chunk_ends_with_cr computed on original chunk, not post-strip chunk \u2014 wrong value after continue",
+          "detail": "At line 814, `last_chunk_ends_with_cr` is set by inspecting `chunk` *before* the `\n` is stripped (line 816). This is intentional to handle the general case. However, when the stripped chunk becomes empty and we `continue` (line 818-819), we skip updating `last_chunk_ends_with_cr` for the *next* iteration \u2014 but the value was already stored correctly at line 814 (before stripping), so on first glance it looks fine.\n\nThe real problem is more subtle: `last_chunk_ends_with_cr` is evaluated on the *original* (pre-strip) chunk. Consider input `[b'a\\r', b'\\n', b'\\nb']`:\n\n1. chunk=`b'a\\r'`: `skip_first_char=False`, `last_chunk_ends_with_cr=True`, lines=`['a']`, 'a' is incomplete so pending='a'.\n2. chunk=`b'\\n'`: pending prepended \u2192 chunk=`b'a\\r\\n'`. Now `skip_first_char = True (last_cr) and chunk.startswith('\\n')` \u2014 but chunk is `b'a\\r\\n'`, NOT starting with `\\n`. So `skip_first_char=False`. Then `last_chunk_ends_with_cr = b'a\\r\\n'.endswith(b'\\r')` = False. lines=`['a']`, incomplete_line check: `lines[-1][-1]='a'==chunk[-1]='\\n'`? No. So 'a' is yielded.\n3. chunk=`b'\\nb'`: `skip_first_char = False and ...` = False. lines=`['', 'b']`. '' and 'b' yielded.\n\nWait \u2014 after pending is prepended in step 2, `chunk = b'a\\r' + b'\\n' = b'a\\r\\n'`. Then `last_chunk_ends_with_cr` is evaluated on `b'a\\r\\n'` which does NOT end with `\\r`. Then splitlines gives `['a']`. incomplete_line: `lines[-1]='a'`, `lines[-1][-1]='a'`, `chunk[-1]='\\n'`. `'a'!='\\n'` \u2192 incomplete_line=False. So 'a' is yielded (not pended). \n\nThen chunk=`b'\\nb'`: last_chunk_ends_with_cr=False \u2192 skip_first_char=False. splitlines(`b'\\nb'`) = `[b'', b'b']`. incomplete: `b'b'[-1]='b'==chunk[-1]='b'` \u2192 True \u2192 pending=b'b'. `b''` yielded. At end, `b'b'` yielded. Result: `[b'a', b'', b'b']` \u2713\n\nHowever, there is a real correctness bug for the case where `chunk = b'\\n'` (only a `\\n`) and pending is None (no prepending). Suppose input is `[b'a\\r', b'\\n', b'\\nb']` and somehow 'a' is NOT pending:\n\nActually let me reconsider the real bug: **when `skip_first_char=True` and the chunk is ONLY `b'\\n'`** (chunk becomes empty after strip), we `continue` *without* resetting `last_chunk_ends_with_cr`. But at line 814, `last_chunk_ends_with_cr = chunk.endswith(b'\\r')` was already evaluated on the original `b'\\n'` chunk, giving `False`. So after `continue`, `last_chunk_ends_with_cr=False` correctly. That part is actually correct.\n\nThe actual bug: `last_chunk_ends_with_cr` is evaluated on the pre-strip chunk (line 814), but the chunk passed to `splitlines()` is the post-strip chunk (line 820). If `skip_first_char=True` and the chunk is `b'\\nfoo\\r'` (starts with `\\n`, ends with `\\r`), then:\n- Line 814: `last_chunk_ends_with_cr = b'\\nfoo\\r'.endswith(b'\\r')` = True \u2713\n- Line 816: chunk becomes `b'foo\\r'`\n- splitlines gives `['foo\\r']`? No: `b'foo\\r'.splitlines()` = `[b'foo']`.\n- `incomplete_line`: `lines[-1]=b'foo'`, `lines[-1][-1]=b'o'[0]`, `chunk[-1]=b'\\r'[0]`. `'o' != '\\r'` \u2192 incomplete_line=False. `foo` is yielded.\n- Next iteration `last_chunk_ends_with_cr=True` \u2192 next `\\n` would be skipped, which is CORRECT.\n\nSo the `last_chunk_ends_with_cr` being computed on the pre-strip chunk appears to be correct in all cases (the `\\r` at the end can't be stripped since we only strip a leading `\\n`). No bug there.\n\nRe-examining: The real correctness issue is that when `skip_first_char=True` and chunk becomes empty, we `continue` \u2014 which correctly skips `splitlines()`, BUT we've already set `last_chunk_ends_with_cr=False` (line 814, chunk=`b'\\n'` doesn't end with `\\r`). The `pending` is also left as `None` (was cleared at line 797 before). But what about the PREVIOUS pending? It was already prepended at line 796, then we set `pending=None` at line 797. After the `continue`, pending is None and the data that was previously pending was prepended into chunk, then the leading `\\n` was stripped, then chunk became empty. So all previous pending data (`\\r`) was consumed by the skip. The `\\r` that was pending is correctly eaten. This seems correct.\n\nAfter more careful analysis, the main correctness concern is: the `last_chunk_ends_with_cr` flag is updated BEFORE checking whether to skip (line 814 before line 815), which means it reflects the ORIGINAL chunk state. If `skip_first_char=True` and chunk=`b'\\n\\r'` (two chars), after stripping we get `b'\\r'`, `last_chunk_ends_with_cr` was set to `False` (original `b'\\n\\r'` ends with `\\r`... wait, `b'\\n\\r'.endswith(b'\\r')` = True). So `last_chunk_ends_with_cr=True`. Post-strip chunk=`b'\\r'`. splitlines gives `[b'']`? No: `b'\\r'.splitlines()` = `[b'']`. incomplete_line: `lines[-1]=b''`, falsy \u2192 False. `b''` yielded. Next chunk: `last_chunk_ends_with_cr=True`, if next chunk starts with `\\n`, it will be skipped. CORRECT.\n\nAfter full analysis: there does not appear to be a clear logic bug with `last_chunk_ends_with_cr` being evaluated on the pre-strip vs post-strip chunk in most scenarios. However, there IS a subtle edge case bug documented below.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            814,
+            819
+          ],
+          "severity": "major",
+          "title": "last_chunk_ends_with_cr not updated to reflect post-strip chunk when chunk becomes empty after stripping \\n",
+          "detail": "When `skip_first_char=True` and the chunk is exactly `b'\\n'` (or `u'\\n'`), after prepending pending data the scenario may be: pending was `b'foo\\r'`, so chunk becomes `b'foo\\r\\n'`. Then:\n- `last_chunk_ends_with_cr = b'foo\\r\\n'.endswith(b'\\r')` \u2192 False (correct, the CRLF pair is now complete)\n- strip leading `\\n`? No \u2014 chunk is `b'foo\\r\\n'`, starts with `b'f'`, not `b'\\n'`. So `skip_first_char` would be False since the combined chunk doesn't start with `\\n`.\n\nThe genuine problematic case: chunk=`b'\\n'` with no pending. Then `chunk.startswith(b'\\n')` \u2192 True, `last_chunk_ends_with_cr` was True from previous iteration. So `skip_first_char=True`. `last_chunk_ends_with_cr = b'\\n'.endswith(b'\\r')` \u2192 False. chunk becomes `b''`, we `continue`. This is correct behavior \u2014 the `\\n` is consumed as part of a CRLF pair, `last_chunk_ends_with_cr` is correctly set to False.\n\nAfter thorough analysis, I could not find a concrete reproducible correctness bug in the core logic. The implementation appears correct for all traced cases. Retracting this finding.",
+          "confidence": 0.2
+        }
+      ],
+      "tool_calls": 3,
+      "tokens_in": 37063,
+      "tokens_out": 2749,
+      "cost_usd": 0.152424,
+      "duration_s": 50.703504916979,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [],
+      "tool_calls": 1,
+      "tokens_in": 20851,
+      "tokens_out": 506,
+      "cost_usd": 0.070143,
+      "duration_s": 15.259936042129993,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "Intermediate variables `carriage_return` / `line_feed` add indirection for simple literals",
+          "detail": "The names `carriage_return` and `line_feed` are used in only two places each (lines 813\u2013814). The surrounding codebase uses inline string literals throughout; introducing named constants for single-character strings makes the reader look up their definition unnecessarily. Consider inlining them at the call sites:\n\n    skip_first_char = last_chunk_ends_with_cr and chunk.startswith(u'\\n' if decode_unicode else b'\\n')\n    last_chunk_ends_with_cr = chunk.endswith(u'\\r' if decode_unicode else b'\\r')\n\nAlternatively, if the variables are kept, they should be named with a leading underscore or some other signal that they are pure implementation-local helpers, consistent with how the file handles similar private values.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "nit",
+          "title": "Assignment order of `skip_first_char` / `last_chunk_ends_with_cr` is clear but the flag name is slightly verbose",
+          "detail": "`skip_first_char` is accurate but generic \u2014 it could describe many scenarios. A name that ties more directly to the domain, e.g. `strip_leading_lf` or `pending_cr`, would match the surrounding variable naming style (e.g. `pending`, `last_chunk_ends_with_cr`) which all use domain-specific terms. Minor readability suggestion only.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            817,
+            819
+          ],
+          "severity": "nit",
+          "title": "Inline comment on the `if not chunk` branch slightly inconsistent with surrounding comment style",
+          "detail": "The comment on line 817 (`# it's possible that after stripping the '\\n' then chunk becomes empty`) uses contractions and a slightly informal tone. The surrounding docblock and comments (e.g. lines 803\u2013808) use more formal phrasing (`That means`, `This rule only applies`). Consider: `# After stripping the leading '\\n', chunk may be empty.`",
+          "confidence": 0.55
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1322,
+            1325
+          ],
+          "severity": "minor",
+          "title": "`mock_iter_content` helper duplicated verbatim between two test methods",
+          "detail": "The identical `mock_iter_content` function definition appears in both `test_response_lines` (lines 1322\u20131325) and `test_response_lines_parametrized` (lines 1385\u20131388). The existing test file style is to keep helpers local, but duplication here is notable enough to warrant extracting a small shared helper or fixture \u2014 consistent with how other tests in the file share setup via class-level helpers or `pytest.fixture`.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1335,
+            1335
+          ],
+          "severity": "nit",
+          "title": "Long line exceeds the visible convention in surrounding test code",
+          "detail": "Line 1335 (`assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')`) is noticeably longer than surrounding assertion lines. The existing test file wraps long expressions across lines; consider splitting:\n\n    result = list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n'))\n    assert result == unicode_mock_data.split(u'\\r\\n')",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1320,
+            1320
+          ],
+          "severity": "nit",
+          "title": "`unicode_mock_data` variable declared too early and re-assigned later",
+          "detail": "`unicode_mock_data` is assigned at line 1320 from the original `mock_data`, then `mock_data` is reassigned at line 1352 and `unicode_mock_data` is reassigned at line 1356. The initial assignment at line 1320 is fine, but the re-declaration at line 1356 with the same name for a logically different dataset (the `\\n`\u2192`\\r` variant) could cause confusion. Using a distinct name (e.g. `unicode_mock_data_cr`) for the second variant would clarify intent and align with the local convention of distinguishing `mock_data` / `unicode_mock_data`.",
+          "confidence": 0.65
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 6139,
+      "tokens_out": 1197,
+      "cost_usd": 0.036372,
+      "duration_s": 23.536826082970947,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "No test for chunk that is exactly b'\\n' after CR-ending chunk (becomes empty after strip)",
+          "detail": "The branch at line 818-819 (`if not chunk: continue`) handles the case where after stripping the leading '\\n' the chunk is entirely empty. Looking at the parametrized test cases, `[b'a\\r', b'\\n', b'\\nb']` does exercise hitting skip_first_char=True with a chunk of b'\\n', but the chunk after stripping becomes b'' (empty), triggering the `continue`. However, `mock_chunks` in `test_response_lines` that is reused for the `iter_lines()` call also has `b'\\r'` then `b'\\n'` as separate chunks (lines 1308-1309), which does exercise this path. So this is partially covered. But there is no explicit test asserting the `continue` path independently with a dedicated test case verifying that pending data is not lost when the empty-after-strip chunk is skipped and followed by more data. Confidence is moderate.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "No test for iter_lines() with decode_unicode=False and a custom (non-None) delimiter that is not b'\\r\\n'",
+          "detail": "The new code introduces `carriage_return` and `line_feed` variables conditioned on `decode_unicode`, but the only non-None delimiter tests use `b'\\r\\n'` (bytes) or `u'\\r\\n'` (unicode). Other byte-string delimiters (e.g., `b'\\n'`) with `decode_unicode=False` are not tested, nor are unicode delimiters other than `u'\\r\\n'` with `decode_unicode=True`. This leaves the delimiter-branch logic partially untested for edge cases.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "major",
+          "title": "No test for last_chunk_ends_with_cr=True but next chunk does NOT start with '\\n' (false alarm avoidance)",
+          "detail": "The logic sets `last_chunk_ends_with_cr = chunk.endswith(carriage_return)` and then checks `skip_first_char = last_chunk_ends_with_cr and chunk.startswith(line_feed)`. There is no parametrized test case where the last chunk ends with `\\r` and the next chunk starts with something other than `\\n` (e.g., `[b'a\\r', b'bc']`) to confirm that `last_chunk_ends_with_cr` is set correctly but `skip_first_char` stays False and the `\\r` is treated as its own line break. The existing cases with `b'\\r'` followed by `b'\\n'` only confirm the skip path, not the non-skip path in the same `last_chunk_ends_with_cr=True` scenario.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "minor",
+          "title": "No test for multiple consecutive chunks ending with '\\r' (last_chunk_ends_with_cr state chaining)",
+          "detail": "There is no test case like `[b'a\\r', b'b\\r', b'\\nc']` which would chain `last_chunk_ends_with_cr` across more than one transition \u2014 i.e., first chunk ends with `\\r` but next chunk starts with `b` (not `\\n`), so `skip_first_char` should be False, and then the second chunk ends with `\\r` and the third starts with `\\n`, so `skip_first_char` should be True. This multi-step state transition is not explicitly covered.",
+          "confidence": 0.7
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 34179,
+      "tokens_out": 1010,
+      "cost_usd": 0.117687,
+      "duration_s": 20.6513933329843,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "Missing test coverage for key state-transition branches in the CR/LF split-chunk logic",
+          "detail": "Three distinct gap areas in test coverage were identified:\n\n1. **Empty-after-strip branch** (`if not chunk: continue`, lines 818\u2013819): While `[b'a\\r', b'\\n', b'\\nb']` partially exercises this path, there is no dedicated test asserting that pending data is not lost when the stripped chunk is entirely empty and more data follows.\n\n2. **CR-ending chunk NOT followed by LF** (lines 813\u2013814): No parametrized case like `[b'a\\r', b'bc']` confirms that `last_chunk_ends_with_cr=True` but `skip_first_char` correctly stays `False`, treating the lone `\\r` as a line break. Only the skip path is tested.\n\n3. **Chained CR-state transitions** (lines 813\u2013814): No case like `[b'a\\r', b'b\\r', b'\\nc']` validates multi-step `last_chunk_ends_with_cr` chaining where the first CR is NOT followed by LF but the second is.\n\nAdding explicit parametrized cases for these scenarios would both document the intended behaviour and guard against regressions.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            819
+          ],
+          "severity": "major",
+          "title": "Core correctness of last_chunk_ends_with_cr / skip_first_char logic needs careful review",
+          "detail": "**Reviewer disagreement.** Two reviewers investigated whether `last_chunk_ends_with_cr` being evaluated on the pre-strip chunk (line 814, before the leading `\\n` is removed at line 816) introduces a bug. After exhaustive case analysis, no concrete reproducible correctness failure was found for the main paths. However, the logic is subtle enough\u2014especially around the `if not chunk: continue` path\u2014that the interaction between the pre-strip flag evaluation, the pending-data prepend, and the empty-chunk skip deserves explicit documentation or a targeted unit test. One reviewer initially rated this major (confidence 0.55) but could not reproduce a failing case; the second retracted the finding (confidence 0.2). Net assessment: the code is likely correct but the ordering of operations (flag set \u2192 strip \u2192 maybe-empty \u2192 continue) is non-obvious and warrants an inline comment explaining why `last_chunk_ends_with_cr` is intentionally evaluated before stripping.",
+          "confidence": 0.4
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1322,
+            1325
+          ],
+          "severity": "minor",
+          "title": "mock_iter_content helper duplicated verbatim between two test methods",
+          "detail": "The `mock_iter_content` function definition is copy-pasted identically into both `test_response_lines` (around lines 1322\u20131325) and `test_response_lines_parametrized` (around lines 1385\u20131388). Consider extracting it as a shared helper function or a `pytest.fixture` to avoid duplication and keep tests DRY, consistent with the file's use of class-level helpers elsewhere.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1320,
+            1320
+          ],
+          "severity": "minor",
+          "title": "unicode_mock_data re-assigned later with a logically different dataset, risking confusion",
+          "detail": "`unicode_mock_data` is first assigned at line 1320 from the original `mock_data`, then `mock_data` is reassigned (line 1352) and `unicode_mock_data` is reassigned (line 1356) to a `\\n`\u2192`\\r` variant. Reusing the same name for a logically distinct dataset can cause confusion about which dataset is active at any point. Using a distinct name (e.g. `unicode_mock_data_cr`) for the second variant would clarify intent.",
+          "confidence": 0.65
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "No test for iter_lines() with decode_unicode=False and non-\\r\\n custom delimiter",
+          "detail": "The new `carriage_return` / `line_feed` variables are conditioned on `decode_unicode`, but all non-None delimiter tests use `b'\\r\\n'` (bytes) or `u'\\r\\n'` (unicode). Other delimiters\u2014e.g. `b'\\n'` with `decode_unicode=False`, or unicode delimiters other than `u'\\r\\n'`\u2014are not tested, leaving the delimiter-branching logic partially uncovered for edge cases.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            779,
+            780
+          ],
+          "severity": "minor",
+          "title": "Named constants carriage_return / line_feed add indirection for simple single-character literals",
+          "detail": "`carriage_return` and `line_feed` are each used in only two places (lines 813\u2013814) and represent plain string literals. The rest of the codebase uses inline literals. Introducing named constants for these makes readers look up the definition unnecessarily. Consider inlining them at the call sites:\n\n```python\nskip_first_char = last_chunk_ends_with_cr and chunk.startswith(u'\\n' if decode_unicode else b'\\n')\nlast_chunk_ends_with_cr = chunk.endswith(u'\\r' if decode_unicode else b'\\r')\n```\n\nIf the variables are kept, a brief comment explaining why they are defined outside the loop (to avoid repeated conditional evaluation) would justify their existence.",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1335,
+            1335
+          ],
+          "severity": "nit",
+          "title": "Long assertion line exceeds visible convention in surrounding test code",
+          "detail": "Line 1335 (`assert list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n')) == unicode_mock_data.split(u'\\r\\n')`) is noticeably longer than surrounding assertion lines. Consider splitting:\n\n```python\nresult = list(r.iter_lines(decode_unicode=True, delimiter=u'\\r\\n'))\nassert result == unicode_mock_data.split(u'\\r\\n')\n```",
+          "confidence": 0.6
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            817,
+            819
+          ],
+          "severity": "nit",
+          "title": "Inline comment on the empty-chunk branch uses informal tone inconsistent with surrounding comments",
+          "detail": "The comment on line 817 (`# it's possible that after stripping the '\\n' then chunk becomes empty`) uses contractions and informal phrasing. Surrounding comments (e.g. lines 803\u2013808) use more formal constructions. Suggested rewrite: `# After stripping the leading '\\n', chunk may be empty; skip to next iteration.`",
+          "confidence": 0.55
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            813,
+            814
+          ],
+          "severity": "nit",
+          "title": "Variable name skip_first_char is generic; a domain-specific name would improve readability",
+          "detail": "`skip_first_char` accurately describes the mechanical operation but doesn't convey *why* the char is skipped. A name like `strip_leading_lf` or `consume_lf` would align with the domain-specific naming style used by neighbouring variables (`pending`, `last_chunk_ends_with_cr`) and make the intent self-documenting.",
+          "confidence": 0.5
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 5281,
+      "tokens_out": 2096,
+      "cost_usd": 0.047283,
+      "duration_s": 39.31539083295502,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 103513,
+    "tokens_out": 7558,
+    "cost_usd": 0.423909,
+    "duration_s": 149.5
+  }
+}

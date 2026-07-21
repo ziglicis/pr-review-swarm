@@ -1,0 +1,352 @@
+{
+  "case": "httpx_887",
+  "experiment": "no-tools",
+  "pr_url": "https://github.com/encode/httpx/pull/887",
+  "head_sha": "4a1cc2c090721ec8576aa466fe194ad5f1e85f03",
+  "sha_matches_dataset": true,
+  "timestamp": 1784181773,
+  "summary": "This PR adds support for generator-based WSGI applications by introducing a `_skip_leading_empty_chunks` helper and updating the dispatch logic. While the core approach is reasonable, there are correctness concerns around WSGI spec compliance (specifically `close()` handling), edge cases with zero-item generators, and a regression in test coverage where the list-returning WSGI app path is no longer exercised. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "findings": [
+    {
+      "agent": "correctness",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 99,
+      "line_end": 107,
+      "severity": "critical",
+      "title": "AssertionError when generator WSGI app yields zero items (start_response never called)",
+      "detail": "When `application_factory` is given an empty iterable (e.g. `output=[]`), the generator body never executes, so `start_response` is never called and `seen_status` remains `None`. The `assert seen_status is not None` on line 104 will then fire as an `AssertionError`. The existing test `test_wsgi_generator_empty` uses `[b\"\", b\"\", b\"\", b\"\"]` (4 items), which causes the generator body to run and call `start_response` before its first yield \u2014 so the bug is not caught by that test. Passing `output=[]` would reproduce it.\n\nMore broadly, the assumption that `start_response` is called before the first `yield` holds for `application_factory` but is not guaranteed for arbitrary WSGI generators \u2014 a non-conforming (but real-world) generator could call `start_response` after the first yield, leaving `seen_status` still `None` at assertion time. The assertion should be replaced with a proper error rather than a bare `assert`, or the code should handle the case where `start_response` was never called gracefully.",
+      "confidence": 0.82
+    },
+    {
+      "agent": "correctness",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 11,
+      "line_end": 16,
+      "severity": "major",
+      "title": "_skip_leading_empty_chunks discards close() when all chunks are empty, violating PEP 3333",
+      "detail": "PEP 3333 requires that if the iterable returned by a WSGI app has a `close()` method, the server must call it after the response is complete. When `_skip_leading_empty_chunks` exhausts the entire iterator without finding a non-empty chunk, it returns a plain `[]` \u2014 dropping any reference to the original generator. This means that if the app's generator has cleanup code in a `finally` block or an explicit `close()` method, it will never be invoked, causing resource leaks.\n\nThe correct fix is to retain a reference to the original iterator (e.g. via a wrapper or by stashing it) and ensure `close()` is called on it when the response is done, even in the all-empty case.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_wsgi.py",
+      "line_start": 8,
+      "line_end": 21,
+      "severity": "minor",
+      "title": "application_factory departs from the existing convention of plain top-level WSGI app functions in tests",
+      "detail": "All other WSGI app fixtures in the test file (`echo_body`, `raise_exc`, `echo_body_with_response_stream`) are defined as plain top-level functions, which makes them easy to read and understand. Replacing the original `hello_world` function with an `application_factory` closure factory is a stylistic departure. Consider keeping a plain `hello_world` function for the basic `test_wsgi` test and adding a separate `hello_world_generator` function (or similar) for the new generator-specific tests, to maintain consistency.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "test_coverage",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 11,
+      "line_end": 16,
+      "severity": "minor",
+      "title": "Refactoring removed list-returning WSGI app test coverage; _skip_leading_empty_chunks fast path only indirectly tested",
+      "detail": "The original `test_wsgi` test covered a plain list-returning WSGI app (`return [output]`). After refactoring to use `application_factory` (a generator), the list-return code path through `_skip_leading_empty_chunks` is no longer directly tested. `echo_body` and `echo_body_with_response_stream` still exist but do not exercise leading-empty-bytes scenarios with plain lists.\n\nAdditionally, the fast path of `_skip_leading_empty_chunks` (first chunk is non-empty, immediately returns `chain(...)`) is only exercised indirectly via a single-element generator in `test_wsgi`. There is no isolated or direct test for the helper with a plain list input containing leading empty bytes. Consider adding at least one test with a plain list WSGI response to guard against regressions.",
+      "confidence": 0.72
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 11,
+      "line_end": 16,
+      "severity": "nit",
+      "title": "Missing return type annotation on _skip_leading_empty_chunks",
+      "detail": "The rest of the file annotates function return types consistently (e.g. `send` returns `Response`, `start_response` returns `None`). `_skip_leading_empty_chunks` has a parameter annotation (`typing.Iterable`) but no `-> typing.Iterable` return type annotation. Adding it would match the surrounding style.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "style",
+      "file": "httpx/_dispatch/wsgi.py",
+      "line_start": 100,
+      "line_end": 102,
+      "severity": "nit",
+      "title": "Slightly imprecise wording in inline comment near assertion",
+      "detail": "The comment wording 'shouldn't be used until the first non-empty chunk has been served' uses 'served' where 'yielded' or 'received' would be more technically accurate and consistent with the WSGI/iterator terminology used elsewhere in the file.",
+      "confidence": 0.5
+    },
+    {
+      "agent": "style",
+      "file": "tests/test_wsgi.py",
+      "line_start": 99,
+      "line_end": 103,
+      "severity": "nit",
+      "title": "Local variable name output in tests shadows the same name used inside application_factory closure",
+      "detail": "Both `test_wsgi_generator` and `test_wsgi_generator_empty` use `output` as a local variable name, matching the parameter name inside `application_factory`'s closure. While not a bug, using a name like `chunks` at the test level would visually distinguish test-level data from the app-internal variable, improving readability.",
+      "confidence": 0.45
+    }
+  ],
+  "agent_runs": [
+    {
+      "agent": "correctness",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            99,
+            107
+          ],
+          "severity": "critical",
+          "title": "seen_status is asserted non-None before start_response is called when all chunks are empty",
+          "detail": "When the WSGI app is a generator and all chunks are empty, `_skip_leading_empty_chunks` exhausts the iterator without ever calling `start_response` (because `start_response` is only called when the generator body runs, which happens lazily during iteration). The assertion `assert seen_status is not None` on line 104 will then fire as an AssertionError even though the app technically completed successfully.\n\nMore specifically: `application_factory` creates a generator function. When `self.app(environ, start_response)` is called, the generator object is returned but **no code in its body runs yet** \u2014 including the `start_response(status, response_headers)` call. `_skip_leading_empty_chunks` then drives the generator forward; if all chunks are empty it returns `[]` and the loop ends. At that point `seen_status` is still `None` (or it may have been set \u2014 this depends on the exact interleaving). \n\nActually, tracing more carefully: the generator body runs `start_response` *before* the first `yield`, so `start_response` IS called during the first `next()` call inside `_skip_leading_empty_chunks`. But only if the generator yields at least one item. If the generator yields zero items (empty iterable passed to `application_factory`), `start_response` is never called and `seen_status` remains `None`, causing the assertion to fail. The `test_wsgi_generator_empty` test passes `[b\"\", b\"\", b\"\", b\"\"]` (4 items), which is enough to trigger the `start_response` call before yielding the first item, so that specific test passes. However, if `output=[]` were passed, the bug would manifest.\n\nAdditionally, even in the normal generator case, the real correctness concern is the ordering: the fix calls `_skip_leading_empty_chunks(result)` and then immediately asserts `seen_status is not None`. But `_skip_leading_empty_chunks` returns a (possibly lazy) iterable \u2014 it doesn't exhaust the generator, it only advances it to the first non-empty chunk. The assertions at lines 104-107 check `seen_status` *after* `_skip_leading_empty_chunks` returns, which is correct only because the generator runs `start_response` before its first yield. This is true for `application_factory` but is not guaranteed for all WSGI generators \u2014 if a generator called `start_response` only after the first yield (which is unusual but possible), `seen_status` would still be `None` here.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "major",
+          "title": "_skip_leading_empty_chunks returns a plain list [] instead of an iterator when all chunks are empty, discarding close() support",
+          "detail": "The WSGI spec (PEP 3333) requires that if the iterable returned by the app has a `close()` method, the server must call it after the response is finished. When `_skip_leading_empty_chunks` exhausts all items without finding a non-empty one, it returns `[]` \u2014 a plain empty list \u2014 rather than an object that preserves the original generator's `close()` method. This means that if the app's generator has cleanup code in a `finally` block (or an explicit `close()` method), it will never be called. The correct approach would be to keep a reference to the original iterator and, on exhaustion, return an empty iterable that still delegates `close()` to the original.",
+          "confidence": 0.85
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 6112,
+      "tokens_out": 947,
+      "cost_usd": 0.032541,
+      "duration_s": 20.238970292033628,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "security",
+      "status": "ok",
+      "findings": [],
+      "tool_calls": 0,
+      "tokens_in": 2576,
+      "tokens_out": 33,
+      "cost_usd": 0.008223,
+      "duration_s": 2.6806985829025507,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "style",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "style",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "minor",
+          "title": "Return type annotation missing on helper function",
+          "detail": "The existing code in this file consistently annotates functions (e.g. `send` returns `Response`, `start_response` returns `None`). `_skip_leading_empty_chunks` has a parameter annotation (`typing.Iterable`) but no return type annotation. Adding `-> typing.Iterable` would match the surrounding style.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            100,
+            102
+          ],
+          "severity": "nit",
+          "title": "Inline comment style slightly inconsistent with existing comments",
+          "detail": "The rest of the file uses no inline block comments near `assert` statements or result assignments. The new three-line comment block at lines 100-102 is reasonable, but the wording 'shouldn't be used until the first non-empty chunk has been served' is slightly imprecise ('served' could be 'yielded' or 'received'). Minor wording nit to match the more technical phrasing used elsewhere in the file.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            8,
+            21
+          ],
+          "severity": "minor",
+          "title": "`application_factory` replaces the original standalone `hello_world` function with a more complex factory, making simple tests harder to read",
+          "detail": "The existing test style (visible in `echo_body`, `raise_exc`, `echo_body_with_response_stream`) defines each WSGI app as a plain top-level function. Introducing a factory that returns a closure is a departure from that convention. The original `hello_world` function (or a similarly named plain function) could be kept for `test_wsgi`, and a separate generator app function (e.g. `hello_world_generator`) could be added just for the new generator tests, keeping consistency with the surrounding style.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            99,
+            103
+          ],
+          "severity": "nit",
+          "title": "Local variable `output` in test could shadow outer scope if tests are extended",
+          "detail": "Both `test_wsgi_generator` (line 99) and `test_wsgi_generator_empty` (line 107) use `output` as a local variable name, which matches the convention in the WSGI app functions (`output = ...`). This is fine in isolation, but the name `output` is also used inside `application_factory`'s closure as a parameter. This is a very minor readability nit \u2014 something like `chunks` would distinguish the test-level data from the app-level variable name used inside the factory.",
+          "confidence": 0.45
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 4031,
+      "tokens_out": 714,
+      "cost_usd": 0.022803,
+      "duration_s": 14.734710082877427,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "test_coverage",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "minor",
+          "title": "No test for _skip_leading_empty_chunks with a non-generator (list) WSGI response",
+          "detail": "The existing tests use application_factory which always yields (generator). The original list-returning WSGI app path (e.g. `return [output]`) now also goes through _skip_leading_empty_chunks. There is no test that passes a plain list with leading empty bytes to _skip_leading_empty_chunks, though this is lower risk since lists already work with iter(). The test_wsgi test was refactored to use the generator factory, losing the direct coverage of the list-return path going through the new helper.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "major",
+          "title": "No test for _skip_leading_empty_chunks where the first chunk is non-empty (fast path)",
+          "detail": "The new helper _skip_leading_empty_chunks has two branches: (1) a non-empty chunk is encountered immediately (returns chain on first iteration), and (2) all chunks are empty (returns []). The test_wsgi test now uses application_factory with [b\"Hello, World!\"] which exercises the fast path through a generator, but there is no isolated unit test for _skip_leading_empty_chunks itself. More importantly, test_wsgi_generator covers leading empties followed by content, and test_wsgi_generator_empty covers all-empty. The first-chunk-non-empty branch is only tested via test_wsgi with a single-element list through the generator factory, which is a thin path. Confidence is moderate since it does exercise the branch indirectly.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            13,
+            15
+          ],
+          "severity": "major",
+          "title": "No test covering _skip_leading_empty_chunks with a mix of empty and non-empty chunks where remaining body items are also consumed correctly",
+          "detail": "The test_wsgi_generator test verifies [b\"\", b\"\", b\"Some content\", b\" and more content\"] produces the correct concatenated text. This is good. However, there is no test verifying that the remaining items after the first non-empty chunk are fully consumed (i.e., that itertools.chain correctly threads the rest of the iterator through). The current test does assert response.text == \"Some content and more content\" which implicitly covers this, so this is low risk, but it is done through a high-level response assertion rather than chunk-level verification.",
+          "confidence": 0.3
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            71,
+            75
+          ],
+          "severity": "minor",
+          "title": "test_wsgi no longer tests the original list-returning WSGI app",
+          "detail": "The original test_wsgi tested a plain function returning a list ([output]). After refactoring, all tests now use application_factory which yields chunks via a generator. The list-return path (which is a valid and common WSGI pattern) is no longer covered by any test. echo_body and echo_body_with_response_stream still test list and generator returns, but they always return non-empty content. The _skip_leading_empty_chunks function operating on a plain list with leading empty bytes is untested.",
+          "confidence": 0.75
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 3712,
+      "tokens_out": 864,
+      "cost_usd": 0.024096,
+      "duration_s": 16.88097416702658,
+      "skip_or_error_reason": null
+    },
+    {
+      "agent": "synthesizer",
+      "status": "ok",
+      "findings": [
+        {
+          "agent": "correctness",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            99,
+            107
+          ],
+          "severity": "critical",
+          "title": "AssertionError when generator WSGI app yields zero items (start_response never called)",
+          "detail": "When `application_factory` is given an empty iterable (e.g. `output=[]`), the generator body never executes, so `start_response` is never called and `seen_status` remains `None`. The `assert seen_status is not None` on line 104 will then fire as an `AssertionError`. The existing test `test_wsgi_generator_empty` uses `[b\"\", b\"\", b\"\", b\"\"]` (4 items), which causes the generator body to run and call `start_response` before its first yield \u2014 so the bug is not caught by that test. Passing `output=[]` would reproduce it.\n\nMore broadly, the assumption that `start_response` is called before the first `yield` holds for `application_factory` but is not guaranteed for arbitrary WSGI generators \u2014 a non-conforming (but real-world) generator could call `start_response` after the first yield, leaving `seen_status` still `None` at assertion time. The assertion should be replaced with a proper error rather than a bare `assert`, or the code should handle the case where `start_response` was never called gracefully.",
+          "confidence": 0.82
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "major",
+          "title": "_skip_leading_empty_chunks discards close() when all chunks are empty, violating PEP 3333",
+          "detail": "PEP 3333 requires that if the iterable returned by a WSGI app has a `close()` method, the server must call it after the response is complete. When `_skip_leading_empty_chunks` exhausts the entire iterator without finding a non-empty chunk, it returns a plain `[]` \u2014 dropping any reference to the original generator. This means that if the app's generator has cleanup code in a `finally` block or an explicit `close()` method, it will never be invoked, causing resource leaks.\n\nThe correct fix is to retain a reference to the original iterator (e.g. via a wrapper or by stashing it) and ensure `close()` is called on it when the response is done, even in the all-empty case.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            8,
+            21
+          ],
+          "severity": "minor",
+          "title": "application_factory departs from the existing convention of plain top-level WSGI app functions in tests",
+          "detail": "All other WSGI app fixtures in the test file (`echo_body`, `raise_exc`, `echo_body_with_response_stream`) are defined as plain top-level functions, which makes them easy to read and understand. Replacing the original `hello_world` function with an `application_factory` closure factory is a stylistic departure. Consider keeping a plain `hello_world` function for the basic `test_wsgi` test and adding a separate `hello_world_generator` function (or similar) for the new generator-specific tests, to maintain consistency.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "minor",
+          "title": "Refactoring removed list-returning WSGI app test coverage; _skip_leading_empty_chunks fast path only indirectly tested",
+          "detail": "The original `test_wsgi` test covered a plain list-returning WSGI app (`return [output]`). After refactoring to use `application_factory` (a generator), the list-return code path through `_skip_leading_empty_chunks` is no longer directly tested. `echo_body` and `echo_body_with_response_stream` still exist but do not exercise leading-empty-bytes scenarios with plain lists.\n\nAdditionally, the fast path of `_skip_leading_empty_chunks` (first chunk is non-empty, immediately returns `chain(...)`) is only exercised indirectly via a single-element generator in `test_wsgi`. There is no isolated or direct test for the helper with a plain list input containing leading empty bytes. Consider adding at least one test with a plain list WSGI response to guard against regressions.",
+          "confidence": 0.72
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            11,
+            16
+          ],
+          "severity": "nit",
+          "title": "Missing return type annotation on _skip_leading_empty_chunks",
+          "detail": "The rest of the file annotates function return types consistently (e.g. `send` returns `Response`, `start_response` returns `None`). `_skip_leading_empty_chunks` has a parameter annotation (`typing.Iterable`) but no `-> typing.Iterable` return type annotation. Adding it would match the surrounding style.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_dispatch/wsgi.py",
+          "line_range": [
+            100,
+            102
+          ],
+          "severity": "nit",
+          "title": "Slightly imprecise wording in inline comment near assertion",
+          "detail": "The comment wording 'shouldn't be used until the first non-empty chunk has been served' uses 'served' where 'yielded' or 'received' would be more technically accurate and consistent with the WSGI/iterator terminology used elsewhere in the file.",
+          "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "tests/test_wsgi.py",
+          "line_range": [
+            99,
+            103
+          ],
+          "severity": "nit",
+          "title": "Local variable name output in tests shadows the same name used inside application_factory closure",
+          "detail": "Both `test_wsgi_generator` and `test_wsgi_generator_empty` use `output` as a local variable name, matching the parameter name inside `application_factory`'s closure. While not a bug, using a name like `chunks` at the test level would visually distinguish test-level data from the app-internal variable, improving readability.",
+          "confidence": 0.45
+        }
+      ],
+      "tool_calls": 0,
+      "tokens_in": 3376,
+      "tokens_out": 1818,
+      "cost_usd": 0.037398,
+      "duration_s": 33.775792124914005,
+      "skip_or_error_reason": null
+    }
+  ],
+  "totals": {
+    "tokens_in": 19807,
+    "tokens_out": 4376,
+    "cost_usd": 0.125061,
+    "duration_s": 88.3
+  }
+}

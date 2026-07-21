@@ -2,50 +2,30 @@
   "case": "requests_3984",
   "experiment": "baseline",
   "pr_url": "https://github.com/psf/requests/pull/3984",
-  "head_sha": "458df8f4f432956003a81a5285129e6dbf9b40b0",
+  "head_sha": "f555edd50be304793a839ef26676c52e81b2dcbf",
   "sha_matches_dataset": true,
-  "timestamp": 1784180913,
+  "timestamp": 1784589898,
   "summary": "",
   "findings": [
     {
       "agent": "baseline",
       "file": "requests/models.py",
-      "line_start": 813,
-      "line_end": 819,
-      "severity": "critical",
-      "title": "last_chunk_ends_with_cr not updated when chunk is consumed by continue",
-      "detail": "When `skip_first_char` is True and the chunk becomes empty after stripping the leading `\\n` (line 818), the code does `continue` \u2014 but `last_chunk_ends_with_cr` has already been updated to reflect whether *the new (now-empty) chunk* ends with `\\r`. Because the chunk is empty (`b''` or `''`), `chunk.endswith(carriage_return)` is `False` (line 814 executes *before* the `continue` at line 819), so `last_chunk_ends_with_cr` gets reset to `False`. That is correct for the case where the single-character chunk is *just* `\\n` (it doesn't end with `\\r`), so this particular combination is fine.\n\nHowever, there is a subtler ordering issue: `last_chunk_ends_with_cr` is set on line 814 using the value of `chunk` *before* the possible `chunk = chunk[1:]` on line 816. This is intentional \u2014 the original (un-stripped) chunk is used to decide whether to update the flag \u2014 but consider the scenario:\n\n1. Previous chunk ended with `\\r`.\n2. Current chunk is `\\n\\r` (starts with `\\n`, ends with `\\r`).\n   - `skip_first_char = True` (line 813)\n   - `last_chunk_ends_with_cr = True` (line 814, chunk=`\\n\\r` ends with `\\r` \u2713)\n   - chunk becomes `\\r` after stripping (line 816)\n   - `splitlines()` on `\\r` yields one empty line \u2014 correct.\n\nNow the next chunk is `\\n`:\n   - `skip_first_char = True` (last ended with `\\r`, chunk starts with `\\n`)\n   - `last_chunk_ends_with_cr` set to `False` (original chunk `\\n` does not end with `\\r`) \u2014 correct.\n   - chunk stripped to empty \u2192 `continue`\n\nSo the logic is actually correct. However, the scenario where the chunk is exactly `b'\\n'` and we `continue` *also* leaves `last_chunk_ends_with_cr = False` (line 814 already ran, original chunk `b'\\n'` does not end with `\\r`). This is correct.\n\nBut there is one real bug: if the chunk after prepending `pending` (line 796) is `b'\\n'` and the original single incoming chunk was `b'\\n'`, then `last_chunk_ends_with_cr` is evaluated against the *combined* chunk (pending+chunk), not the raw incoming chunk. This means if pending ended with `\\r` and the incoming chunk is `\\n`, after prepending pending the combined chunk no longer starts with `\\n` (it starts with whatever pending starts with), so `skip_first_char` would be False, and `last_chunk_ends_with_cr` is set against the combined chunk. Actually this is fine because the `\\r` at the end of `pending` is now *inside* the combined chunk and `splitlines()` will handle `\\r\\n` correctly within a single chunk.\n\nActually upon reflection, the core correctness concern is: `last_chunk_ends_with_cr` is set from the pre-strip `chunk` value (before `chunk = chunk[1:]`). Consider a chunk that is exactly `b'\\n\\r'` when the previous chunk ended with `\\r`: `last_chunk_ends_with_cr` is set to `True` (because original `b'\\n\\r'` ends with `\\r`), then chunk is stripped to `b'\\r'`. So far so good. But now consider `b'\\n'` (a single newline after a `\\r`): `last_chunk_ends_with_cr` is set to `False` (original ends with `\\n`), chunk becomes empty, `continue`. This is correct. The logic seems sound for all these cases.\n\nThis is a false alarm \u2014 the logic is correct. Downgrading to nit level to note the subtle ordering dependency for future maintainers.",
-      "confidence": 0.5
-    },
-    {
-      "agent": "baseline",
-      "file": "requests/models.py",
-      "line_start": 813,
-      "line_end": 814,
+      "line_start": 815,
+      "line_end": 816,
       "severity": "major",
-      "title": "last_chunk_ends_with_cr evaluated against pre-pending-prepend chunk but after pending is prepended",
-      "detail": "After line 795\u2013797, `chunk` is already `pending + incoming_chunk`. The `last_chunk_ends_with_cr` and `skip_first_char` logic at lines 813\u2013814 therefore operates on the *combined* chunk rather than the raw incoming bytes from the network.\n\nConsider: pending = `b'abc\\r'`, incoming chunk = `b'\\n'`.\n- After line 796, `chunk = b'abc\\r\\n'`.\n- `skip_first_char = False` (combined chunk starts with `b'a'`, not `b'\\n'`), so the `\\n` is not stripped.\n- `last_chunk_ends_with_cr = False` (combined chunk ends with `b'\\n'`).\n- `splitlines()` on `b'abc\\r\\n'` \u2192 `[b'abc']` \u2014 correct.\n\nBut now consider: pending = `b'abc'`, incoming chunk = `b'\\n'` with `last_chunk_ends_with_cr = True` (the chunk before `pending` was set ended with `\\r`, but `pending` itself does NOT end with `\\r`).\n\nWait \u2014 `pending` is set by `lines.pop()` in the previous iteration, which is the last incomplete line. If the last chunk ended with `\\r`, then `last_chunk_ends_with_cr = True` AND `pending = b'...'` (the text after the last `\\r`?) Actually no \u2014 if a chunk ends with `\\r` and there's a pending, that means the chunk ended mid-line without a newline, so `pending` holds the tail. But `\\r` IS a line separator for `splitlines()`, so `splitlines()` on a chunk ending with `\\r` produces lines including an empty string for the `\\r`, and `pending` would be the empty string after `\\r`... \n\nLet's trace: chunk = `b'abc\\r'`, `splitlines()` \u2192 `[b'abc']`, `incomplete_line = lines[-1] and lines[-1][-1] == chunk[-1]` \u2192 `b'abc'` and `b'c' == b'\\r'` \u2192 False. So `pending` is NOT set. `last_chunk_ends_with_cr = True`.\n\nNext chunk = `b'\\n'`:\n- `pending is None`, so no prepend.\n- `skip_first_char = True` (last ended with `\\r`, chunk starts with `\\n`).\n- `last_chunk_ends_with_cr = False`.\n- chunk stripped to empty \u2192 continue. Correct!\n\nNow: chunk = `b'abc\\rd'` (ends with `d`, not `\\r`):\n- `splitlines()` \u2192 `[b'abc', b'd']`? No: `b'abc\\rd'.splitlines()` \u2192 `[b'abc', b'd']`. `incomplete_line`: `b'd'` and `b'd'[-1] == b'd'[-1]` (i.e., `b'd'[-1] == chunk[-1]` = `b'd'`) \u2192 True. `pending = b'd'`, `last_chunk_ends_with_cr = False`.\n\nNext chunk = `b'\\nmore'`:\n- After prepend: `chunk = b'd\\nmore'`.\n- `skip_first_char = False` (last_chunk_ends_with_cr is False).\n- Correct, `b'd\\nmore'.splitlines()` \u2192 `[b'd', b'more']`.\n\nSo the interaction between `pending` prepend and `last_chunk_ends_with_cr` appears correct because `pending` is only set when the chunk ended mid-line (not with a line-terminator), and `last_chunk_ends_with_cr` is only True when the chunk ended with `\\r` (which IS a line terminator, so `pending` is never set in that case). The two states are mutually exclusive. This is a correctness invariant that is non-obvious but holds. It should be documented.",
-      "confidence": 0.75
+      "title": "Empty-chunk `continue` skips resetting `last_chunk_ends_with_cr`",
+      "detail": "When `chunk` becomes empty after stripping the leading `\\n` (line 813), the code `continue`s at line 816 \u2014 jumping back to the `for` loop header **without** executing line 819 (`last_chunk_ends_with_cr = chunk.endswith(carriage_return)`). This means `last_chunk_ends_with_cr` remains `True`. If the *next* chunk also starts with `\\n`, that `\\n` would be incorrectly swallowed as well, producing wrong output.\n\nHere's a concrete example that demonstrates the bug:\n  chunks: `[b'a\\r', b'\\n', b'\\nb']`\n  Expected (matches `b'a\\r\\n\\nb'.splitlines()`): `[b'a', b'', b'b']`\n  Actual with this code: `[b'a', b'b']` \u2014 the second `\\n` (start of the third chunk) is incorrectly eaten.\n\nFix: reset `last_chunk_ends_with_cr = False` before the `continue` on line 816.",
+      "confidence": 0.95
     },
     {
       "agent": "baseline",
       "file": "requests/models.py",
-      "line_start": 813,
-      "line_end": 814,
-      "severity": "minor",
-      "title": "Non-obvious ordering dependency between pending prepend and last_chunk_ends_with_cr check",
-      "detail": "The correctness of the `last_chunk_ends_with_cr` mechanism relies on a non-obvious invariant: `pending` is only non-None when the previous chunk ended mid-line (not with `\\r` or any other line terminator recognized by `splitlines()`). This means `pending` being set and `last_chunk_ends_with_cr` being `True` are mutually exclusive states \u2014 if the last chunk ended with `\\r` (a line terminator), `splitlines()` would have consumed it and not left any trailing content for `pending`.\n\nThis invariant holds for all inputs, but it is not documented. A future maintainer could easily break this by, e.g., changing when `pending` is set. A comment explaining this invariant would improve maintainability.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "baseline",
-      "file": "tests/test_requests.py",
-      "line_start": 1349,
-      "line_end": 1357,
-      "severity": "minor",
-      "title": "test_response_lines mutates mock_chunks but mock_iter_content closure refers to the outer mock_chunks variable \u2014 may break if order of assertions changes",
-      "detail": "At line 1351, `mock_chunks` is reassigned to a new list. The `mock_iter_content` closure defined at line 1322 captures `mock_chunks` by name (not by value), but since `mock_chunks` is a local variable reassigned with `=`, the closure will pick up the new value. This is intentional \u2014 lines 1353 and 1357 test with the modified chunks. However, this is fragile: if the two blocks are reordered or the variable name changes, the closure will silently use wrong data. Consider using a new variable name and a new `mock_iter_content` for the second block.",
-      "confidence": 0.85
+      "line_start": 809,
+      "line_end": 819,
+      "severity": "major",
+      "title": "`last_chunk_ends_with_cr` not reset when delimiter branch is taken",
+      "detail": "The `last_chunk_ends_with_cr` flag is only updated inside the `else` branch (no delimiter). When a `delimiter` is specified (line 800), the flag is neither read nor cleared, so its stale value lingers from any prior iteration that might have gone through the `else` branch (e.g. if a caller switched branches, or the flag was set on a prior chunk when there was no delimiter and then delimiter was set \u2014 unlikely in normal usage, but still a latent bug). More importantly, if `iter_lines` is called without a delimiter for a few chunks and then some edge case triggers the delimiter path, the stale flag could cause incorrect behavior. Consider setting `last_chunk_ends_with_cr = False` inside the `if delimiter:` branch to keep the invariant clean.",
+      "confidence": 0.55
     },
     {
       "agent": "baseline",
@@ -53,9 +33,29 @@
       "line_start": 779,
       "line_end": 780,
       "severity": "minor",
-      "title": "decode_unicode check uses truthiness rather than explicit `is not None` check",
-      "detail": "`u'\\r' if decode_unicode else b'\\r'` will use bytes if `decode_unicode=False`, which is the intended behavior. However, it would also use bytes if `decode_unicode=0` or any other falsy value. Since the function signature shows `decode_unicode=None` as default and callers are expected to pass `True` or `None`/`False`, this is acceptable but slightly imprecise. A more defensive check would be `if decode_unicode is True` or `if decode_unicode`. Low severity.",
-      "confidence": 0.6
+      "title": "`carriage_return` / `line_feed` are computed but `carriage_return` is unused when `decode_unicode` is falsy in a delimiter path",
+      "detail": "`carriage_return` is only used on line 819 (inside the `else`/no-delimiter branch). `line_feed` is only used on line 809 (same branch). These variables are set unconditionally but are only meaningful in the `else` branch. This is harmless but slightly wasteful. A minor style nit.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1369,
+      "line_end": 1369,
+      "severity": "minor",
+      "title": "Test case `[b'a\\r', b'\\nb\\r']` expected no-delimiter result changed silently",
+      "detail": "The old expected result for `[b'a\\r', b'\\nb\\r']` was `['a', '', 'b']` (three items), and the new expected result is `[u'a', u'b']` (two items). While this matches the new correct behavior (the `\\r\\n` spanning two chunks is now treated as a single line break), the test comment does not call out this behavior change, making it hard for a future reader to understand why the middle empty string was removed. Consider adding a comment explaining the semantic change.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "baseline",
+      "file": "tests/test_requests.py",
+      "line_start": 1351,
+      "line_end": 1357,
+      "severity": "minor",
+      "title": "`mock_iter_content` still returns bytes from mutated `mock_chunks`, but decode_unicode=True path decodes them",
+      "detail": "After `mock_chunks = [chunk.replace(b'\\n', b'\\r') for chunk in mock_chunks]` at line 1351, the `mock_iter_content` closure still references the outer `mock_chunks` variable by name. However, `mock_chunks` is reassigned here (it's a local variable, not a closure over a list mutation). The `mock_iter_content` function defined at line 1322 captures `mock_chunks` from the enclosing scope using a *name lookup*, but since `mock_chunks` is rebound via `=` at line 1351, the closure will correctly see the new list. This is fine in Python \u2014 closures look up the name at call time. No bug, just worth a confirming comment.",
+      "confidence": 0.4
     }
   ],
   "agent_runs": [
@@ -67,49 +67,25 @@
           "agent": "baseline",
           "file": "requests/models.py",
           "line_range": [
-            813,
-            819
-          ],
-          "severity": "critical",
-          "title": "last_chunk_ends_with_cr not updated when chunk is consumed by continue",
-          "detail": "When `skip_first_char` is True and the chunk becomes empty after stripping the leading `\\n` (line 818), the code does `continue` \u2014 but `last_chunk_ends_with_cr` has already been updated to reflect whether *the new (now-empty) chunk* ends with `\\r`. Because the chunk is empty (`b''` or `''`), `chunk.endswith(carriage_return)` is `False` (line 814 executes *before* the `continue` at line 819), so `last_chunk_ends_with_cr` gets reset to `False`. That is correct for the case where the single-character chunk is *just* `\\n` (it doesn't end with `\\r`), so this particular combination is fine.\n\nHowever, there is a subtler ordering issue: `last_chunk_ends_with_cr` is set on line 814 using the value of `chunk` *before* the possible `chunk = chunk[1:]` on line 816. This is intentional \u2014 the original (un-stripped) chunk is used to decide whether to update the flag \u2014 but consider the scenario:\n\n1. Previous chunk ended with `\\r`.\n2. Current chunk is `\\n\\r` (starts with `\\n`, ends with `\\r`).\n   - `skip_first_char = True` (line 813)\n   - `last_chunk_ends_with_cr = True` (line 814, chunk=`\\n\\r` ends with `\\r` \u2713)\n   - chunk becomes `\\r` after stripping (line 816)\n   - `splitlines()` on `\\r` yields one empty line \u2014 correct.\n\nNow the next chunk is `\\n`:\n   - `skip_first_char = True` (last ended with `\\r`, chunk starts with `\\n`)\n   - `last_chunk_ends_with_cr` set to `False` (original chunk `\\n` does not end with `\\r`) \u2014 correct.\n   - chunk stripped to empty \u2192 `continue`\n\nSo the logic is actually correct. However, the scenario where the chunk is exactly `b'\\n'` and we `continue` *also* leaves `last_chunk_ends_with_cr = False` (line 814 already ran, original chunk `b'\\n'` does not end with `\\r`). This is correct.\n\nBut there is one real bug: if the chunk after prepending `pending` (line 796) is `b'\\n'` and the original single incoming chunk was `b'\\n'`, then `last_chunk_ends_with_cr` is evaluated against the *combined* chunk (pending+chunk), not the raw incoming chunk. This means if pending ended with `\\r` and the incoming chunk is `\\n`, after prepending pending the combined chunk no longer starts with `\\n` (it starts with whatever pending starts with), so `skip_first_char` would be False, and `last_chunk_ends_with_cr` is set against the combined chunk. Actually this is fine because the `\\r` at the end of `pending` is now *inside* the combined chunk and `splitlines()` will handle `\\r\\n` correctly within a single chunk.\n\nActually upon reflection, the core correctness concern is: `last_chunk_ends_with_cr` is set from the pre-strip `chunk` value (before `chunk = chunk[1:]`). Consider a chunk that is exactly `b'\\n\\r'` when the previous chunk ended with `\\r`: `last_chunk_ends_with_cr` is set to `True` (because original `b'\\n\\r'` ends with `\\r`), then chunk is stripped to `b'\\r'`. So far so good. But now consider `b'\\n'` (a single newline after a `\\r`): `last_chunk_ends_with_cr` is set to `False` (original ends with `\\n`), chunk becomes empty, `continue`. This is correct. The logic seems sound for all these cases.\n\nThis is a false alarm \u2014 the logic is correct. Downgrading to nit level to note the subtle ordering dependency for future maintainers.",
-          "confidence": 0.5
-        },
-        {
-          "agent": "baseline",
-          "file": "requests/models.py",
-          "line_range": [
-            813,
-            814
+            815,
+            816
           ],
           "severity": "major",
-          "title": "last_chunk_ends_with_cr evaluated against pre-pending-prepend chunk but after pending is prepended",
-          "detail": "After line 795\u2013797, `chunk` is already `pending + incoming_chunk`. The `last_chunk_ends_with_cr` and `skip_first_char` logic at lines 813\u2013814 therefore operates on the *combined* chunk rather than the raw incoming bytes from the network.\n\nConsider: pending = `b'abc\\r'`, incoming chunk = `b'\\n'`.\n- After line 796, `chunk = b'abc\\r\\n'`.\n- `skip_first_char = False` (combined chunk starts with `b'a'`, not `b'\\n'`), so the `\\n` is not stripped.\n- `last_chunk_ends_with_cr = False` (combined chunk ends with `b'\\n'`).\n- `splitlines()` on `b'abc\\r\\n'` \u2192 `[b'abc']` \u2014 correct.\n\nBut now consider: pending = `b'abc'`, incoming chunk = `b'\\n'` with `last_chunk_ends_with_cr = True` (the chunk before `pending` was set ended with `\\r`, but `pending` itself does NOT end with `\\r`).\n\nWait \u2014 `pending` is set by `lines.pop()` in the previous iteration, which is the last incomplete line. If the last chunk ended with `\\r`, then `last_chunk_ends_with_cr = True` AND `pending = b'...'` (the text after the last `\\r`?) Actually no \u2014 if a chunk ends with `\\r` and there's a pending, that means the chunk ended mid-line without a newline, so `pending` holds the tail. But `\\r` IS a line separator for `splitlines()`, so `splitlines()` on a chunk ending with `\\r` produces lines including an empty string for the `\\r`, and `pending` would be the empty string after `\\r`... \n\nLet's trace: chunk = `b'abc\\r'`, `splitlines()` \u2192 `[b'abc']`, `incomplete_line = lines[-1] and lines[-1][-1] == chunk[-1]` \u2192 `b'abc'` and `b'c' == b'\\r'` \u2192 False. So `pending` is NOT set. `last_chunk_ends_with_cr = True`.\n\nNext chunk = `b'\\n'`:\n- `pending is None`, so no prepend.\n- `skip_first_char = True` (last ended with `\\r`, chunk starts with `\\n`).\n- `last_chunk_ends_with_cr = False`.\n- chunk stripped to empty \u2192 continue. Correct!\n\nNow: chunk = `b'abc\\rd'` (ends with `d`, not `\\r`):\n- `splitlines()` \u2192 `[b'abc', b'd']`? No: `b'abc\\rd'.splitlines()` \u2192 `[b'abc', b'd']`. `incomplete_line`: `b'd'` and `b'd'[-1] == b'd'[-1]` (i.e., `b'd'[-1] == chunk[-1]` = `b'd'`) \u2192 True. `pending = b'd'`, `last_chunk_ends_with_cr = False`.\n\nNext chunk = `b'\\nmore'`:\n- After prepend: `chunk = b'd\\nmore'`.\n- `skip_first_char = False` (last_chunk_ends_with_cr is False).\n- Correct, `b'd\\nmore'.splitlines()` \u2192 `[b'd', b'more']`.\n\nSo the interaction between `pending` prepend and `last_chunk_ends_with_cr` appears correct because `pending` is only set when the chunk ended mid-line (not with a line-terminator), and `last_chunk_ends_with_cr` is only True when the chunk ended with `\\r` (which IS a line terminator, so `pending` is never set in that case). The two states are mutually exclusive. This is a correctness invariant that is non-obvious but holds. It should be documented.",
-          "confidence": 0.75
+          "title": "Empty-chunk `continue` skips resetting `last_chunk_ends_with_cr`",
+          "detail": "When `chunk` becomes empty after stripping the leading `\\n` (line 813), the code `continue`s at line 816 \u2014 jumping back to the `for` loop header **without** executing line 819 (`last_chunk_ends_with_cr = chunk.endswith(carriage_return)`). This means `last_chunk_ends_with_cr` remains `True`. If the *next* chunk also starts with `\\n`, that `\\n` would be incorrectly swallowed as well, producing wrong output.\n\nHere's a concrete example that demonstrates the bug:\n  chunks: `[b'a\\r', b'\\n', b'\\nb']`\n  Expected (matches `b'a\\r\\n\\nb'.splitlines()`): `[b'a', b'', b'b']`\n  Actual with this code: `[b'a', b'b']` \u2014 the second `\\n` (start of the third chunk) is incorrectly eaten.\n\nFix: reset `last_chunk_ends_with_cr = False` before the `continue` on line 816.",
+          "confidence": 0.95
         },
         {
           "agent": "baseline",
           "file": "requests/models.py",
           "line_range": [
-            813,
-            814
+            809,
+            819
           ],
-          "severity": "minor",
-          "title": "Non-obvious ordering dependency between pending prepend and last_chunk_ends_with_cr check",
-          "detail": "The correctness of the `last_chunk_ends_with_cr` mechanism relies on a non-obvious invariant: `pending` is only non-None when the previous chunk ended mid-line (not with `\\r` or any other line terminator recognized by `splitlines()`). This means `pending` being set and `last_chunk_ends_with_cr` being `True` are mutually exclusive states \u2014 if the last chunk ended with `\\r` (a line terminator), `splitlines()` would have consumed it and not left any trailing content for `pending`.\n\nThis invariant holds for all inputs, but it is not documented. A future maintainer could easily break this by, e.g., changing when `pending` is set. A comment explaining this invariant would improve maintainability.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "baseline",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1349,
-            1357
-          ],
-          "severity": "minor",
-          "title": "test_response_lines mutates mock_chunks but mock_iter_content closure refers to the outer mock_chunks variable \u2014 may break if order of assertions changes",
-          "detail": "At line 1351, `mock_chunks` is reassigned to a new list. The `mock_iter_content` closure defined at line 1322 captures `mock_chunks` by name (not by value), but since `mock_chunks` is a local variable reassigned with `=`, the closure will pick up the new value. This is intentional \u2014 lines 1353 and 1357 test with the modified chunks. However, this is fragile: if the two blocks are reordered or the variable name changes, the closure will silently use wrong data. Consider using a new variable name and a new `mock_iter_content` for the second block.",
-          "confidence": 0.85
+          "severity": "major",
+          "title": "`last_chunk_ends_with_cr` not reset when delimiter branch is taken",
+          "detail": "The `last_chunk_ends_with_cr` flag is only updated inside the `else` branch (no delimiter). When a `delimiter` is specified (line 800), the flag is neither read nor cleared, so its stale value lingers from any prior iteration that might have gone through the `else` branch (e.g. if a caller switched branches, or the flag was set on a prior chunk when there was no delimiter and then delimiter was set \u2014 unlikely in normal usage, but still a latent bug). More importantly, if `iter_lines` is called without a delimiter for a few chunks and then some edge case triggers the delimiter path, the stale flag could cause incorrect behavior. Consider setting `last_chunk_ends_with_cr = False` inside the `if delimiter:` branch to keep the invariant clean.",
+          "confidence": 0.55
         },
         {
           "agent": "baseline",
@@ -119,23 +95,47 @@
             780
           ],
           "severity": "minor",
-          "title": "decode_unicode check uses truthiness rather than explicit `is not None` check",
-          "detail": "`u'\\r' if decode_unicode else b'\\r'` will use bytes if `decode_unicode=False`, which is the intended behavior. However, it would also use bytes if `decode_unicode=0` or any other falsy value. Since the function signature shows `decode_unicode=None` as default and callers are expected to pass `True` or `None`/`False`, this is acceptable but slightly imprecise. A more defensive check would be `if decode_unicode is True` or `if decode_unicode`. Low severity.",
-          "confidence": 0.6
+          "title": "`carriage_return` / `line_feed` are computed but `carriage_return` is unused when `decode_unicode` is falsy in a delimiter path",
+          "detail": "`carriage_return` is only used on line 819 (inside the `else`/no-delimiter branch). `line_feed` is only used on line 809 (same branch). These variables are set unconditionally but are only meaningful in the `else` branch. This is harmless but slightly wasteful. A minor style nit.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1369,
+            1369
+          ],
+          "severity": "minor",
+          "title": "Test case `[b'a\\r', b'\\nb\\r']` expected no-delimiter result changed silently",
+          "detail": "The old expected result for `[b'a\\r', b'\\nb\\r']` was `['a', '', 'b']` (three items), and the new expected result is `[u'a', u'b']` (two items). While this matches the new correct behavior (the `\\r\\n` spanning two chunks is now treated as a single line break), the test comment does not call out this behavior change, making it hard for a future reader to understand why the middle empty string was removed. Consider adding a comment explaining the semantic change.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "baseline",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1351,
+            1357
+          ],
+          "severity": "minor",
+          "title": "`mock_iter_content` still returns bytes from mutated `mock_chunks`, but decode_unicode=True path decodes them",
+          "detail": "After `mock_chunks = [chunk.replace(b'\\n', b'\\r') for chunk in mock_chunks]` at line 1351, the `mock_iter_content` closure still references the outer `mock_chunks` variable by name. However, `mock_chunks` is reassigned here (it's a local variable, not a closure over a list mutation). The `mock_iter_content` function defined at line 1322 captures `mock_chunks` from the enclosing scope using a *name lookup*, but since `mock_chunks` is rebound via `=` at line 1351, the closure will correctly see the new list. This is fine in Python \u2014 closures look up the name at call time. No bug, just worth a confirming comment.",
+          "confidence": 0.4
         }
       ],
       "tool_calls": 3,
-      "tokens_in": 32015,
-      "tokens_out": 6684,
-      "cost_usd": 0.196305,
-      "duration_s": 103.9601645830553,
+      "tokens_in": 31881,
+      "tokens_out": 1877,
+      "cost_usd": 0.123798,
+      "duration_s": 36.00156700005755,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 32015,
-    "tokens_out": 6684,
-    "cost_usd": 0.196305,
-    "duration_s": 104.0
+    "tokens_in": 31881,
+    "tokens_out": 1877,
+    "cost_usd": 0.123798,
+    "duration_s": 36.0
   }
 }

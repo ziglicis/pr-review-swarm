@@ -2,149 +2,139 @@
   "case": "httpx_2278",
   "experiment": "full",
   "pr_url": "https://github.com/encode/httpx/pull/2278",
-  "head_sha": "74de49482f0fdf49fb112d118bf580d764d18ccd",
+  "head_sha": "e4275c1d562685ecbe173a4b9ba7fbe203c40f3b",
   "sha_matches_dataset": true,
-  "timestamp": 1784178781,
-  "summary": "This PR adds support for setting an explicit multipart boundary via the Content-Type header, introducing `get_multipart_boundary_from_content_type` in `_multipart.py` and wiring it into `_models.py`. The implementation is broadly correct for typical inputs, but there are meaningful security concerns around missing validation of the user-supplied boundary value, and a handful of correctness edge-cases in the RFC-compliant parsing of quoted-string boundary values. Test coverage of the new helper function's edge-case branches is also incomplete. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "timestamp": 1784589814,
+  "summary": "This PR adds the ability to set an explicit multipart boundary via a user-supplied `Content-Type` header, introducing `get_multipart_boundary_from_content_type` in `_multipart.py` and wiring it into `encode_multipart_data` / `encode_request`. The change is useful but ships with several correctness, security, and test-coverage issues that should be addressed before merging: most critically, the boundary value is not sanitised before being spliced into the wire body and `Content-Type` header (CRLF-injection risk), and the parsing logic can produce a boundary string with trailing whitespace, causing the declared and wire boundaries to diverge.",
   "findings": [
+    {
+      "agent": "test_coverage",
+      "file": "httpx/_content.py",
+      "line_start": 159,
+      "line_end": 164,
+      "severity": "major",
+      "title": "Invalid content-type header path is untested",
+      "detail": "The branch that raises a `ValueError` when `headers` contains a `content-type` that does not start with `multipart/form-data` (e.g. `application/json`) has no test coverage. The error message and raise are completely uncovered, so regressions to this guard would go undetected.",
+      "confidence": 0.95
+    },
+    {
+      "agent": "correctness",
+      "file": "httpx/_multipart.py",
+      "line_start": 29,
+      "line_end": 29,
+      "severity": "major",
+      "title": "Boundary extraction does not strip trailing whitespace/garbage, causing declared and wire boundary to diverge",
+      "detail": "The parser uses `section.strip().split('boundary=')[-1]` without stripping the result. For a `Content-Type` value like `multipart/form-data; boundary=+++ ;`, the section `\" boundary=+++ \"` strips to `\"boundary=+++ \"`, and splitting on `\"boundary=\"` then taking `[-1]` yields `\"+++ \"` (trailing space included). The extracted boundary is therefore encoded as `b\"+++ \"` (with a trailing space), while `_prepare` in `_models.py` uses `setdefault` so the caller's original header (declaring `boundary=+++`) is preserved unchanged. The wire boundary and the `Content-Type` declared boundary thus disagree, corrupting the multipart body. The fix is to `.strip()` the result of the split before returning it.",
+      "confidence": 0.9
+    },
     {
       "agent": "security",
       "file": "httpx/_multipart.py",
       "line_start": 23,
-      "line_end": 34,
+      "line_end": 197,
       "severity": "major",
-      "title": "User-supplied boundary used without RFC 2046 validation \u2014 multipart injection and DoS risk",
-      "detail": "The boundary string extracted from the caller-supplied Content-Type header is used verbatim as the multipart delimiter (e.g. `b\"--%s\\r\\n\" % self.boundary`) and decoded directly with `boundary.decode('ascii')` (line ~199) without any validation or error handling.\n\n**Two distinct risks:**\n1. **Multipart injection:** RFC 2046 \u00a75.1.1 restricts boundary characters to a specific safe set. No validation is performed, so an attacker who controls the Content-Type header can craft a boundary containing `\\r\\n` or `--` sequences, breaking the multipart body structure and potentially smuggling additional form fields or bypassing server-side validation.\n2. **Denial of service / unhandled exception:** If the boundary contains non-ASCII bytes, `boundary.decode('ascii')` raises an unhandled `UnicodeDecodeError`, crashing the request-building path. The `os.urandom` fallback is only used when `boundary is None`, so a non-None but non-ASCII boundary bypasses it entirely.\n\n**Recommendation:** After extraction in `get_multipart_boundary_from_content_type`, validate the returned bytes against the RFC 2046 boundary character set (bchars: alphanumerics + `'()+_,-./:=?` and space, max 70 chars) and return `None` (triggering the safe random-boundary fallback) if validation fails. Alternatively, wrap `boundary.decode('ascii')` in a `try/except UnicodeDecodeError` and fall back to a random boundary.",
+      "title": "Unvalidated boundary value enables CRLF/header injection",
+      "detail": "The extracted boundary string is returned from `get_multipart_boundary_from_content_type` without any character-set validation. It is then (a) spliced verbatim into the multipart wire body as `b'--%s\\r\\n' % self.boundary` and `b'--%s--\\r\\n' % self.boundary`, and (b) interpolated directly into the `Content-Type` string at `MultipartStream.__init__` via `'multipart/form-data; boundary=%s' % boundary.decode('ascii')`. A boundary value containing `\\r\\n` characters (e.g. `foo\\r\\nX-Injected: bar`) will forge fake MIME parts in the body and inject arbitrary headers. RFC 2046 \u00a75.1.1 restricts boundary characters to a safe printable-ASCII set with no CRLF. The extracted value must be validated (and rejected or escaped) against this character set before use.",
       "confidence": 0.9
     },
     {
-      "agent": "correctness",
-      "file": "httpx/_multipart.py",
-      "line_start": 30,
-      "line_end": 33,
+      "agent": "correctness, security",
+      "file": "httpx/_content.py",
+      "line_start": 159,
+      "line_end": 161,
       "severity": "major",
-      "title": "Splitting on `;` breaks quoted-string boundary values containing semicolons",
-      "detail": "The parser splits the content-type header on `b\";\"` before extracting the boundary parameter. RFC 2046 allows the boundary parameter value to be a quoted-string, which can theoretically contain a semicolon (e.g. `boundary=\"ab;cd\"`). Splitting on `;` would break this into `b'boundary=\"ab'` and `b'cd\"'`, causing the parser to fail to recognise the boundary and silently fall back to a random one.\n\nWhile semicolons inside boundary values are rare in practice, this is a correctness gap relative to the RFC. A proper implementation should parse quoted-string parameter values before splitting.",
-      "confidence": 0.7
+      "title": "Case-sensitive header lookup and over-broad `startswith` check on Content-Type",
+      "detail": "Two related issues: (1) The lookup `\"content-type\" in headers` and `headers[\"content-type\"]` assumes the caller's `Mapping[str, str]` normalises keys to lowercase. This works when `headers` is an httpx `Headers` object (which does case-insensitive lookup), but silently fails for a plain dict with `\"Content-Type\"` as the key \u2014 the boundary would never be extracted. The function's public signature advertises `Mapping[str, str]` but relies on case-insensitive behaviour. (2) The guard `content_type.startswith('multipart/form-data')` also accepts values like `multipart/form-data-evil` or `multipart/form-data.x-custom`. Prefer `content_type.split(';')[0].strip() == 'multipart/form-data'` for an exact media-type comparison.",
+      "confidence": 0.8
     },
     {
-      "agent": "test_coverage",
+      "agent": "correctness, security, style",
+      "file": "httpx/_multipart.py",
+      "line_start": 29,
+      "line_end": 29,
+      "severity": "minor",
+      "title": "Boundary value extracted with `split('boundary=')[-1]` is incorrect for boundary values containing the substring 'boundary='",
+      "detail": "Using `.split('boundary=')[-1]` has two problems: (1) if the boundary value itself contains `boundary=` (e.g. `boundary=boundary=foo`), the last split token is returned (`foo`) rather than the full value (`boundary=foo`); (2) using `[-1]` instead of `[1]` means any additional occurrence of `boundary=` anywhere in the section produces an unexpected result. The cleaner approaches are `section.strip()[len('boundary='):]` (removing the known prefix) or `section.strip().partition('boundary=')[2]`, both of which are explicit and unambiguous. Alternatively, `split('boundary=', 1)[1]` limits the split to one occurrence.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "style",
       "file": "httpx/_multipart.py",
       "line_start": 26,
-      "line_end": 34,
+      "line_end": 29,
       "severity": "minor",
-      "title": "Missing unit tests for `get_multipart_boundary_from_content_type` edge-case branches",
-      "detail": "Several branches of the new helper are not directly tested:\n1. `get_multipart_boundary_from_content_type(None)` \u2014 the `not content_type` early-return.\n2. A non-multipart content-type (e.g. `b\"application/json\"`) \u2014 the `not content_type.startswith(b\"multipart/form-data\")` early-return.\n3. `b\"multipart/form-data\"` with no semicolon at all \u2014 the `if b\";\" in content_type` guard is False, falling through to `return None`.\n\nWhile the integration tests cover the happy path, direct unit tests of these branches would pin the contract of the standalone helper and prevent regressions.",
+      "title": "Redundant outer `if \";\" in content_type` guard before `split`",
+      "detail": "The check `if \";\" in content_type:` before the `for section in content_type.split(\";\"):` loop is unnecessary. When there is no semicolon, `split(\";\")` returns a one-element list and the loop iterates once, hitting the `ValueError` path correctly. The guard adds complexity without benefit and is inconsistent with simpler parsing patterns elsewhere in the file.",
       "confidence": 0.8
     },
     {
       "agent": "test_coverage",
-      "file": "tests/test_multipart.py",
-      "line_start": 86,
-      "line_end": 95,
+      "file": "httpx/_content.py",
+      "line_start": 159,
+      "line_end": 165,
       "severity": "minor",
-      "title": "test_multipart_header_without_boundary does not verify the auto-generated boundary was used in the body",
-      "detail": "When no boundary is present in the Content-Type header, the code falls back to a random boundary. `test_multipart_header_without_boundary` only checks the HTTP status code and that the Content-Type header equals the user-supplied value; it does not assert that a valid multipart body was actually sent using an auto-generated boundary. The no-boundary fallback behaviour is therefore not fully covered.",
-      "confidence": 0.7
+      "title": "No test for explicit `boundary` argument taking precedence over a `Content-Type` header",
+      "detail": "When both `boundary` (non-None) and a `headers` mapping with a `content-type` key are supplied, the `boundary is None` condition is False and the header-parsing branch is skipped. There is no test verifying that `boundary` takes precedence, so this interaction is untested.",
+      "confidence": 0.8
     },
     {
       "agent": "test_coverage",
-      "file": "httpx/_models.py",
-      "line_start": 336,
-      "line_end": 347,
-      "severity": "minor",
-      "title": "No test for explicit multipart boundary via direct `httpx.Request()` construction",
-      "detail": "All new tests exercise the boundary-extraction logic through `httpx.Client`. The `Request` constructor path in `_models.py` lines 336\u2013347 is not tested independently with an explicit `content-type` boundary header supplied at construction time, leaving that code path without direct coverage.",
-      "confidence": 0.65
-    },
-    {
-      "agent": "correctness, test_coverage",
       "file": "httpx/_multipart.py",
       "line_start": 23,
-      "line_end": 34,
+      "line_end": 30,
       "severity": "minor",
-      "title": "Boundary quoted-string stripping with `strip(b'\"')` silently truncates or mishandles edge-case values",
-      "detail": "The boundary value is extracted with `section.strip()[len(b\"boundary=\"):].strip(b'\"')`. The `bytes.strip(chars)` method removes ALL leading and trailing characters in the given set, not just one quote on each side.\n\nThis causes two edge cases:\n1. A boundary value that is exactly one or more double-quote characters (e.g. `boundary=\"\"`) \u2014 while technically invalid per RFC 2046, a user or test could supply it \u2014 would be stripped to an empty bytes object instead of a meaningful error.\n2. A quoted boundary with internal leading/trailing whitespace (e.g. `boundary=\"+++ \"`) produces `b'+++ '` (with a trailing space) rather than `b'+++'`, because only the quotes are stripped, not internal whitespace. This means the actual boundary used in the body differs from what the Content-Type header advertises, causing a parse mismatch in the receiving server.\n\nNo tests cover these edge cases (see also f18).",
-      "confidence": 0.6
+      "title": "`get_multipart_boundary_from_content_type`: no-semicolon code path not unit-tested",
+      "detail": "A plain `'multipart/form-data'` string (no semicolon) immediately hits the `ValueError` raise without entering the loop. This path is never exercised as a direct unit test of this function; all existing tests pass content-type values that contain a semicolon.",
+      "confidence": 0.75
     },
     {
-      "agent": "correctness",
-      "file": "httpx/_multipart.py",
-      "line_start": 199,
-      "line_end": 201,
+      "agent": "test_coverage",
+      "file": "httpx/_content.py",
+      "line_start": 159,
+      "line_end": 165,
       "severity": "minor",
-      "title": "MultipartStream reconstructs Content-Type internally but user-supplied header is preserved via setdefault \u2014 behaviour is correct but fragile",
-      "detail": "**Reviewer disagreement.** One reviewer flagged that `MultipartStream.__init__` always rebuilds `self.content_type` from the extracted boundary, potentially overwriting the user's original Content-Type. However, `_prepare()` uses `headers.setdefault()`, so the user-supplied header wins and the reconstructed value is only a fallback.\n\nThis is correct behaviour as long as `get_multipart_boundary_from_content_type` returns the right boundary, but the round-trip (user header \u2192 extract boundary \u2192 reconstruct header \u2192 setdefault) is fragile: any deviation in formatting between the user-supplied and reconstructed values is silently hidden. If the extraction ever returns a wrong boundary, the body and header will disagree without any visible indication. Consider asserting or logging when the extracted boundary is used.",
-      "confidence": 0.4
-    },
-    {
-      "agent": "correctness",
-      "file": "httpx/_models.py",
-      "line_start": 336,
-      "line_end": 346,
-      "severity": "minor",
-      "title": "Boundary is unconditionally extracted from Content-Type even when `files` is None",
-      "detail": "The boundary is parsed from the Content-Type header regardless of whether `files` is provided. When `files=None` and only `data=` is given, the extracted boundary is silently discarded and `encode_urlencoded_data` is called instead. This is harmless in terms of correctness but can create a confusing situation: a user who passes `content-type: multipart/form-data; boundary=foo` with `data=` only (no files) will get a URL-encoded body while the Content-Type header claims multipart. This is a pre-existing design issue made slightly more visible by the PR.",
-      "confidence": 0.4
-    },
-    {
-      "agent": "correctness, security",
-      "file": "httpx/_multipart.py",
-      "line_start": 30,
-      "line_end": 33,
-      "severity": "nit",
-      "title": "Case-insensitive boundary= prefix check is correct but implementation is fragile",
-      "detail": "The check `section.strip().lower().startswith(b\"boundary=\")` correctly handles mixed-case keys like `Boundary=` or `BOUNDARY=` because `len(b\"boundary=\")` equals `len(b\"BOUNDARY=\")` (9 bytes either way), so the subsequent slice on the non-lowercased `section.strip()` always skips the right number of bytes. Multiple reviewers independently flagged this as a potential bug but confirmed it is actually correct. It is noted here for robustness \u2014 the implementation relies on a non-obvious coincidence of byte lengths rather than explicit handling.",
+      "title": "New `headers` parameter in `encode_request` / `Request` constructor not tested at unit level",
+      "detail": "The `headers` parameter added to `encode_multipart_data` / `encode_request` is exercised only through the high-level `Client.post` path. There are no direct unit-level tests of `encode_request(files=..., headers=...)` or of constructing a `Request` model directly with a multipart `content-type` header, making regressions in lower-level plumbing harder to catch.",
       "confidence": 0.75
     },
     {
       "agent": "style",
-      "file": "httpx/_multipart.py",
-      "line_start": 30,
-      "line_end": 33,
+      "file": "httpx/_content.py",
+      "line_start": 159,
+      "line_end": 159,
       "severity": "nit",
-      "title": "Outer `if b\";\" in content_type` guard is redundant",
-      "detail": "The `for section in content_type.split(b\";\"):` loop already handles the no-semicolon case \u2014 it yields one element (the whole value), which will not match `startswith(b\"boundary=\")` for a plain `multipart/form-data` value. The extra guard adds indentation and complexity without benefit, deviating from the flat style favoured elsewhere in the file.",
-      "confidence": 0.75
+      "title": "Truthy check on `headers` should use `is not None`",
+      "detail": "`if headers and boundary is None and ...` uses `headers` as a truthy check, silently skipping an explicitly passed empty mapping. The consistent pattern in this codebase is `if headers is not None`, matching how `boundary` itself is checked with `boundary is None`.",
+      "confidence": 0.8
     },
     {
       "agent": "style",
-      "file": "httpx/_multipart.py",
-      "line_start": 33,
-      "line_end": 33,
+      "file": "httpx/_content.py",
+      "line_start": 167,
+      "line_end": 168,
       "severity": "nit",
-      "title": "Magic constant `len(b\"boundary=\")` duplicated \u2014 prefer a named constant",
-      "detail": "The byte literal `b\"boundary=\"` appears twice: once in the `startswith` check and once inside `len(...)` for the slice. Extracting a named constant (e.g. `_BOUNDARY_PREFIX = b\"boundary=\"`) would eliminate the duplication, make the intent clear, and be consistent with how other modules in the codebase centralise magic strings.",
+      "title": "Variable name `new_headers` is a workaround, not a meaningful name",
+      "detail": "The local variable was renamed to `new_headers` solely to avoid shadowing the new `headers` parameter, but `new_` carries no semantic meaning. A more descriptive name such as `content_headers` or `stream_headers` would be consistent with how other `encode_*` functions name this value.",
       "confidence": 0.7
     },
     {
       "agent": "style",
-      "file": "httpx/_multipart.py",
-      "line_start": 28,
-      "line_end": 28,
+      "file": "httpx/_models.py",
+      "line_start": 334,
+      "line_end": 341,
       "severity": "nit",
-      "title": "Inline comment uses lower-case first letter \u2014 inconsistent with surrounding style",
-      "detail": "The comment `# parse boundary according to` starts with a lowercase letter. Surrounding comments in the file (e.g. `# This large tuple based API largely mirrors requests' API`) use sentence-case. Consider changing to `# Parse boundary according to ...`.",
-      "confidence": 0.6
-    },
-    {
-      "agent": "style",
-      "file": "tests/test_multipart.py",
-      "line_start": 94,
-      "line_end": 94,
-      "severity": "nit",
-      "title": "test_multipart_header_without_boundary omits body-content assertion present in sibling tests",
-      "detail": "Every other parametrised multipart test (e.g. `test_multipart`, `test_multipart_explicit_boundary`) asserts `multipart[\"file\"] == [b\"<file content>\"]` to verify the body was encoded correctly. This test only checks status code and Content-Type, making coverage asymmetric and potentially masking regressions in body encoding.",
+      "title": "Dropped `boundary` keyword argument at `encode_request` call site may cause future confusion",
+      "detail": "The `encode_request` call in `Request.__init__` no longer passes `boundary=` explicitly. Even if this argument is currently unused at this call site, the omission is inconsistent with the function signature and may silently mislead future readers comparing the call site to the function definition.",
       "confidence": 0.55
     },
     {
       "agent": "style",
       "file": "tests/test_multipart.py",
-      "line_start": 97,
-      "line_end": 97,
+      "line_start": 91,
+      "line_end": 91,
       "severity": "nit",
-      "title": "Parametrize style inconsistent within the file",
-      "detail": "Existing tests use `@pytest.mark.parametrize((\"key\"), ...)` while the new tests at lines 45 and 79 use the single-string form `@pytest.mark.parametrize(\"header\", [...])`. The single-string form is actually the preferred pytest style, but the inconsistency within the file is a readability concern that should be resolved (ideally by updating the older tests).",
+      "title": "Inconsistent `parametrize` style across new and existing tests",
+      "detail": "Existing tests use `@pytest.mark.parametrize((\"key\"), (...))` with outer parens, while the two new parametrize decorators (lines 45 and 75) use a plain string `\"header\"`. Pick one style consistently \u2014 either a bare string `\"header\"` or a single-element tuple `(\"header\",)` \u2014 across all parametrized tests in this file.",
       "confidence": 0.5
     }
   ],
@@ -157,80 +147,56 @@
           "agent": "correctness",
           "file": "httpx/_multipart.py",
           "line_range": [
-            23,
-            34
+            29,
+            29
           ],
           "severity": "major",
-          "title": "Boundary value parsing strips only leading/trailing double-quotes, mishandling trailing whitespace and quoted values",
-          "detail": "The boundary is extracted with `section.strip()[len(b\"boundary=\"):].strip(b'\"')`. When a header like `boundary=+++ ;` is split by `;`, the section `b\" boundary=+++ \"` is stripped to `b\"boundary=+++\"`, then sliced to `b\"+++\"` \u2014 that works. But for `boundary=\"+++\" ;`, the section is stripped to `b'boundary=\"+++\"'`, sliced to `b'\"+++\"'`, then `strip(b'\"')` gives `b'+++'` \u2014 also OK.\n\nHowever, `str.strip(chars)` strips ALL leading AND trailing characters in the given char-set, not just one. So a boundary value that legitimately starts or ends with a double-quote character inside the value (which RFC 2046 technically disallows in the token form but allows in the quoted-string form) would be silently truncated. More importantly, the trailing-whitespace case (`boundary=+++ ;`) yields the section `b\" boundary=+++ \"`, which after `.strip()` is `b\"boundary=+++\"` \u2014 so `[9:]` is `b\"+++\"` and `.strip(b'\"')` is `b\"+++\"`. That's fine.\n\nThe real edge-case bug: if a value is `boundary=\"` (a boundary consisting of just a double-quote), `strip(b'\"')` would return an empty bytes object instead of `b'\"'`. The `strip(chars)` removes ALL occurrences from both ends, so `b'\"\"\"'.strip(b'\"')` returns `b''`. This is a minor correctness issue for RFC-legal quoted-string boundaries that contain the delimiter character at their edges.\n\nMore critically: if the boundary is quoted AND also has a trailing space inside the quote, e.g. `boundary=\"+++ \"`, parsing produces `b'+++ '` (with a trailing space) rather than `b'+++'` as specified, because only quotes are stripped, not internal whitespace. This means the actual boundary used in the body would differ from what the content-type says, causing a parse mismatch.",
-          "confidence": 0.6
+          "title": "Boundary value includes trailing whitespace/garbage when a trailing semicolon or space is present",
+          "detail": "The parser does `section.strip().split('boundary=')[-1]`. For an input like `\"multipart/form-data; boundary=+++ ;\"`, splitting on `;` gives sections `[\"multipart/form-data\", \" boundary=+++ \", \"\"]`. The section `\" boundary=+++ \"` is stripped to `\"boundary=+++ \"`, which starts with `\"boundary=\"`. Splitting that on `\"boundary=\"` and taking `[-1]` gives `\"+++ \"` (note the trailing space). The boundary is therefore encoded as `b\"+++ \"` (with a trailing space), and `_prepare` uses `setdefault` so the caller-supplied `Content-Type` header is kept unchanged (with `boundary=+++`). The wire boundary and the declared boundary thus disagree, corrupting the request body.",
+          "confidence": 0.9
         },
         {
           "agent": "correctness",
           "file": "httpx/_multipart.py",
           "line_range": [
-            199,
-            201
+            29,
+            29
+          ],
+          "severity": "minor",
+          "title": "Boundary extraction uses `split('boundary=')[-1]` which is incorrect for boundary values containing the substring 'boundary='",
+          "detail": "The code uses `.split('boundary=')[-1]` to extract the boundary value. If the boundary value itself contained the string `boundary=` (e.g. `boundary=boundary=foo`), this would only return `foo` rather than `boundary=foo`. The correct approach is to split on `boundary=` at most once and take the second part, i.e. use `.split('boundary=', 1)[1]` instead of `.split('boundary=')[-1]`.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_content.py",
+          "line_range": [
+            159,
+            160
           ],
           "severity": "major",
-          "title": "MultipartStream overwrites Content-Type with auto-generated value, ignoring the user-supplied boundary in the content-type header",
-          "detail": "When a user provides an explicit `Content-Type: multipart/form-data; boundary=+++` header, the code correctly extracts `+++` as the boundary and passes it to `MultipartStream`. However, `MultipartStream.__init__` always reconstructs its own `self.content_type` string as:\n\n```python\nself.content_type = \"multipart/form-data; boundary=%s\" % boundary.decode(\"ascii\")\n```\n\nThen `get_headers()` returns `{\"Content-Type\": self.content_type}`, and `_prepare()` calls `self.headers.setdefault(key, value)` for the Content-Type. Since the user already set `content-type` in `self.headers`, `setdefault` will NOT overwrite it \u2014 so the user's original content-type string is preserved.\n\nThis means the content-type header the user provided is kept intact (good), while the body is encoded with the boundary extracted from it (also good). This actually works correctly as long as `get_multipart_boundary_from_content_type` returns the right boundary value. No bug here, but see the parsing issues above.",
-          "confidence": 0.3
+          "title": "Case-sensitive lookup on `headers` mapping may miss `Content-Type` set with different casing",
+          "detail": "The code checks `\"content-type\" in headers` and then does `headers[\"content-type\"]`. The `headers` parameter is typed as `Mapping[str, str]`. If the caller passes `self.headers` (a `Headers` object that normalizes lookups to lowercase), this works. However, `encode_multipart_data` is a public-ish function accepting any `Mapping[str, str]`, and the documented convention in HTTP is that header names are case-insensitive. A caller passing `{\"Content-Type\": \"...\"}` would not match the `\"content-type\"` key lookup, so the boundary would never be extracted. In the `Request.__init__` flow `self.headers` is an httpx `Headers` object which does case-insensitive lookup, so this works in that specific path. But the function signature advertises `Mapping[str, str]` while relying on case-insensitive behaviour.",
+          "confidence": 0.75
         },
         {
           "agent": "correctness",
           "file": "httpx/_models.py",
           "line_range": [
-            336,
-            346
-          ],
-          "severity": "minor",
-          "title": "boundary is extracted from content-type even when `files` is None, causing unnecessary parsing",
-          "detail": "The boundary is unconditionally extracted from the content-type header regardless of whether `files` is provided. In `encode_request`, the `boundary` parameter is only used when `files` is truthy (line 210: `elif files:`). If `files` is None and data is provided as a dict, `encode_urlencoded_data` is called instead, ignoring `boundary` entirely. This is harmless in terms of correctness but means that if a user passes `content-type: multipart/form-data; boundary=foo` with `data=` only (no files), the boundary is silently parsed and discarded \u2014 the content type header is also kept in the request as-is, conflicting with the actual urlencoded body. This is a pre-existing design issue not introduced by this PR, but the PR now makes it slightly more confusing.",
-          "confidence": 0.4
-        },
-        {
-          "agent": "correctness",
-          "file": "httpx/_multipart.py",
-          "line_range": [
-            30,
-            33
+            335,
+            341
           ],
           "severity": "major",
-          "title": "Boundary parsing does case-insensitive comparison but case-sensitive slice, so mixed-case `Boundary=` is parsed incorrectly",
-          "detail": "The check `section.strip().lower().startswith(b\"boundary=\")` is case-insensitive (e.g. matches `Boundary=foo`), but the slice `section.strip()[len(b\"boundary=\"):]` is applied to the ORIGINAL (non-lowercased) bytes. This means if the content-type has `Boundary=foo`, the check passes, but then `section.strip()` is e.g. `b\"Boundary=foo\"` and `[9:]` correctly gives `b\"foo\"` (since `len(\"boundary=\") == len(\"Boundary=\") == 9`). So this is actually fine \u2014 `len(b\"boundary=\")` is always 9 regardless of case, and the slice length is correct. No bug here.",
-          "confidence": 0.15
-        },
-        {
-          "agent": "correctness",
-          "file": "httpx/_multipart.py",
-          "line_range": [
-            30,
-            33
-          ],
-          "severity": "major",
-          "title": "split(b\";\") does not handle semicolons inside quoted boundary values",
-          "detail": "RFC 2046 allows the boundary parameter value to be a quoted-string, which could theoretically contain a semicolon (e.g. `boundary=\"ab;cd\"`). Splitting on `;` would break such a value into `b'boundary=\"ab'` and `b'cd\"'`, causing the parser to fail to recognise the boundary. While semicolons in boundary values are rare in practice, this is a correctness issue relative to the RFC spec.",
+          "title": "When a user-supplied `content-type` boundary is found, `_prepare` will still overwrite it with `MultipartStream`'s auto-generated `Content-Type`",
+          "detail": "`encode_multipart_data` returns `new_headers = multipart.get_headers()`, which always contains a `Content-Type` built from the (correctly extracted) boundary inside `MultipartStream`. `_prepare` then calls `self.headers.setdefault(key, value)` for each key in `new_headers`. Because the user already set `Content-Type` on `self.headers` before `encode_request` is called, `setdefault` correctly skips overwriting it. However, the user-supplied header is, for example, `\"multipart/form-data; boundary=+++; charset=utf-8\"` (with extra params), while `MultipartStream.content_type` is `\"multipart/form-data; boundary=+++\"` (without extra params). The body is encoded with the correct boundary (`+++`), but the final `Content-Type` header retains all extra params the user supplied. This is fine **only if** the extracted boundary exactly matches what appears in the user header. The bug from finding #1 (trailing spaces not stripped from the extracted value) means the body boundary and declared boundary can diverge. This finding is closely linked to finding #1.",
           "confidence": 0.7
-        },
-        {
-          "agent": "correctness",
-          "file": "httpx/_models.py",
-          "line_range": [
-            343,
-            343
-          ],
-          "severity": "minor",
-          "title": "Content-Type header encoded with `self.headers.encoding` which may not match the encoding used when the header was stored",
-          "detail": "`content_type.encode(self.headers.encoding)` re-encodes the already-decoded string value of the content-type header using `self.headers.encoding`. If the headers encoding is something other than ASCII/UTF-8, this could produce incorrect bytes passed to `get_multipart_boundary_from_content_type`. In practice, content-type header values are always ASCII, so this is unlikely to cause a real problem, but it is a subtle dependency on the internal encoding state of the `Headers` object.",
-          "confidence": 0.3
         }
       ],
-      "tool_calls": 3,
-      "tokens_in": 32761,
-      "tokens_out": 2043,
-      "cost_usd": 0.128928,
-      "duration_s": 41.71642691688612,
+      "tool_calls": 4,
+      "tokens_in": 30874,
+      "tokens_out": 1478,
+      "cost_usd": 0.114792,
+      "duration_s": 31.42224237509072,
       "skip_or_error_reason": null
     },
     {
@@ -242,43 +208,55 @@
           "file": "httpx/_multipart.py",
           "line_range": [
             23,
-            34
+            30
           ],
           "severity": "major",
-          "title": "Boundary value injected into multipart body without RFC 2046 character validation",
-          "detail": "The boundary string extracted from the caller-supplied Content-Type header is used verbatim as the multipart delimiter (lines 220/223 of _multipart.py: `b\"--%s\\r\\n\" % self.boundary`). RFC 2046 \u00a75.1.1 restricts boundary characters to a specific safe set (alphanumerics plus a handful of punctuation). No validation of this constraint is performed before the extracted value is used.\n\nAn attacker who controls the Content-Type header (e.g. a value is passed through from an untrusted source) could craft a boundary that:\n1. Contains `\\r\\n` or `--` sequences, breaking the structure of the multipart body and potentially smuggling additional form fields or injecting content that bypasses server-side validation.\n2. Contains non-ASCII bytes that later cause a UnicodeDecodeError in `MultipartStream.__init__` at `boundary.decode('ascii')` \u2014 a denial-of-service vector.\n\nRecommendation: after extraction in `get_multipart_boundary_from_content_type`, validate the returned bytes against the RFC 2046 boundary character set (BNF: `bchars = bcharsnospace / SPACE`, `bcharsnospace = DIGIT / ALPHA / \"'\" / \"(\" / \")\" / \"+\" / \"_\" / \",\" / \"-\" / \".\" / \"/\" / \":\" / \"=\" / \"?\"`, max 70 chars) and return `None` (falling back to a random boundary) if validation fails.",
+          "title": "Unvalidated boundary value enables multipart header injection",
+          "detail": "The function `get_multipart_boundary_from_content_type` extracts the boundary token from the user-supplied `Content-Type` header and returns it without any validation. RFC 2046 restricts boundary characters to a safe set (printable ASCII excluding a handful of special chars, no whitespace or CRLF). Because the returned bytes are spliced verbatim into the body stream at `iter_chunks` (`b'--%s\\r\\n' % self.boundary` and `b'--%s--\\r\\n' % self.boundary`) and into the `Content-Type` header value at `MultipartStream.__init__` (`'multipart/form-data; boundary=%s' % boundary.decode('ascii')`), an attacker who can influence the `Content-Type` header (e.g. through an API wrapper that passes user-controlled headers) can:\n\n1. **Inject CRLF sequences into the body**, crafting fake part boundaries or forging additional MIME parts \u2013 for example boundary `\\r\\n--injected\\r\\nContent-Disposition: form-data; name=evil` will break parsing on the receiving server.\n2. **Inject arbitrary text into the `Content-Type` header** sent to the server, e.g. `; injected-param=value` or even CRLF-fold the header.\n\nAt a minimum the extracted boundary should be validated against the allowed character set defined in RFC 2046 \u00a75.1.1 (`[A-Za-z0-9'()+_,-./:=? ]` with no leading/trailing spaces and no CRLF). A stricter approach is to percent-encode or reject anything outside that set and to strip surrounding whitespace before use.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "security",
+          "file": "httpx/_multipart.py",
+          "line_range": [
+            195,
+            197
+          ],
+          "severity": "major",
+          "title": "Boundary injected into Content-Type header without sanitisation allows header injection",
+          "detail": "In `MultipartStream.__init__`, the boundary is placed directly into the content-type string via `'multipart/form-data; boundary=%s' % boundary.decode('ascii')`. Because the boundary is taken verbatim from the user-supplied `Content-Type` header (via `get_multipart_boundary_from_content_type`) with no character filtering, a boundary containing `\\r\\n` characters (possible if the latin-1 decode in the extraction step produces them) would produce a malformed or injected HTTP header. For example, a `Content-Type` header like `multipart/form-data; boundary=foo\\r\\nX-Injected: bar` would propagate the injected header. Validate or sanitise the boundary value before this interpolation.",
           "confidence": 0.85
         },
         {
           "agent": "security",
           "file": "httpx/_multipart.py",
           "line_range": [
-            30,
-            33
+            27,
+            29
           ],
           "severity": "minor",
-          "title": "Case-insensitive boundary= prefix match is incomplete \u2014 only the prefix is lowercased, not the full token",
-          "detail": "The comparison `section.strip().lower().startswith(b\"boundary=\")` lowercases the whole section before the `startswith` check, but then slices the original (non-lowercased) bytes with `section.strip()[len(b\"boundary=\"):]`. This is correct because only the key name is compared case-insensitively and the value is returned as-is \u2014 but it means a key written as `Boundary=` or `BOUNDARY=` passes the `startswith` check yet the slice always skips exactly 9 bytes (`len(b\"boundary=\")`), which works correctly since the length of `boundary=` and `BOUNDARY=` is the same. This is not a bug per se, but the implementation is fragile. More importantly, because the comparison is done after `.lower()` but the slice is done on the non-lowercased version via `section.strip()`, if `section.strip()` starts with mixed-case `Boundary=somevalue`, the slice `section.strip()[9:]` correctly extracts `somevalue`. No security issue here beyond the one described in the main finding above, but worth noting for robustness.",
-          "confidence": 0.4
+          "title": "Boundary extracted with split('boundary=')[-1] allows prefix bypass",
+          "detail": "The extraction logic uses `section.strip().split('boundary=')[-1]`. Using `[-1]` instead of `[1]` means that if a section contains `boundary=` more than once (e.g. `boundary=abc=boundary=evil`), the last occurrence wins. This is a minor parsing quirk that could produce an unexpected boundary value differing from what the server parses, but by itself is low impact. A cleaner approach is `section.strip()[len('boundary='):]` (i.e. remove the known prefix) to avoid ambiguity.",
+          "confidence": 0.75
         },
         {
           "agent": "security",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            196,
-            200
+            159,
+            161
           ],
-          "severity": "major",
-          "title": "User-supplied boundary decoded as ASCII without error handling \u2014 potential DoS / unhandled exception",
-          "detail": "In `MultipartStream.__init__`, line 199: `boundary.decode('ascii')`. When a user-supplied boundary (extracted from the Content-Type header) contains non-ASCII bytes, this raises an unhandled `UnicodeDecodeError`, crashing the request-building code path. An adversary (or buggy middleware) that can set an arbitrary Content-Type header with a non-ASCII boundary value can trigger this crash.\n\nThe `binascii.hexlify(os.urandom(16))` fallback is only used when `boundary is None`, so a non-None but non-ASCII boundary bypasses the safe fallback.\n\nRecommendation: either validate in `get_multipart_boundary_from_content_type` that the extracted boundary is ASCII-safe (or restrict to the RFC 2046 character set), or add a `try/except UnicodeDecodeError` around the `.decode('ascii')` call and fall back to a random boundary.",
-          "confidence": 0.9
+          "severity": "minor",
+          "title": "Content-Type check uses startswith \u2013 bypassed by content types like 'multipart/form-data-extended'",
+          "detail": "The guard `content_type.startswith('multipart/form-data')` would also accept values like `multipart/form-data-evil` or `multipart/form-data.x-custom`. While this is an httpx client-side library (so impact is limited to the caller shooting themselves in the foot), it is a type-confusion avenue: the caller might supply a non-standard content type that passes the check but produces an invalid multipart request. Prefer an exact match on the media type token: `content_type.split(';')[0].strip() == 'multipart/form-data'`.",
+          "confidence": 0.7
         }
       ],
       "tool_calls": 3,
-      "tokens_in": 35412,
-      "tokens_out": 1278,
-      "cost_usd": 0.125406,
-      "duration_s": 30.46747229201719,
+      "tokens_in": 47479,
+      "tokens_out": 1342,
+      "cost_usd": 0.162567,
+      "duration_s": 38.73230079188943,
       "skip_or_error_reason": null
     },
     {
@@ -289,68 +267,80 @@
           "agent": "style",
           "file": "httpx/_multipart.py",
           "line_range": [
-            28,
-            28
+            26,
+            29
           ],
-          "severity": "nit",
-          "title": "Inline comment should start with a capital letter and end without a period \u2014 inconsistent with surrounding style",
-          "detail": "The comment `# parse boundary according to` starts lowercase and has no trailing period. The surrounding code (e.g. `# This large tuple based API largely mirror's requests' API`) and the rest of the codebase use sentence-case for inline comments. Consider: `# Parse boundary according to`.",
-          "confidence": 0.6
+          "severity": "minor",
+          "title": "Redundant outer `if` check before `split`",
+          "detail": "The outer `if \";\" in content_type:` guard is unnecessary because the `for section in content_type.split(\";\")` loop already handles a string with no semicolons safely (it just iterates over one element). The guard adds complexity without benefit and is inconsistent with the simpler parsing style seen elsewhere in the file.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "httpx/_multipart.py",
           "line_range": [
-            33,
-            33
+            29,
+            29
           ],
           "severity": "nit",
-          "title": "Magic constant `len(b\"boundary=\")` \u2014 prefer a named variable for clarity",
-          "detail": "The slice `section.strip()[len(b\"boundary=\") :]` embeds the byte literal twice (once in the `startswith` check on line 32 and once here). Extracting a named constant, e.g. `_BOUNDARY_PREFIX = b\"boundary=\"`, would remove the duplication and make the intent obvious \u2014 consistent with how other modules in this codebase centralise magic strings.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "style",
-          "file": "httpx/_multipart.py",
-          "line_range": [
-            30,
-            33
-          ],
-          "severity": "nit",
-          "title": "Outer `if b\";\" in content_type` guard is redundant",
-          "detail": "The `for section in content_type.split(b\";\"):` loop already handles the case where there is no `;` \u2014 it simply yields one element (the whole value), which will not match `startswith(b\"boundary=\")` unless the entire value is the boundary token. The extra guard adds indentation and complexity without adding value, deviating from the simple/flat style favoured elsewhere in the file.",
+          "title": "Use `partition` or direct split instead of `split(...)[-1]` to extract boundary value",
+          "detail": "`section.strip().split(\"boundary=\")[-1]` would misparse a value that itself contained the literal string `\"boundary=\"`. A cleaner and more explicit idiom consistent with the rest of the codebase would be `section.strip()[len(\"boundary=\"):]` or using `partition(\"boundary=\")[2]`, making the intent obvious and avoiding accidental tail-splits.",
           "confidence": 0.75
         },
         {
           "agent": "style",
-          "file": "tests/test_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            94,
-            94
+            159,
+            159
           ],
           "severity": "nit",
-          "title": "`test_multipart_header_without_boundary` does not assert body content \u2014 inconsistent with sibling tests",
-          "detail": "Every other parametrised multipart test (e.g. `test_multipart`, `test_multipart_explicit_boundary`) also asserts `multipart[\"file\"] == [b\"<file content>\"]` to verify the body was encoded correctly. This test only checks status code and Content-Type, which makes the coverage asymmetric and may mask regressions. While this is a test-quality observation rather than a style bug, the inconsistency in pattern is a readability concern.",
-          "confidence": 0.55
+          "title": "Truthy check on `headers` may silently skip an empty mapping",
+          "detail": "`if headers and boundary is None and \"content-type\" in headers:` \u2014 using `headers` as a truthy check means an explicitly passed empty `Mapping` is skipped silently. The existing codebase pattern for optional arguments is to check `if headers is not None`. This is consistent with how `boundary` itself is checked (`boundary is None`).",
+          "confidence": 0.8
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_content.py",
+          "line_range": [
+            167,
+            168
+          ],
+          "severity": "nit",
+          "title": "Rename of `headers` to `new_headers` is a workaround, not a cleanup",
+          "detail": "The local variable was renamed from `headers` to `new_headers` purely to avoid shadowing the new `headers` parameter. A cleaner approach would be to choose a more descriptive name that reflects its meaning throughout the function (e.g., `content_headers` or `stream_headers`), consistent with how other `encode_*` functions name this value. The prefix `new_` carries no semantic meaning.",
+          "confidence": 0.7
         },
         {
           "agent": "style",
           "file": "tests/test_multipart.py",
           "line_range": [
-            97,
-            97
+            91,
+            91
           ],
           "severity": "nit",
-          "title": "Parametrize style inconsistent with rest of the file",
-          "detail": "The existing tests use `@pytest.mark.parametrize((\"key\"), ...)` (pre-existing, untouched line 97), but the new tests at lines 45 and 79 use `@pytest.mark.parametrize(\"header\", [...])` \u2014 a single string rather than a tuple. While the single-string form is actually the preferred pytest style, it does differ from the pattern in the surrounding unchanged tests, creating an inconsistency within the file.",
+          "title": "Inconsistent `parametrize` style compared to surrounding tests",
+          "detail": "Line 91 uses `@pytest.mark.parametrize((\"key\"), (...))` (unchanged, pre-existing code), but the two new parametrize decorators at lines 45 and 75 use `\"header\"` (a plain string, not a tuple). The existing tests in the file use `(\"key\")` and `(\"value\")` with outer parens. The new tests should use the same style \u2014 either `(\"header\",)` or `\"header\"` \u2014 consistently with one or the other convention.",
           "confidence": 0.5
+        },
+        {
+          "agent": "style",
+          "file": "httpx/_models.py",
+          "line_range": [
+            334,
+            341
+          ],
+          "severity": "nit",
+          "title": "The `boundary` keyword argument is silently dropped from the `encode_request` call",
+          "detail": "The `encode_request` call in `__init__` no longer passes `boundary=` explicitly. If `boundary` was previously passed through some code path into this call site, that argument is now missing. Even if `boundary` is not used at this call site currently, the omission is inconsistent with the function signature and could cause silent confusion for future readers comparing the call site with the function definition.",
+          "confidence": 0.55
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 6555,
-      "tokens_out": 870,
-      "cost_usd": 0.032715,
-      "duration_s": 17.94138216599822,
+      "tokens_in": 6908,
+      "tokens_out": 908,
+      "cost_usd": 0.034344,
+      "duration_s": 18.481949750101194,
       "skip_or_error_reason": null
     },
     {
@@ -359,82 +349,70 @@
       "findings": [
         {
           "agent": "test_coverage",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            26,
-            26
+            159,
+            164
           ],
-          "severity": "minor",
-          "title": "No test for get_multipart_boundary_from_content_type with content_type=None",
-          "detail": "The function returns None immediately when content_type is None (first branch of the `not content_type or ...` check). While this path is exercised indirectly through the models integration, there is no direct unit test of get_multipart_boundary_from_content_type(None) to pin the contract of the standalone helper.",
-          "confidence": 0.6
+          "severity": "major",
+          "title": "Invalid content-type header path not tested",
+          "detail": "The branch at line 159\u2013164 raises a ValueError when the content-type header is present but does NOT start with 'multipart/form-data' (e.g. 'application/json'). There is no test exercising this code path, so the error message and the ValueError raise are uncovered.",
+          "confidence": 0.95
         },
         {
           "agent": "test_coverage",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            26,
-            27
+            159,
+            165
           ],
           "severity": "minor",
-          "title": "No test for get_multipart_boundary_from_content_type with a non-multipart content-type",
-          "detail": "The early-return branch `not content_type.startswith(b\"multipart/form-data\")` (e.g. passing b\"application/json\") is never exercised by any test. A direct unit test of the helper with a non-multipart content-type string would close this gap.",
+          "title": "No test for explicit boundary passed alongside a content-type header (both non-None)",
+          "detail": "When both `boundary` and `headers` containing a content-type are supplied together, the condition `boundary is None` is False and the header-parsing branch is skipped. There is no test verifying that the explicit `boundary` argument takes precedence over the header in this case.",
           "confidence": 0.8
         },
         {
           "agent": "test_coverage",
           "file": "httpx/_multipart.py",
           "line_range": [
-            30,
-            34
+            23,
+            30
           ],
           "severity": "minor",
-          "title": "No test for bare 'multipart/form-data' content-type (no semicolon at all)",
-          "detail": "The branch `if b\";\" in content_type` is False when the header is exactly b\"multipart/form-data\" with no parameters whatsoever. None of the parametrised cases in test_multipart_header_without_boundary cover this \u2014 both supplied cases contain a semicolon. This path falls through to `return None` and is untested.",
-          "confidence": 0.85
+          "title": "get_multipart_boundary_from_content_type: no-semicolon path not directly unit-tested",
+          "detail": "The function has a fast path: if there is no ';' in content_type it goes directly to the ValueError raise (line 30) without entering the loop. `test_multipart_header_without_boundary` uses headers that do contain ';', so that branch is covered, but a plain 'multipart/form-data' string (no semicolon at all) is never exercised as a direct unit test of this function.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "test_coverage",
+          "file": "httpx/_content.py",
+          "line_range": [
+            198,
+            222
+          ],
+          "severity": "minor",
+          "title": "encode_request with headers parameter not tested in isolation",
+          "detail": "The `headers` parameter added to `encode_request` is only exercised via the high-level Client.post path. There are no direct unit-level tests of `encode_request(files=..., headers=...)` (analogous to the existing `test_multipart_encode*` tests that call `encode_request` directly), making it harder to catch regressions in lower-level plumbing.",
+          "confidence": 0.7
         },
         {
           "agent": "test_coverage",
           "file": "httpx/_models.py",
           "line_range": [
-            336,
-            347
+            334,
+            342
           ],
           "severity": "minor",
-          "title": "No test for explicit multipart boundary passed via httpx.Request() directly (not via Client)",
-          "detail": "All new tests exercise the boundary-extraction logic through httpx.Client. The Request constructor path (lines 336-347 of _models.py) is not tested independently with an explicit boundary header supplied at construction time, leaving the direct Request(..., headers={\"content-type\": ...}) code path without explicit coverage.",
-          "confidence": 0.65
-        },
-        {
-          "agent": "test_coverage",
-          "file": "httpx/_multipart.py",
-          "line_range": [
-            33,
-            33
-          ],
-          "severity": "minor",
-          "title": "No test for boundary value surrounded by double-quotes that also contains whitespace",
-          "detail": "The strip logic is `section.strip()[len(b\"boundary=\"):].strip(b'\"')`. A quoted boundary with leading/trailing spaces inside the quotes (e.g. `boundary=\" +++ \"`) is not tested; it's unclear whether the current implementation handles this correctly and no test guards the behavior.",
-          "confidence": 0.5
-        },
-        {
-          "agent": "test_coverage",
-          "file": "tests/test_multipart.py",
-          "line_range": [
-            86,
-            95
-          ],
-          "severity": "minor",
-          "title": "test_multipart_header_without_boundary does not verify that a random boundary was generated",
-          "detail": "When no boundary is present in the content-type header the code falls back to a random boundary. The test only checks the status code and that the Content-Type header equals the user-supplied value, but does not assert that a valid multipart body was actually sent (i.e. that the stream used some auto-generated boundary). This means the no-boundary fallback behaviour is not fully covered.",
+          "title": "Request constructor path passing self.headers to encode_request not tested at model level",
+          "detail": "The changed block in `_models.py` now passes `self.headers` into `encode_request`. No test in `tests/models/test_requests.py` (or elsewhere at the Request-model level) exercises constructing a Request directly with a multipart content-type header to verify the new header-forwarding behaviour.",
           "confidence": 0.7
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 8393,
-      "tokens_out": 901,
-      "cost_usd": 0.038694,
-      "duration_s": 18.09126116707921,
+      "tokens_in": 8611,
+      "tokens_out": 743,
+      "cost_usd": 0.036978,
+      "duration_s": 14.865411791950464,
       "skip_or_error_reason": null
     },
     {
@@ -442,186 +420,174 @@
       "status": "ok",
       "findings": [
         {
+          "agent": "test_coverage",
+          "file": "httpx/_content.py",
+          "line_range": [
+            159,
+            164
+          ],
+          "severity": "major",
+          "title": "Invalid content-type header path is untested",
+          "detail": "The branch that raises a `ValueError` when `headers` contains a `content-type` that does not start with `multipart/form-data` (e.g. `application/json`) has no test coverage. The error message and raise are completely uncovered, so regressions to this guard would go undetected.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "correctness",
+          "file": "httpx/_multipart.py",
+          "line_range": [
+            29,
+            29
+          ],
+          "severity": "major",
+          "title": "Boundary extraction does not strip trailing whitespace/garbage, causing declared and wire boundary to diverge",
+          "detail": "The parser uses `section.strip().split('boundary=')[-1]` without stripping the result. For a `Content-Type` value like `multipart/form-data; boundary=+++ ;`, the section `\" boundary=+++ \"` strips to `\"boundary=+++ \"`, and splitting on `\"boundary=\"` then taking `[-1]` yields `\"+++ \"` (trailing space included). The extracted boundary is therefore encoded as `b\"+++ \"` (with a trailing space), while `_prepare` in `_models.py` uses `setdefault` so the caller's original header (declaring `boundary=+++`) is preserved unchanged. The wire boundary and the `Content-Type` declared boundary thus disagree, corrupting the multipart body. The fix is to `.strip()` the result of the split before returning it.",
+          "confidence": 0.9
+        },
+        {
           "agent": "security",
           "file": "httpx/_multipart.py",
           "line_range": [
             23,
-            34
+            197
           ],
           "severity": "major",
-          "title": "User-supplied boundary used without RFC 2046 validation \u2014 multipart injection and DoS risk",
-          "detail": "The boundary string extracted from the caller-supplied Content-Type header is used verbatim as the multipart delimiter (e.g. `b\"--%s\\r\\n\" % self.boundary`) and decoded directly with `boundary.decode('ascii')` (line ~199) without any validation or error handling.\n\n**Two distinct risks:**\n1. **Multipart injection:** RFC 2046 \u00a75.1.1 restricts boundary characters to a specific safe set. No validation is performed, so an attacker who controls the Content-Type header can craft a boundary containing `\\r\\n` or `--` sequences, breaking the multipart body structure and potentially smuggling additional form fields or bypassing server-side validation.\n2. **Denial of service / unhandled exception:** If the boundary contains non-ASCII bytes, `boundary.decode('ascii')` raises an unhandled `UnicodeDecodeError`, crashing the request-building path. The `os.urandom` fallback is only used when `boundary is None`, so a non-None but non-ASCII boundary bypasses it entirely.\n\n**Recommendation:** After extraction in `get_multipart_boundary_from_content_type`, validate the returned bytes against the RFC 2046 boundary character set (bchars: alphanumerics + `'()+_,-./:=?` and space, max 70 chars) and return `None` (triggering the safe random-boundary fallback) if validation fails. Alternatively, wrap `boundary.decode('ascii')` in a `try/except UnicodeDecodeError` and fall back to a random boundary.",
+          "title": "Unvalidated boundary value enables CRLF/header injection",
+          "detail": "The extracted boundary string is returned from `get_multipart_boundary_from_content_type` without any character-set validation. It is then (a) spliced verbatim into the multipart wire body as `b'--%s\\r\\n' % self.boundary` and `b'--%s--\\r\\n' % self.boundary`, and (b) interpolated directly into the `Content-Type` string at `MultipartStream.__init__` via `'multipart/form-data; boundary=%s' % boundary.decode('ascii')`. A boundary value containing `\\r\\n` characters (e.g. `foo\\r\\nX-Injected: bar`) will forge fake MIME parts in the body and inject arbitrary headers. RFC 2046 \u00a75.1.1 restricts boundary characters to a safe printable-ASCII set with no CRLF. The extracted value must be validated (and rejected or escaped) against this character set before use.",
           "confidence": 0.9
         },
         {
-          "agent": "correctness",
-          "file": "httpx/_multipart.py",
+          "agent": "correctness, security",
+          "file": "httpx/_content.py",
           "line_range": [
-            30,
-            33
+            159,
+            161
           ],
           "severity": "major",
-          "title": "Splitting on `;` breaks quoted-string boundary values containing semicolons",
-          "detail": "The parser splits the content-type header on `b\";\"` before extracting the boundary parameter. RFC 2046 allows the boundary parameter value to be a quoted-string, which can theoretically contain a semicolon (e.g. `boundary=\"ab;cd\"`). Splitting on `;` would break this into `b'boundary=\"ab'` and `b'cd\"'`, causing the parser to fail to recognise the boundary and silently fall back to a random one.\n\nWhile semicolons inside boundary values are rare in practice, this is a correctness gap relative to the RFC. A proper implementation should parse quoted-string parameter values before splitting.",
-          "confidence": 0.7
+          "title": "Case-sensitive header lookup and over-broad `startswith` check on Content-Type",
+          "detail": "Two related issues: (1) The lookup `\"content-type\" in headers` and `headers[\"content-type\"]` assumes the caller's `Mapping[str, str]` normalises keys to lowercase. This works when `headers` is an httpx `Headers` object (which does case-insensitive lookup), but silently fails for a plain dict with `\"Content-Type\"` as the key \u2014 the boundary would never be extracted. The function's public signature advertises `Mapping[str, str]` but relies on case-insensitive behaviour. (2) The guard `content_type.startswith('multipart/form-data')` also accepts values like `multipart/form-data-evil` or `multipart/form-data.x-custom`. Prefer `content_type.split(';')[0].strip() == 'multipart/form-data'` for an exact media-type comparison.",
+          "confidence": 0.8
         },
         {
-          "agent": "test_coverage",
+          "agent": "correctness, security, style",
+          "file": "httpx/_multipart.py",
+          "line_range": [
+            29,
+            29
+          ],
+          "severity": "minor",
+          "title": "Boundary value extracted with `split('boundary=')[-1]` is incorrect for boundary values containing the substring 'boundary='",
+          "detail": "Using `.split('boundary=')[-1]` has two problems: (1) if the boundary value itself contains `boundary=` (e.g. `boundary=boundary=foo`), the last split token is returned (`foo`) rather than the full value (`boundary=foo`); (2) using `[-1]` instead of `[1]` means any additional occurrence of `boundary=` anywhere in the section produces an unexpected result. The cleaner approaches are `section.strip()[len('boundary='):]` (removing the known prefix) or `section.strip().partition('boundary=')[2]`, both of which are explicit and unambiguous. Alternatively, `split('boundary=', 1)[1]` limits the split to one occurrence.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "style",
           "file": "httpx/_multipart.py",
           "line_range": [
             26,
-            34
+            29
           ],
           "severity": "minor",
-          "title": "Missing unit tests for `get_multipart_boundary_from_content_type` edge-case branches",
-          "detail": "Several branches of the new helper are not directly tested:\n1. `get_multipart_boundary_from_content_type(None)` \u2014 the `not content_type` early-return.\n2. A non-multipart content-type (e.g. `b\"application/json\"`) \u2014 the `not content_type.startswith(b\"multipart/form-data\")` early-return.\n3. `b\"multipart/form-data\"` with no semicolon at all \u2014 the `if b\";\" in content_type` guard is False, falling through to `return None`.\n\nWhile the integration tests cover the happy path, direct unit tests of these branches would pin the contract of the standalone helper and prevent regressions.",
+          "title": "Redundant outer `if \";\" in content_type` guard before `split`",
+          "detail": "The check `if \";\" in content_type:` before the `for section in content_type.split(\";\"):` loop is unnecessary. When there is no semicolon, `split(\";\")` returns a one-element list and the loop iterates once, hitting the `ValueError` path correctly. The guard adds complexity without benefit and is inconsistent with simpler parsing patterns elsewhere in the file.",
           "confidence": 0.8
         },
         {
           "agent": "test_coverage",
-          "file": "tests/test_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            86,
-            95
+            159,
+            165
           ],
           "severity": "minor",
-          "title": "test_multipart_header_without_boundary does not verify the auto-generated boundary was used in the body",
-          "detail": "When no boundary is present in the Content-Type header, the code falls back to a random boundary. `test_multipart_header_without_boundary` only checks the HTTP status code and that the Content-Type header equals the user-supplied value; it does not assert that a valid multipart body was actually sent using an auto-generated boundary. The no-boundary fallback behaviour is therefore not fully covered.",
-          "confidence": 0.7
+          "title": "No test for explicit `boundary` argument taking precedence over a `Content-Type` header",
+          "detail": "When both `boundary` (non-None) and a `headers` mapping with a `content-type` key are supplied, the `boundary is None` condition is False and the header-parsing branch is skipped. There is no test verifying that `boundary` takes precedence, so this interaction is untested.",
+          "confidence": 0.8
         },
         {
           "agent": "test_coverage",
-          "file": "httpx/_models.py",
-          "line_range": [
-            336,
-            347
-          ],
-          "severity": "minor",
-          "title": "No test for explicit multipart boundary via direct `httpx.Request()` construction",
-          "detail": "All new tests exercise the boundary-extraction logic through `httpx.Client`. The `Request` constructor path in `_models.py` lines 336\u2013347 is not tested independently with an explicit `content-type` boundary header supplied at construction time, leaving that code path without direct coverage.",
-          "confidence": 0.65
-        },
-        {
-          "agent": "correctness, test_coverage",
           "file": "httpx/_multipart.py",
           "line_range": [
             23,
-            34
+            30
           ],
           "severity": "minor",
-          "title": "Boundary quoted-string stripping with `strip(b'\"')` silently truncates or mishandles edge-case values",
-          "detail": "The boundary value is extracted with `section.strip()[len(b\"boundary=\"):].strip(b'\"')`. The `bytes.strip(chars)` method removes ALL leading and trailing characters in the given set, not just one quote on each side.\n\nThis causes two edge cases:\n1. A boundary value that is exactly one or more double-quote characters (e.g. `boundary=\"\"`) \u2014 while technically invalid per RFC 2046, a user or test could supply it \u2014 would be stripped to an empty bytes object instead of a meaningful error.\n2. A quoted boundary with internal leading/trailing whitespace (e.g. `boundary=\"+++ \"`) produces `b'+++ '` (with a trailing space) rather than `b'+++'`, because only the quotes are stripped, not internal whitespace. This means the actual boundary used in the body differs from what the Content-Type header advertises, causing a parse mismatch in the receiving server.\n\nNo tests cover these edge cases (see also f18).",
-          "confidence": 0.6
+          "title": "`get_multipart_boundary_from_content_type`: no-semicolon code path not unit-tested",
+          "detail": "A plain `'multipart/form-data'` string (no semicolon) immediately hits the `ValueError` raise without entering the loop. This path is never exercised as a direct unit test of this function; all existing tests pass content-type values that contain a semicolon.",
+          "confidence": 0.75
         },
         {
-          "agent": "correctness",
-          "file": "httpx/_multipart.py",
+          "agent": "test_coverage",
+          "file": "httpx/_content.py",
           "line_range": [
-            199,
-            201
+            159,
+            165
           ],
           "severity": "minor",
-          "title": "MultipartStream reconstructs Content-Type internally but user-supplied header is preserved via setdefault \u2014 behaviour is correct but fragile",
-          "detail": "**Reviewer disagreement.** One reviewer flagged that `MultipartStream.__init__` always rebuilds `self.content_type` from the extracted boundary, potentially overwriting the user's original Content-Type. However, `_prepare()` uses `headers.setdefault()`, so the user-supplied header wins and the reconstructed value is only a fallback.\n\nThis is correct behaviour as long as `get_multipart_boundary_from_content_type` returns the right boundary, but the round-trip (user header \u2192 extract boundary \u2192 reconstruct header \u2192 setdefault) is fragile: any deviation in formatting between the user-supplied and reconstructed values is silently hidden. If the extraction ever returns a wrong boundary, the body and header will disagree without any visible indication. Consider asserting or logging when the extracted boundary is used.",
-          "confidence": 0.4
-        },
-        {
-          "agent": "correctness",
-          "file": "httpx/_models.py",
-          "line_range": [
-            336,
-            346
-          ],
-          "severity": "minor",
-          "title": "Boundary is unconditionally extracted from Content-Type even when `files` is None",
-          "detail": "The boundary is parsed from the Content-Type header regardless of whether `files` is provided. When `files=None` and only `data=` is given, the extracted boundary is silently discarded and `encode_urlencoded_data` is called instead. This is harmless in terms of correctness but can create a confusing situation: a user who passes `content-type: multipart/form-data; boundary=foo` with `data=` only (no files) will get a URL-encoded body while the Content-Type header claims multipart. This is a pre-existing design issue made slightly more visible by the PR.",
-          "confidence": 0.4
-        },
-        {
-          "agent": "correctness, security",
-          "file": "httpx/_multipart.py",
-          "line_range": [
-            30,
-            33
-          ],
-          "severity": "nit",
-          "title": "Case-insensitive boundary= prefix check is correct but implementation is fragile",
-          "detail": "The check `section.strip().lower().startswith(b\"boundary=\")` correctly handles mixed-case keys like `Boundary=` or `BOUNDARY=` because `len(b\"boundary=\")` equals `len(b\"BOUNDARY=\")` (9 bytes either way), so the subsequent slice on the non-lowercased `section.strip()` always skips the right number of bytes. Multiple reviewers independently flagged this as a potential bug but confirmed it is actually correct. It is noted here for robustness \u2014 the implementation relies on a non-obvious coincidence of byte lengths rather than explicit handling.",
+          "title": "New `headers` parameter in `encode_request` / `Request` constructor not tested at unit level",
+          "detail": "The `headers` parameter added to `encode_multipart_data` / `encode_request` is exercised only through the high-level `Client.post` path. There are no direct unit-level tests of `encode_request(files=..., headers=...)` or of constructing a `Request` model directly with a multipart `content-type` header, making regressions in lower-level plumbing harder to catch.",
           "confidence": 0.75
         },
         {
           "agent": "style",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            30,
-            33
+            159,
+            159
           ],
           "severity": "nit",
-          "title": "Outer `if b\";\" in content_type` guard is redundant",
-          "detail": "The `for section in content_type.split(b\";\"):` loop already handles the no-semicolon case \u2014 it yields one element (the whole value), which will not match `startswith(b\"boundary=\")` for a plain `multipart/form-data` value. The extra guard adds indentation and complexity without benefit, deviating from the flat style favoured elsewhere in the file.",
-          "confidence": 0.75
+          "title": "Truthy check on `headers` should use `is not None`",
+          "detail": "`if headers and boundary is None and ...` uses `headers` as a truthy check, silently skipping an explicitly passed empty mapping. The consistent pattern in this codebase is `if headers is not None`, matching how `boundary` itself is checked with `boundary is None`.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_content.py",
           "line_range": [
-            33,
-            33
+            167,
+            168
           ],
           "severity": "nit",
-          "title": "Magic constant `len(b\"boundary=\")` duplicated \u2014 prefer a named constant",
-          "detail": "The byte literal `b\"boundary=\"` appears twice: once in the `startswith` check and once inside `len(...)` for the slice. Extracting a named constant (e.g. `_BOUNDARY_PREFIX = b\"boundary=\"`) would eliminate the duplication, make the intent clear, and be consistent with how other modules in the codebase centralise magic strings.",
+          "title": "Variable name `new_headers` is a workaround, not a meaningful name",
+          "detail": "The local variable was renamed to `new_headers` solely to avoid shadowing the new `headers` parameter, but `new_` carries no semantic meaning. A more descriptive name such as `content_headers` or `stream_headers` would be consistent with how other `encode_*` functions name this value.",
           "confidence": 0.7
         },
         {
           "agent": "style",
-          "file": "httpx/_multipart.py",
+          "file": "httpx/_models.py",
           "line_range": [
-            28,
-            28
+            334,
+            341
           ],
           "severity": "nit",
-          "title": "Inline comment uses lower-case first letter \u2014 inconsistent with surrounding style",
-          "detail": "The comment `# parse boundary according to` starts with a lowercase letter. Surrounding comments in the file (e.g. `# This large tuple based API largely mirrors requests' API`) use sentence-case. Consider changing to `# Parse boundary according to ...`.",
-          "confidence": 0.6
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_multipart.py",
-          "line_range": [
-            94,
-            94
-          ],
-          "severity": "nit",
-          "title": "test_multipart_header_without_boundary omits body-content assertion present in sibling tests",
-          "detail": "Every other parametrised multipart test (e.g. `test_multipart`, `test_multipart_explicit_boundary`) asserts `multipart[\"file\"] == [b\"<file content>\"]` to verify the body was encoded correctly. This test only checks status code and Content-Type, making coverage asymmetric and potentially masking regressions in body encoding.",
+          "title": "Dropped `boundary` keyword argument at `encode_request` call site may cause future confusion",
+          "detail": "The `encode_request` call in `Request.__init__` no longer passes `boundary=` explicitly. Even if this argument is currently unused at this call site, the omission is inconsistent with the function signature and may silently mislead future readers comparing the call site to the function definition.",
           "confidence": 0.55
         },
         {
           "agent": "style",
           "file": "tests/test_multipart.py",
           "line_range": [
-            97,
-            97
+            91,
+            91
           ],
           "severity": "nit",
-          "title": "Parametrize style inconsistent within the file",
-          "detail": "Existing tests use `@pytest.mark.parametrize((\"key\"), ...)` while the new tests at lines 45 and 79 use the single-string form `@pytest.mark.parametrize(\"header\", [...])`. The single-string form is actually the preferred pytest style, but the inconsistency within the file is a readability concern that should be resolved (ideally by updating the older tests).",
+          "title": "Inconsistent `parametrize` style across new and existing tests",
+          "detail": "Existing tests use `@pytest.mark.parametrize((\"key\"), (...))` with outer parens, while the two new parametrize decorators (lines 45 and 75) use a plain string `\"header\"`. Pick one style consistently \u2014 either a bare string `\"header\"` or a single-element tuple `(\"header\",)` \u2014 across all parametrized tests in this file.",
           "confidence": 0.5
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 5293,
-      "tokens_out": 3297,
-      "cost_usd": 0.065334,
-      "duration_s": 63.20142287504859,
+      "tokens_in": 4665,
+      "tokens_out": 2582,
+      "cost_usd": 0.052725,
+      "duration_s": 46.13600795902312,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 88414,
-    "tokens_out": 8389,
-    "cost_usd": 0.391077,
-    "duration_s": 171.4
+    "tokens_in": 98537,
+    "tokens_out": 7053,
+    "cost_usd": 0.401406,
+    "duration_s": 149.6
   }
 }

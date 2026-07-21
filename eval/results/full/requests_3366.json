@@ -2,99 +2,129 @@
   "case": "requests_3366",
   "experiment": "full",
   "pr_url": "https://github.com/psf/requests/pull/3366",
-  "head_sha": "2669ab797ce769ecedf5493b04cb976f33e37210",
+  "head_sha": "b9f109d78961aaf62c65fc022c79e7b227b68dc2",
   "sha_matches_dataset": true,
-  "timestamp": 1784179228,
-  "summary": "This PR adds a `check_header_validity` function to detect header injection via return characters and leading spaces in header values, and wires it into `prepare_headers`. The core idea is sound but has several correctness gaps: the regex uses `$` instead of `\\Z` (allowing a trailing `\\n` to slip through), header names are not validated, and non-string/non-bytes values are not guarded. Test coverage of the bytes branch and the new utility in isolation is also missing.",
+  "timestamp": 1784590260,
+  "summary": "This PR adds header injection protection by checking header values for return/newline characters in `prepare_headers`. The approach has several correctness and security gaps: validation is not applied to header names, headers added after `prepare_headers` (auth, cookies, body) bypass the check entirely, and the regex itself has a subtle `$` vs `\\Z` anchoring bug. Code style in both the models and tests also needs cleanup.",
   "findings": [
     {
-      "agent": "test_coverage",
-      "file": "requests/utils.py",
-      "line_start": 747,
-      "line_end": 752,
-      "severity": "major",
-      "title": "No test exercises the bytes branch of `check_header_validity` with an invalid value",
-      "detail": "The test suite only passes `str` values to the validation path that is expected to raise `InvalidHeader`. The `bytes` branch (using `_CLEAN_HEADER_REGEX_BYTE`) is exercised only with a valid value (`b'fbbq'`), so a regression in the bytes regex would go entirely undetected. A test with a value such as `{'foo': b'bar\\r\\nbaz: qux'}` should be added to confirm that `InvalidHeader` is raised for an invalid bytes header value.",
-      "confidence": 0.92
-    },
-    {
       "agent": "correctness, security",
-      "file": "requests/utils.py",
-      "line_start": 736,
-      "line_end": 737,
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 415,
       "severity": "major",
-      "title": "Regex uses `$` instead of `\\Z`, allowing header values with a trailing newline to bypass the check",
-      "detail": "Both `_CLEAN_HEADER_REGEX_BYTE` and `_CLEAN_HEADER_REGEX_STR` use `$` as the end anchor. In Python's `re` module, `$` matches at the true end of the string **or** just before a trailing `\\n`, even without `re.MULTILINE`. This means a value like `'foo\\n'` or `b'foo\\n'` will match the pattern (because `[^\\r\\n]*` matches `foo` and then `$` matches before the trailing `\\n`), allowing a header value that ends with a bare newline to pass the validity check and inject a newline into the serialized header stream.\n\nFix: replace `$` with `\\Z` in both patterns (e.g. `r'^\\S[^\\r\\n]*\\Z|^\\Z'`). `\\Z` always matches only at the true end of the string with no newline exception. Alternatively, use `re.fullmatch` without any end anchor, but `\\Z` is the minimal, clear fix.",
-      "confidence": 0.9
-    },
-    {
-      "agent": "correctness, security",
-      "file": "requests/utils.py",
-      "line_start": 739,
-      "line_end": 752,
-      "severity": "major",
-      "title": "Header name (key) is not validated for injection characters",
-      "detail": "The `check_header_validity` function only validates the header *value*; the header *name* is never checked. A header name containing `\\r`, `\\n`, or even a `:` followed by a crafted value (e.g. `'X-Foo: injected\\r\\nEvil'`) would pass through `prepare_headers` entirely unchecked, enabling header injection via the key rather than the value.\n\nRFC 7230 requires header field names to be tokens (printable ASCII, no whitespace, no control characters, no `:`). The function should validate the name with a suitable pattern such as `re.match(r'^[^\\0-\\x1f\\x7f:]+$', name)` (using `\\Z` for the end anchor) and raise `InvalidHeader` if it does not match.",
-      "confidence": 0.88
-    },
-    {
-      "agent": "correctness",
-      "file": "requests/utils.py",
-      "line_start": 747,
-      "line_end": 752,
-      "severity": "major",
-      "title": "`check_header_validity` raises `TypeError` for non-string, non-bytes header values",
-      "detail": "The function dispatches on `isinstance(value, bytes)` and otherwise calls `pat.match(value)` directly, assuming `value` is a `str`. If a caller passes a non-string, non-bytes value (e.g. an integer `Content-Length`), `pat.match(value)` raises `TypeError` rather than a meaningful `InvalidHeader` exception. The function should coerce the value to `str` (or explicitly reject unsupported types with a clear error) before running the regex.",
-      "confidence": 0.85
+      "title": "Regex validates header values only \u2014 header names are not checked",
+      "detail": "The injection-prevention pattern `pat` is applied only to `val` (the header value) but never to `name` (the header name). An attacker who can supply a crafted header name containing `\\r\\n` \u2014 e.g. `{'foo\\r\\nX-Injected: evil': 'bar'}` \u2014 can still inject arbitrary headers or split the HTTP request. After the `to_native_string` conversion, `name` must also be matched against the pattern, and the exception message should reference whichever of `name`/`val` failed.",
+      "confidence": 0.95
     },
     {
       "agent": "correctness, security",
       "file": "requests/models.py",
-      "line_start": 407,
-      "line_end": 413,
-      "severity": "minor",
-      "title": "Headers added after `prepare_headers()` (by `prepare_body`, `prepare_auth`, `prepare_cookies`) bypass the injection check",
-      "detail": "The `check_header_validity` call is placed exclusively in `prepare_headers()`. Several other code paths add headers to `self.headers` after that method returns without any validity check: `prepare_body()` directly sets `Content-Length`, `Transfer-Encoding`, and `Content-Type`; `prepare_content_length()` sets `Content-Length`; `prepare_cookies()` sets the `Cookie` header; and `prepare_auth()` calls an arbitrary auth handler that can set any header. If any of those code paths incorporate attacker-controlled data (e.g. cookie values from a server-controlled redirect or auth credentials), those headers bypass the injection check entirely. For a complete fix, validation should also be applied at serialization time or whenever a header is set on the `CaseInsensitiveDict`.",
-      "confidence": 0.75
+      "line_start": 411,
+      "line_end": 416,
+      "severity": "major",
+      "title": "Validation bypassed for headers added after `prepare_headers`",
+      "detail": "The CRLF check only runs inside `prepare_headers`. Headers added later in the request lifecycle \u2014 `Content-Length`/`Transfer-Encoding` set in `prepare_body`, `Cookie` set in `prepare_cookies`, `Authorization`/`Proxy-Authorization` set during `prepare_auth` and redirect proxy rebuilding \u2014 are never validated. Any of those paths that incorporate externally-controlled data (e.g. credentials from a URL, netrc, or proxy environment variables) would bypass sanitisation entirely. The validation should be applied at the point of insertion (e.g. via `CaseInsensitiveDict.__setitem__`) or repeated at each of those sites.",
+      "confidence": 0.88
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 411,
+      "severity": "major",
+      "title": "Regex `$` anchor permits trailing `\\n` \u2014 use `\\Z` instead",
+      "detail": "Python's `re` module treats `$` as matching just before a trailing `\\n` at the end of the string (even without `re.MULTILINE`). As a result, `re.match(r'^\\S[^\\r\\n]*$', 'foo\\n')` unexpectedly matches because `$` anchors before the trailing `\\n` rather than after it. A header value of `'foo\\n'` will therefore pass validation and not raise `InvalidHeader`. Replace `$` with `\\Z` (absolute end-of-string anchor) to close this bypass.",
+      "confidence": 0.85
     },
     {
       "agent": "test_coverage",
-      "file": "requests/utils.py",
-      "line_start": 739,
-      "line_end": 752,
-      "severity": "minor",
-      "title": "No direct unit test for `check_header_validity` in isolation",
-      "detail": "`check_header_validity` is a standalone utility function but is only exercised indirectly through full HTTP requests (requiring `httpbin`) in `test_requests.py`. A direct unit test in `tests/test_utils.py` would be simpler, faster, and free of network dependencies, and would also make it straightforward to cover edge cases like the bytes branch, `None` values, non-string types, and names with injection characters.",
+      "file": "requests/models.py",
+      "line_start": 412,
+      "line_end": 415,
+      "severity": "major",
+      "title": "No test for invalid header *names* (keys containing `\\r`/`\\n`)",
+      "detail": "The validation loop only checks header values; there is no test exercising a header key/name that contains `\\r`, `\\n`, or leading whitespace. If validation of names is intentionally omitted, this is an untested security boundary; if validation is expected (as the related finding recommends), both the logic and the test are absent.",
       "confidence": 0.75
+    },
+    {
+      "agent": "correctness, style",
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 411,
+      "severity": "minor",
+      "title": "Regex recompiled on every call to `prepare_headers`",
+      "detail": "The pattern is compiled fresh on each invocation of `prepare_headers`. Although Python's `re` module maintains a small internal cache, relying on it is fragile. Consistent with the existing module-level constants in this file (e.g. `DEFAULT_REDIRECT_LIMIT`, `REDIRECT_STATI`), the compiled regex should be hoisted to a module-level constant such as `VALID_HEADER_REGEX = re.compile(r'^\\S[^\\r\\n]*\\Z|^\\Z')`.",
+      "confidence": 0.92
+    },
+    {
+      "agent": "style",
+      "file": "requests/exceptions.py",
+      "line_start": 82,
+      "line_end": 86,
+      "severity": "minor",
+      "title": "Missing blank line between class definitions and trailing spaces in docstrings",
+      "detail": "The existing style in `exceptions.py` consistently places a blank line between class definitions. The new `InvalidHeader` class is missing the blank line separating it from `InvalidURL` above and `ChunkedEncodingError` below. Additionally, the docstrings on both `InvalidURL` (line 83) and `InvalidHeader` (line 86) contain a trailing space before the closing `\"\"\"`, inconsistent with other one-liner docstrings in the file such as `\"\"\"An HTTP error occurred.\"\"\"`; these trailing spaces should be removed.",
+      "confidence": 0.92
     },
     {
       "agent": "test_coverage",
       "file": "tests/test_requests.py",
       "line_start": 1131,
-      "line_end": 1138,
+      "line_end": 1168,
       "severity": "minor",
-      "title": "`test_header_validation` asserts only one of the four valid header values",
-      "detail": "`test_header_validation` provides four valid headers (`'foo'`, `'bar'`, `'baz'` (empty string), and `'qux'` (bytes)), but only asserts `r.request.headers['foo']`. The other three are silently unchecked, so a regression that drops or mutates them (e.g. silently converting `b'fbbq'` to the wrong type, or stripping the empty-string header) would go undetected.",
-      "confidence": 0.7
+      "title": "Incomplete test coverage: only one valid header asserted; no multi-header invalid-entry test",
+      "detail": "(1) `test_header_validation` defines `headers_ok` with three entries (`foo`, `bar`, `baz`) but only asserts the value of `foo`. Regressions that incorrectly reject empty-string or single-character values would go undetected. (2) All invalid-header tests pass a single-entry dict; there is no test with a dict where the first header is valid and a later one is invalid, to confirm the loop raises on the offending entry rather than silently skipping it.",
+      "confidence": 0.85
     },
     {
       "agent": "security",
-      "file": "requests/utils.py",
-      "line_start": 751,
-      "line_end": 752,
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 411,
       "severity": "minor",
-      "title": "Raw header name interpolated into `InvalidHeader` message enables log injection",
-      "detail": "The error message `\"Invalid return character or leading space in header: %s\" % name` embeds the raw, caller-controlled header name directly. If the name contains control characters or newlines and the exception message is logged or displayed downstream, this enables log injection. The name should be wrapped with `repr()` (i.e. `repr(name)`) to render control characters visibly and safely.",
-      "confidence": 0.6
+      "title": "Regex does not block lone vertical-tab (`\\x0b`) or form-feed (`\\x0c`) characters",
+      "detail": "RFC 7230 forbids any bare control character in header field values. The pattern `[^\\r\\n]` only excludes carriage-return and line-feed; characters such as `\\x0b` (vertical tab) and `\\x0c` (form feed) are also illegal and may be treated as line separators by some server implementations. Consider a broader exclusion such as `[^\\x00-\\x1f\\x7f]` matching the RFC 7230 `field-vchar` production, or at minimum adding `\\x0b\\x0c` to the excluded set.",
+      "confidence": 0.8
+    },
+    {
+      "agent": "correctness",
+      "file": "requests/models.py",
+      "line_start": 413,
+      "line_end": 413,
+      "severity": "minor",
+      "title": "`to_native_string` on bytes header values may raise `UnicodeDecodeError` instead of `InvalidHeader`",
+      "detail": "The PR now calls `to_native_string(val)` on header values. In Python 3, `to_native_string` calls `.decode('ascii')` on `bytes` inputs. If a header value is `bytes` containing non-ASCII data, this raises a `UnicodeDecodeError` rather than the expected `InvalidHeader`, which is a confusing API regression. Previously the value was left as-is and passed to urllib3 for handling. The error should be caught and re-raised as `InvalidHeader`.",
+      "confidence": 0.75
+    },
+    {
+      "agent": "security",
+      "file": "requests/models.py",
+      "line_start": 415,
+      "line_end": 415,
+      "severity": "minor",
+      "title": "Error message interpolates raw, unsanitised header name",
+      "detail": "The `InvalidHeader` message at line 415 interpolates the user-supplied `name` directly: `'Invalid return character or leading space in header: %s' % (name)`. If `name` contains CRLF or other control characters (which are not yet validated), the resulting string can corrupt log output or terminal display. Use `repr(name)` (or equivalent) when building the message.",
+      "confidence": 0.75
     },
     {
       "agent": "test_coverage",
       "file": "requests/models.py",
       "line_start": 407,
-      "line_end": 413,
+      "line_end": 416,
       "severity": "minor",
-      "title": "No test verifies that `prepare_headers(None)` still produces an empty `CaseInsensitiveDict`",
-      "detail": "The refactored `prepare_headers` now unconditionally initialises `self.headers = CaseInsensitiveDict()` before the conditional block. While this should still handle `headers=None` correctly, there is no dedicated test asserting this, so a future refactor could silently break the `None` path.",
+      "title": "No direct unit test for `prepare_headers(None)` / `prepare_headers({})`",
+      "detail": "The refactored `prepare_headers` always initialises `self.headers = CaseInsensitiveDict()` before the `if headers:` branch. All existing tests call `prepare_headers` indirectly via `requests.get(...)` with a non-None dict. A direct unit-level test calling `prepare_headers(None)` and `prepare_headers({})` is missing to confirm the header dict is properly initialised and no exception is raised.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "test_coverage",
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 415,
+      "severity": "minor",
+      "title": "No test for non-string (e.g. integer) header values passed to `prepare_headers`",
+      "detail": "There is no test covering what happens when a non-string header value such as `{'foo': 123}` is provided. It is unclear whether `to_native_string` handles integers correctly and whether validation still passes or raises an unexpected error. A test case should document the expected behaviour.",
       "confidence": 0.6
     },
     {
@@ -104,68 +134,58 @@
       "line_end": 1131,
       "severity": "nit",
       "title": "Missing space after comma in test method signature",
-      "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. All other test methods in the file consistently use `def test_foo(self, httpbin):`.",
+      "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. All existing test methods in this file use `def test_foo(self, httpbin):` style.",
       "confidence": 0.99
     },
     {
       "agent": "style",
       "file": "tests/test_requests.py",
-      "line_start": 1163,
-      "line_end": 1163,
+      "line_start": 1147,
+      "line_end": 1168,
       "severity": "nit",
-      "title": "`headers_tab` value contains spaces, not a tab character",
-      "detail": "The variable is named `headers_tab` and the comment describes it as \"Test for tab\", but the value `' bar'` is three spaces \u2014 not a tab character (`\\t`). The name is misleading and the test does not actually exercise tab-in-header-value behaviour.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "style",
-      "file": "requests/models.py",
-      "line_start": 30,
-      "line_end": 31,
-      "severity": "nit",
-      "title": "Trailing whitespace on import line",
-      "detail": "Line 30 ends with a trailing space after the comma in the import list (`to_native_string, `). No other import line in this file has trailing whitespace.",
-      "confidence": 0.95
-    },
-    {
-      "agent": "style",
-      "file": "requests/utils.py",
-      "line_start": 735,
-      "line_end": 753,
-      "severity": "nit",
-      "title": "Missing two-blank-line separators around `check_header_validity`",
-      "detail": "The project style (and PEP 8) requires two blank lines between top-level definitions. There is only one blank line between `to_native_string` and the comment/regex block that precedes `check_header_validity`, and only one blank line between the end of `check_header_validity` and `urldefragauth`. Both gaps should be two blank lines.",
-      "confidence": 0.92
-    },
-    {
-      "agent": "style",
-      "file": "tests/test_requests.py",
-      "line_start": 1150,
-      "line_end": 1170,
-      "severity": "nit",
-      "title": "Dead `r =` assignments inside `pytest.raises` blocks",
-      "detail": "Inside `with pytest.raises(InvalidHeader):` blocks, the result of `requests.get(...)` is assigned to `r`, but `r` is never used afterwards. The existing test style (see `test_invalid_url`) simply calls the expression without assignment. These are dead assignments and should be removed.",
-      "confidence": 0.9
+      "title": "Missing space after `#` in inline comments within tests",
+      "detail": "Comments such as `#test for newline`, `#test for line feed`, `#test for carriage return`, `#test for whitespace`, and `#test for tab` are missing the conventional space after `#`. The existing test file uses `# comment` style throughout.",
+      "confidence": 0.99
     },
     {
       "agent": "style",
       "file": "requests/models.py",
       "line_start": 409,
-      "line_end": 411,
+      "line_end": 409,
       "severity": "nit",
-      "title": "Unpacking loop variable could be done in the `for` statement directly",
-      "detail": "The loop currently reads `for header in headers.items(): ... name, value = header`, which is roundabout. The more idiomatic and concise form is `for name, value in headers.items():`, consistent with how similar loops are written elsewhere in the file.",
-      "confidence": 0.8
+      "title": "Missing space after `#` in inline comment",
+      "detail": "The comment `#Regex checks that string doesn't begin with whitespace...` is missing the conventional space after `#`. All existing comments in this file use the `# comment text` style (e.g. line 38). All new comments in this block should follow the same convention.",
+      "confidence": 0.95
     },
     {
       "agent": "style",
       "file": "tests/test_requests.py",
-      "line_start": 1133,
-      "line_end": 1136,
+      "line_start": 1149,
+      "line_end": 1169,
       "severity": "nit",
-      "title": "Dict literal formatting inconsistent with surrounding test code",
-      "detail": "The `headers_ok` dict has its opening brace on the same line as the assignment with multiple entries that are not consistently aligned. The surrounding test code uses simpler one-liners or consistently spaced multi-line dicts. Minor style inconsistency worth harmonising.",
-      "confidence": 0.6
+      "title": "Unused variable `r` inside `pytest.raises` blocks",
+      "detail": "Each `with pytest.raises(InvalidHeader):` block assigns the result of `requests.get(...)` to `r`, which is never used. Existing tests in this file omit capturing the return value when it is not needed. The assignments should be dropped.",
+      "confidence": 0.9
+    },
+    {
+      "agent": "style, test_coverage",
+      "file": "tests/test_requests.py",
+      "line_start": 1157,
+      "line_end": 1169,
+      "severity": "nit",
+      "title": "Tab character not actually tested \u2014 misleading variable name and comment",
+      "detail": "`headers_tab` is assigned `{'foo': '   bar'}` (three spaces) and the comment reads `#test for tab`, but no actual tab character (`\\t`) appears in the test. RFC 7230 treats horizontal tab as obsolete leading whitespace; a test with a real `\\t` leading character is missing. Either add a genuine `\\t` test case or rename the variable/comment to reflect that it tests spaces.",
+      "confidence": 0.88
+    },
+    {
+      "agent": "style",
+      "file": "requests/models.py",
+      "line_start": 411,
+      "line_end": 411,
+      "severity": "nit",
+      "title": "Non-descriptive variable name `pat` for compiled regex",
+      "detail": "The name `pat` is vague. If the regex is promoted to a module-level constant (see related finding), a descriptive name like `VALID_HEADER_REGEX` is preferable. Even as a local variable, something like `header_val_re` would be more self-documenting and consistent with the naming style of the surrounding code.",
+      "confidence": 0.8
     }
   ],
   "agent_runs": [
@@ -175,58 +195,70 @@
       "findings": [
         {
           "agent": "correctness",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            736,
-            737
+            411,
+            415
           ],
           "severity": "major",
-          "title": "Regex does not match a string value that is a single non-whitespace character",
-          "detail": "The regex `^\\S[^\\r\\n]*$|^$` requires either an empty string OR a string starting with a non-whitespace character followed by zero or more non-CRLF characters. The part `\\S[^\\r\\n]*` means: one non-whitespace char, then zero or more non-CRLF chars. This is correct. However `re.match` only matches at the beginning of the string, not the whole string \u2014 but the `$` anchor is present, so the full string must match. This is actually fine for single-character values.\n\nThe real issue is that `re.match` is used (not `re.fullmatch`). `re.match` anchors at the start but NOT at the end, even with `$` in Python's re module `$` matches before a trailing newline. So `'foo\\n'` \u2014 a value ending in a newline \u2014 would match because `$` in Python's `re` matches just before a trailing `\\n`. For example: `re.match(r'^\\S[^\\r\\n]*$', 'foo\\n')` returns a match in Python because `$` matches before the trailing `\\n`. This means a header value ending in a bare `\\n` (but not containing `\\n` in the middle) would slip through the check. Use `re.MULTILINE=False` combined with `\\Z` instead of `$`, or use `re.fullmatch`, to correctly reject values ending in `\\n`.",
-          "confidence": 0.8
+          "title": "Regex only validates header values, not header names",
+          "detail": "The pattern `pat` is only checked against `val` (the header value), but header names can also be injection vectors. A header name containing `\\r\\n` could be used to inject arbitrary headers. The check should also be applied to `name` after the `to_native_string` conversion.",
+          "confidence": 0.95
         },
         {
           "agent": "correctness",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            747,
-            752
+            411,
+            415
           ],
           "severity": "major",
-          "title": "check_header_validity does not handle non-string, non-bytes header values",
-          "detail": "The function assumes `value` is either `bytes` or a string type and calls `pat.match(value)` directly. However, header values can be integers or other types (e.g., a `Content-Length` value passed as `int`). If `value` is not a `str` or `bytes`, `pat.match(value)` will raise a `TypeError` instead of a meaningful `InvalidHeader` exception. There is no type guard or conversion before matching. The function should coerce the value to `str` (or handle non-string types gracefully) before running the regex.",
+          "title": "Validation only runs when `headers` is truthy \u2014 headers added later bypass the check",
+          "detail": "The validation is inside `if headers:`, meaning it only applies to headers passed into `prepare_headers`. Headers that are added or mutated on `self.headers` after this call (e.g., `Content-Type`, `Content-Length`, `Authorization` added in `prepare_body`, `prepare_auth`, cookie headers, etc.) are never validated. An attacker who can influence those values would bypass the check entirely.",
           "confidence": 0.85
         },
         {
           "agent": "correctness",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            751,
-            752
+            411,
+            411
           ],
           "severity": "minor",
-          "title": "check_header_validity does not validate the header name",
-          "detail": "The function only validates the header value, not the header name. A header name containing `\\r` or `\\n` characters is equally capable of enabling header injection but will pass through unchecked. While the PR description focuses on values, the name should be validated as well for a complete security fix.",
+          "title": "Regex compiled on every call to `prepare_headers`",
+          "detail": "The pattern `re.compile(r'^\\S[^\\r\\n]*$|^$')` is recompiled on every call to `prepare_headers`. It should be a module-level constant (e.g. `_CLEAN_HEADER_REGEX_STR = re.compile(...)`) so it is only compiled once. While Python's re module caches a small number of recently used patterns, relying on that cache is fragile and can cause subtle performance issues if the cache is evicted.",
           "confidence": 0.9
         },
         {
           "agent": "correctness",
           "file": "requests/models.py",
           "line_range": [
-            407,
+            411,
+            411
+          ],
+          "severity": "major",
+          "title": "Regex allows a single non-whitespace character followed by `\\r` or `\\n` at end of string",
+          "detail": "The pattern `^\\S[^\\r\\n]*$` uses `$` which in Python's `re` module matches just before a trailing `\\n` at the end of the string (i.e., `$` does NOT anchor to the absolute end unless `re.MULTILINE` is off AND the string ends without a newline). However, the more dangerous case is a value like `'x\\r'` \u2014 `$` in Python matches before an optional trailing `\\n`, so a value ending in `\\r` (without a following `\\n`) would actually pass the regex since `$` anchors before a trailing newline only. For example, `re.match(r'^\\S[^\\r\\n]*$', 'x\\r')` \u2014 let's think carefully: `[^\\r\\n]*` won't match `\\r`, so `x\\r` would NOT match. Actually the main issue is Python's `$` matches just before a trailing `\\n`, so `'foo\\n'` should NOT match `^\\S[^\\r\\n]*$` because `[^\\r\\n]*` won't consume the `\\n`. However, `'foo\\n'` itself: `\\S` matches `f`, `[^\\r\\n]*` matches `oo`, then `$` needs to match \u2014 but `\\n` is still left, and `$` matches before a trailing `\\n` in Python. So `re.match(r'^\\S[^\\r\\n]*$', 'foo\\n')` would actually MATCH because `$` in Python matches the position just before the trailing `\\n`. This means a value like `'foo\\n'` (ending with a single newline) would pass the validation check and not raise `InvalidHeader`, which is a correctness bug \u2014 it should be rejected. Use `\\Z` instead of `$` to anchor to the true end of the string.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            413,
             413
           ],
           "severity": "minor",
-          "title": "Headers added after prepare_headers (e.g., Cookie, Content-Type) bypass validity check",
-          "detail": "The `check_header_validity` call is only in `prepare_headers`. Headers set later in `prepare_cookies` (the `Cookie` header) and `prepare_body` (`Content-Type`, `Content-Length`, `Transfer-Encoding`) are added directly to `self.headers` without any validity check. While these are internally generated and thus unlikely to contain injection sequences, an auth handler that injects malformed headers via `prepare_auth` would also bypass the check entirely. The check placement is incomplete for the stated goal.",
+          "title": "`to_native_string` on header value may raise for non-ASCII values without clear error",
+          "detail": "The original code only called `to_native_string` on the header *name*. This PR now also calls `to_native_string(val)` on header values. For Python 3, `to_native_string` calls `.decode('ascii')` on bytes values. If a header value is `bytes` containing non-ASCII data, this will raise a `UnicodeDecodeError` rather than an `InvalidHeader`, which is a potentially confusing API regression. The prior code left the value as-is and let urllib3 handle it.",
           "confidence": 0.75
         }
       ],
       "tool_calls": 4,
-      "tokens_in": 47352,
-      "tokens_out": 1233,
-      "cost_usd": 0.160551,
-      "duration_s": 28.155507874907926,
+      "tokens_in": 36911,
+      "tokens_out": 1443,
+      "cost_usd": 0.132378,
+      "duration_s": 30.76473637484014,
       "skip_or_error_reason": null
     },
     {
@@ -235,58 +267,58 @@
       "findings": [
         {
           "agent": "security",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            736,
-            737
+            411,
+            411
           ],
           "severity": "major",
-          "title": "Header injection regex does not block lone \\r (carriage return without \\n)",
-          "detail": "The byte pattern `b'^\\S[^\\r\\n]*$|^$'` and the string pattern `r'^\\S[^\\r\\n]*$|^$'` use Python's re module with default (non-MULTILINE, non-DOTALL) flags. In Python's `re`, the `$` anchor matches at the end of the string OR just before a trailing `\\n`. It does NOT match before a trailing `\\r`. Additionally the character class `[^\\r\\n]` only excludes `\\r` and `\\n` characters within the body of the header value \u2014 it does not prevent a value that ends with `\\r` alone (e.g. `'value\\r'`). A crafted value like `b'foo\\r'` or `'foo\\r'`: the regex body `[^\\r\\n]*` stops before `\\r`, but then `$` in Python re will NOT match before the `\\r`, so the regex correctly fails. However a value of `'value\\r\\ninjected: header'` is correctly caught. The more subtle bypass is: with the `re.MULTILINE` flag *not* set and a string like `'foo\\nbar'`, the `$` in Python's re matches just before the trailing `\\n` at end-of-string. So `'foo\\n'` (trailing newline only) would match `^\\S[^\\r\\n]*$` because `[^\\r\\n]*` matches `foo`, then `$` matches before the trailing `\\n`. Re-verify: `re.match(r'^\\S[^\\r\\n]*$', 'foo\\n')` \u2014 in Python, without MULTILINE, `$` matches at the end of the string and optionally before a `\\n` at the very end. So `'foo\\n'` **will match** the pattern, allowing a header value ending in `\\n` to pass the check. This is a header injection bypass: a value of `'foo\\n'` passes the regex but inserts a newline into the serialized header stream. The fix is to use `\\Z` instead of `$` (or add `re.MULTILINE` is wrong direction \u2014 use `\\Z` which matches only at the true end of string with no newline exception). Similarly for the bytes pattern.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "security",
-          "file": "requests/utils.py",
-          "line_range": [
-            739,
-            752
-          ],
-          "severity": "major",
-          "title": "Header name (key) is not validated for injection characters",
-          "detail": "The `check_header_validity` function only validates the header *value*, not the header *name*. A header name containing `\\r\\n` or `:` followed by a fake value could also be used for header injection. For example, a header name like `'X-Foo: injected\\r\\nEvil'` would pass through `prepare_headers` unchecked. RFC 7230 requires header field names to be tokens (no whitespace, no control characters). The header name should be validated with a token check (e.g. `re.match(r'^[^\\0-\\x1f\\x7f:]+$', name)`).",
-          "confidence": 0.85
-        },
-        {
-          "agent": "security",
-          "file": "requests/utils.py",
-          "line_range": [
-            751,
-            752
-          ],
-          "severity": "minor",
-          "title": "InvalidHeader error message may expose internal header name controlled by caller",
-          "detail": "The error message `\"Invalid return character or leading space in header: %s\" % name` interpolates the raw header name into the exception message. If the caller controls the header name (e.g. from user input) and the exception message is later logged or displayed to a third party, it could be used to inject unexpected characters into log entries (log injection). This is low-severity since the exception is typically handled by the caller, but the name should at minimum be repr()'d: `repr(name)` to sanitize control characters.",
-          "confidence": 0.6
+          "title": "Header injection check does not validate header names",
+          "detail": "The regex validation at line 411 is only applied to header values (`val`), not to header names (`name`). An attacker who can supply a crafted header name containing `\\r\\n` (e.g. `{'foo\\r\\nX-Injected: evil': 'bar'}`) could still inject arbitrary headers or split the HTTP request. Both `name` and `val` should be validated against the injection-prevention pattern.",
+          "confidence": 0.95
         },
         {
           "agent": "security",
           "file": "requests/models.py",
           "line_range": [
-            407,
-            413
+            411,
+            416
+          ],
+          "severity": "major",
+          "title": "Validation bypassed for headers added after prepare_headers (auth, cookies, body, redirect path)",
+          "detail": "The CRLF check only runs inside `prepare_headers`. Headers added later \u2014 e.g. `Content-Length` / `Transfer-Encoding` set in `prepare_body` (lines 454-456), `Cookie` set in `prepare_cookies` (line 531), `Authorization` and `Proxy-Authorization` set during `prepare_auth` / `rebuild_proxies` in session redirect handling \u2014 bypass this check entirely. Any of those paths that incorporate externally-controlled data (e.g., credentials from a URL or netrc, proxy usernames from the environment) would not be sanitised. The validation should also be applied (or enforced at write time via `CaseInsensitiveDict.__setitem__`) to cover these code paths.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            411
           ],
           "severity": "minor",
-          "title": "Headers added after prepare_headers() (e.g. by auth handlers or prepare_body) bypass the injection check",
-          "detail": "The `check_header_validity` call is placed in `prepare_headers()`, but several other code paths add headers after that method returns without going through the check: (1) `prepare_body()` directly sets `self.headers['Content-Length']`, `self.headers['Transfer-Encoding']`, and `self.headers['Content-Type']` (lines 451-470); (2) `prepare_content_length()` sets `Content-Length` directly; (3) `prepare_auth()` calls an arbitrary auth handler which can set any header; (4) `prepare_cookies()` sets `self.headers['Cookie']`. Any of these that incorporate attacker-controlled data (e.g. cookie values from a server-controlled redirect, or auth credentials) can bypass the injection check. For a complete fix, validation should also be applied when headers are set on the `CaseInsensitiveDict`, or at the point of serialization.",
+          "title": "Regex does not block lone vertical-tab (\\x0b) or form-feed (\\x0c) characters in header values",
+          "detail": "RFC 7230 forbids any bare control character in header field values. The regex `r'^\\S[^\\r\\n]*$|^$'` only excludes `\\r` and `\\n`. Characters such as `\\x0b` (vertical tab) and `\\x0c` (form feed) are also illegal in header values per the HTTP spec and could be used for injection on some server implementations that treat them as line separators. Consider using a broader exclusion such as `[^\\x00-\\x1f\\x7f]` (matching the RFC 7230 `field-vchar` production) or at minimum adding `\\x0b\\x0c` to the excluded set.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            415,
+            415
+          ],
+          "severity": "minor",
+          "title": "Error message leaks the header name without sanitisation",
+          "detail": "The `InvalidHeader` exception message at line 415 interpolates the raw, user-supplied header `name` directly: `'Invalid return character or leading space in header: %s' % (name)`. If the header name itself contains CRLF or other control characters (which are not validated), the resulting string could corrupt log output or exception displays. The name should be sanitised (e.g. `repr(name)`) before being included in the error message.",
           "confidence": 0.75
         }
       ],
-      "tool_calls": 2,
-      "tokens_in": 26256,
-      "tokens_out": 1468,
-      "cost_usd": 0.100788,
-      "duration_s": 31.404774165945128,
+      "tool_calls": 3,
+      "tokens_in": 40555,
+      "tokens_out": 1037,
+      "cost_usd": 0.13722,
+      "duration_s": 25.750395957846195,
       "skip_or_error_reason": null
     },
     {
@@ -295,50 +327,62 @@
       "findings": [
         {
           "agent": "style",
-          "file": "requests/utils.py",
+          "file": "requests/exceptions.py",
           "line_range": [
-            735,
-            736
+            82,
+            86
+          ],
+          "severity": "minor",
+          "title": "Missing blank line between class definitions",
+          "detail": "The existing style in this file consistently places a blank line between each class definition (e.g., between `InvalidSchema` and `ChunkedEncodingError`). After removing the blank line from `InvalidURL`'s docstring change, `InvalidHeader` (line 85) is missing the blank line that should separate it from both `InvalidURL` above and `ChunkedEncodingError` below. The blank line before `ChunkedEncodingError` (line 88) is also absent.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            83,
+            83
           ],
           "severity": "nit",
-          "title": "Missing blank line before module-level comment and function definition",
-          "detail": "The surrounding code in utils.py consistently separates top-level definitions with two blank lines. There is only one blank line (the comment line) between `to_native_string` and `check_header_validity`, and no blank line between the module-level regex comment and the regex assignments. Should be two blank lines before the comment block, per the existing file style.",
+          "title": "Trailing space in `InvalidURL` docstring",
+          "detail": "The docstring on line 83 reads `\"\"\"The URL provided was somehow invalid. \"\"\"` with a trailing space before the closing `\"\"\"`. The existing one-liner docstrings in this file (e.g., `\"\"\"An HTTP error occurred.\"\"\"`) do not have a trailing space. The new `InvalidHeader` docstring on line 86 has the same issue.",
           "confidence": 0.9
-        },
-        {
-          "agent": "style",
-          "file": "requests/utils.py",
-          "line_range": [
-            752,
-            753
-          ],
-          "severity": "nit",
-          "title": "Missing blank line between `check_header_validity` and `urldefragauth`",
-          "detail": "All other top-level function definitions in utils.py are separated by two blank lines. There is only one blank line between the end of `check_header_validity` and `urldefragauth`.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "requests/models.py",
-          "line_range": [
-            30,
-            31
-          ],
-          "severity": "nit",
-          "title": "Trailing whitespace on import line",
-          "detail": "Line 30 ends with a trailing space after the comma (`to_native_string, `). The existing import lines in this file do not have trailing whitespace.",
-          "confidence": 0.95
         },
         {
           "agent": "style",
           "file": "requests/models.py",
           "line_range": [
             409,
+            409
+          ],
+          "severity": "nit",
+          "title": "Missing space after `#` in inline comment",
+          "detail": "The comment `#Regex checks that string doesn't begin with whitespace...` is missing the conventional space after `#`. The existing codebase uses `# comment text` style (e.g., line 38: `#: The set of HTTP status codes...`). All new comments in this block should follow the same convention.",
+          "confidence": 0.95
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            411
+          ],
+          "severity": "minor",
+          "title": "Regex compiled inside method on every call",
+          "detail": "The pattern `pat = re.compile(r'^\\ S[^\\r\\n]*$|^$')` is compiled fresh on every invocation of `prepare_headers`. The existing module-level constants pattern in this file (e.g., `DEFAULT_REDIRECT_LIMIT`, `REDIRECT_STATI`) suggests module-level constants are preferred. This regex would be better placed as a module-level compiled constant such as `VALID_HEADER_VAL = re.compile(r'^\\S[^\\r\\n]*$|^$')`.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
             411
           ],
           "severity": "nit",
-          "title": "Unpacking `header` into `name, value` could be done in the loop variable directly",
-          "detail": "The pattern `for header in headers.items(): ... name, value = header` is slightly roundabout. The existing style in the file tends to be concise; `for name, value in headers.items():` and passing `(name, value)` to `check_header_validity` would be cleaner and more idiomatic.",
+          "title": "Non-descriptive variable name `pat` for compiled regex",
+          "detail": "The name `pat` is vague. The surrounding code tends to use more descriptive names. Something like `header_val_re` or `VALID_HEADER_VALUE` (if promoted to module-level) would be more self-documenting and consistent with the style of named constants elsewhere in the file.",
           "confidence": 0.8
         },
         {
@@ -350,31 +394,31 @@
           ],
           "severity": "nit",
           "title": "Missing space after comma in method signature",
-          "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. All other test methods in the file use `def test_foo(self, httpbin):` with a space.",
+          "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. The existing test methods all use `def test_foo(self, httpbin):` style.",
           "confidence": 0.99
         },
         {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1133,
-            1136
+            1147,
+            1168
           ],
           "severity": "nit",
-          "title": "Dict literal formatting inconsistent with surrounding test code",
-          "detail": "The `headers_ok` dict is formatted with the opening brace on the same line as the assignment and multiple entries without alignment. The surrounding test code generally uses a simpler one-liner or consistently spaced multi-line dicts. Minor style inconsistency, but worth harmonising.",
-          "confidence": 0.6
+          "title": "Missing space after `#` in inline comments within tests",
+          "detail": "Comments like `#test for newline`, `#test for line feed`, `#test for carriage return`, `#test for whitespace`, and `#test for tab` are all missing the conventional space after `#`. The existing test file uses `# comment` style (e.g., line 36: `# Requests to this URL should always fail...`).",
+          "confidence": 0.99
         },
         {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1150,
-            1170
+            1149,
+            1169
           ],
           "severity": "nit",
-          "title": "Unused `r` variable in `pytest.raises` blocks",
-          "detail": "`r = requests.get(...)` inside `with pytest.raises(...)` blocks assigns to `r` but `r` is never used. The existing test style simply calls the expression without assignment in these cases (see `test_invalid_url`). The `r =` assignments are dead code.",
+          "title": "Unused variable `r` in `pytest.raises` blocks",
+          "detail": "Inside each `with pytest.raises(InvalidHeader):` block, the result is assigned to `r` (e.g., `r = requests.get(...)`), but `r` is never used. Looking at the existing tests, `with pytest.raises(...)` blocks don't bother capturing the return value when it isn't needed (e.g., lines 75-77). The assignments should be dropped.",
           "confidence": 0.9
         },
         {
@@ -385,16 +429,16 @@
             1163
           ],
           "severity": "nit",
-          "title": "`headers_tab` value uses spaces, not a tab character",
-          "detail": "The variable is named `headers_tab` and the comment says \"Test for tab\", but the value `' bar'` (three spaces) does not contain a tab character (`\\t`). The naming is misleading.",
-          "confidence": 0.95
+          "title": "Tab described as whitespace in `test_header_no_leading_space`",
+          "detail": "`headers_tab` is assigned `{'foo': '   bar'}` \u2014 this looks like three spaces, not a tab character. If the intent is to test a tab (`\\t`), the value should be `'\\tbar'`. If spaces are intended, the variable name `headers_tab` is misleading.",
+          "confidence": 0.85
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 7800,
-      "tokens_out": 996,
-      "cost_usd": 0.03834,
-      "duration_s": 18.99577374989167,
+      "tokens_in": 6604,
+      "tokens_out": 1227,
+      "cost_usd": 0.038217,
+      "duration_s": 23.629158416064456,
       "skip_or_error_reason": null
     },
     {
@@ -403,38 +447,14 @@
       "findings": [
         {
           "agent": "test_coverage",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            747,
-            752
+            412,
+            415
           ],
           "severity": "major",
-          "title": "No test for byte-typed header values with invalid characters",
-          "detail": "check_header_validity has two branches: one for bytes values (using _CLEAN_HEADER_REGEX_BYTE) and one for str values (using _CLEAN_HEADER_REGEX_STR). The tests in test_header_no_return_chars and test_header_no_leading_space only pass str values, so the bytes branch for invalid values is never exercised. A test like {'foo': b'bar\\r\\nbaz: qux'} should be added to confirm that the bytes regex also raises InvalidHeader.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/utils.py",
-          "line_range": [
-            736,
-            737
-          ],
-          "severity": "minor",
-          "title": "No test confirming a bytes header value with embedded CR/LF is rejected",
-          "detail": "The _CLEAN_HEADER_REGEX_BYTE pattern is exercised only via test_header_validation which passes a valid bytes value (b'fbbq'). No test passes an invalid bytes value such as b'bar\\r\\nbaz: qux' to verify the regex rejects it and InvalidHeader is raised.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "test_coverage",
-          "file": "requests/utils.py",
-          "line_range": [
-            739,
-            752
-          ],
-          "severity": "minor",
-          "title": "No unit test for check_header_validity in isolation (e.g. tests/test_utils.py)",
-          "detail": "check_header_validity is a standalone utility function but is only exercised indirectly through full HTTP requests in test_requests.py. A direct unit test in tests/test_utils.py would be simpler, faster, and avoid the httpbin dependency, and would also make it easier to cover the bytes branch, None handling, and other edge cases.",
+          "title": "No test for invalid header names (keys with return/whitespace characters)",
+          "detail": "The validation loop in `prepare_headers` only checks the header value (`val`) but not the header name (`name`). There is no test exercising the case where the header *key/name* itself contains `\\r`, `\\n`, or leading whitespace. If validation of names is intentionally omitted that is still an untested code path boundary; if validation of names is expected it is both a logic gap and an untested gap.",
           "confidence": 0.75
         },
         {
@@ -442,11 +462,23 @@
           "file": "requests/models.py",
           "line_range": [
             407,
-            413
+            416
+          ],
+          "severity": "major",
+          "title": "No test for `prepare_headers` called directly with `None` / no headers",
+          "detail": "The refactored `prepare_headers` now always initialises `self.headers = CaseInsensitiveDict()` before the `if headers:` branch. The existing tests only call `prepare_headers` indirectly via `requests.get(\u2026)` with non-None headers dicts. There is no unit-level test that calls `prepare_headers(None)` or `prepare_headers({})` directly to confirm the header dict is properly initialised and no exception is raised in the empty/None case.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            415
           ],
           "severity": "minor",
-          "title": "No test for prepare_headers called with no headers (empty/None path) after refactor",
-          "detail": "The refactored prepare_headers now unconditionally sets self.headers = CaseInsensitiveDict() before the if-block. While the previous code had an else-branch, the new structure should still behave correctly with headers=None, but there is no dedicated test verifying that prepare_headers(None) produces an empty CaseInsensitiveDict.",
+          "title": "No test for header value that is a non-string type (e.g. integer) passed to `prepare_headers`",
+          "detail": "`to_native_string(val)` is called before the regex match. There is no test covering what happens when a non-string header value (e.g. `{'foo': 123}`) is provided \u2014 whether `to_native_string` converts it correctly and validation still passes, or whether it raises an unexpected error.",
           "confidence": 0.6
         },
         {
@@ -457,16 +489,40 @@
             1138
           ],
           "severity": "minor",
-          "title": "test_header_validation only checks one header value from the valid set",
-          "detail": "test_header_validation provides four valid headers but only asserts r.request.headers['foo']. The empty-string header ('baz': ''), the integer-like header ('bar': '1'), and the bytes header ('qux': b'fbbq') are not individually asserted, so a regression that silently drops or mutates them would go undetected.",
-          "confidence": 0.7
+          "title": "`test_header_validation` only asserts one of the three accepted header values",
+          "detail": "The test defines `headers_ok` with three entries (`foo`, `bar`, `baz`) but only asserts the value of `headers_ok['foo']`. The `bar` (numeric-string) and `baz` (empty string) cases are silently accepted without assertion, so a regression that rejects empty-string or single-character values would go undetected.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1157,
+            1169
+          ],
+          "severity": "minor",
+          "title": "`test_header_no_leading_space`: tab character (`\\t`) not tested, only spaces",
+          "detail": "The test uses `'   bar'` (three spaces) as the second case and labels it 'tab' in the comment, but there is no actual tab character (`\\t`). RFC 7230 treats horizontal tab as obsolete whitespace too; a test with a real `\\t` leading character is missing.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            415
+          ],
+          "severity": "minor",
+          "title": "No test for multi-header dict where only the second (or later) header is invalid",
+          "detail": "All existing invalid-header tests pass a single-entry dict. There is no test that passes a dict where the first header is valid and a later one is invalid, to confirm the loop raises on the offending entry rather than silently skipping it.",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 22693,
-      "tokens_out": 793,
-      "cost_usd": 0.079974,
-      "duration_s": 16.32976537500508,
+      "tokens_in": 22294,
+      "tokens_out": 931,
+      "cost_usd": 0.080847,
+      "duration_s": 19.90751895797439,
       "skip_or_error_reason": null
     },
     {
@@ -474,111 +530,147 @@
       "status": "ok",
       "findings": [
         {
-          "agent": "test_coverage",
-          "file": "requests/utils.py",
-          "line_range": [
-            747,
-            752
-          ],
-          "severity": "major",
-          "title": "No test exercises the bytes branch of `check_header_validity` with an invalid value",
-          "detail": "The test suite only passes `str` values to the validation path that is expected to raise `InvalidHeader`. The `bytes` branch (using `_CLEAN_HEADER_REGEX_BYTE`) is exercised only with a valid value (`b'fbbq'`), so a regression in the bytes regex would go entirely undetected. A test with a value such as `{'foo': b'bar\\r\\nbaz: qux'}` should be added to confirm that `InvalidHeader` is raised for an invalid bytes header value.",
-          "confidence": 0.92
-        },
-        {
           "agent": "correctness, security",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            736,
-            737
+            411,
+            415
           ],
           "severity": "major",
-          "title": "Regex uses `$` instead of `\\Z`, allowing header values with a trailing newline to bypass the check",
-          "detail": "Both `_CLEAN_HEADER_REGEX_BYTE` and `_CLEAN_HEADER_REGEX_STR` use `$` as the end anchor. In Python's `re` module, `$` matches at the true end of the string **or** just before a trailing `\\n`, even without `re.MULTILINE`. This means a value like `'foo\\n'` or `b'foo\\n'` will match the pattern (because `[^\\r\\n]*` matches `foo` and then `$` matches before the trailing `\\n`), allowing a header value that ends with a bare newline to pass the validity check and inject a newline into the serialized header stream.\n\nFix: replace `$` with `\\Z` in both patterns (e.g. `r'^\\S[^\\r\\n]*\\Z|^\\Z'`). `\\Z` always matches only at the true end of the string with no newline exception. Alternatively, use `re.fullmatch` without any end anchor, but `\\Z` is the minimal, clear fix.",
-          "confidence": 0.9
-        },
-        {
-          "agent": "correctness, security",
-          "file": "requests/utils.py",
-          "line_range": [
-            739,
-            752
-          ],
-          "severity": "major",
-          "title": "Header name (key) is not validated for injection characters",
-          "detail": "The `check_header_validity` function only validates the header *value*; the header *name* is never checked. A header name containing `\\r`, `\\n`, or even a `:` followed by a crafted value (e.g. `'X-Foo: injected\\r\\nEvil'`) would pass through `prepare_headers` entirely unchecked, enabling header injection via the key rather than the value.\n\nRFC 7230 requires header field names to be tokens (printable ASCII, no whitespace, no control characters, no `:`). The function should validate the name with a suitable pattern such as `re.match(r'^[^\\0-\\x1f\\x7f:]+$', name)` (using `\\Z` for the end anchor) and raise `InvalidHeader` if it does not match.",
-          "confidence": 0.88
-        },
-        {
-          "agent": "correctness",
-          "file": "requests/utils.py",
-          "line_range": [
-            747,
-            752
-          ],
-          "severity": "major",
-          "title": "`check_header_validity` raises `TypeError` for non-string, non-bytes header values",
-          "detail": "The function dispatches on `isinstance(value, bytes)` and otherwise calls `pat.match(value)` directly, assuming `value` is a `str`. If a caller passes a non-string, non-bytes value (e.g. an integer `Content-Length`), `pat.match(value)` raises `TypeError` rather than a meaningful `InvalidHeader` exception. The function should coerce the value to `str` (or explicitly reject unsupported types with a clear error) before running the regex.",
-          "confidence": 0.85
+          "title": "Regex validates header values only \u2014 header names are not checked",
+          "detail": "The injection-prevention pattern `pat` is applied only to `val` (the header value) but never to `name` (the header name). An attacker who can supply a crafted header name containing `\\r\\n` \u2014 e.g. `{'foo\\r\\nX-Injected: evil': 'bar'}` \u2014 can still inject arbitrary headers or split the HTTP request. After the `to_native_string` conversion, `name` must also be matched against the pattern, and the exception message should reference whichever of `name`/`val` failed.",
+          "confidence": 0.95
         },
         {
           "agent": "correctness, security",
           "file": "requests/models.py",
           "line_range": [
-            407,
-            413
+            411,
+            416
           ],
-          "severity": "minor",
-          "title": "Headers added after `prepare_headers()` (by `prepare_body`, `prepare_auth`, `prepare_cookies`) bypass the injection check",
-          "detail": "The `check_header_validity` call is placed exclusively in `prepare_headers()`. Several other code paths add headers to `self.headers` after that method returns without any validity check: `prepare_body()` directly sets `Content-Length`, `Transfer-Encoding`, and `Content-Type`; `prepare_content_length()` sets `Content-Length`; `prepare_cookies()` sets the `Cookie` header; and `prepare_auth()` calls an arbitrary auth handler that can set any header. If any of those code paths incorporate attacker-controlled data (e.g. cookie values from a server-controlled redirect or auth credentials), those headers bypass the injection check entirely. For a complete fix, validation should also be applied at serialization time or whenever a header is set on the `CaseInsensitiveDict`.",
-          "confidence": 0.75
+          "severity": "major",
+          "title": "Validation bypassed for headers added after `prepare_headers`",
+          "detail": "The CRLF check only runs inside `prepare_headers`. Headers added later in the request lifecycle \u2014 `Content-Length`/`Transfer-Encoding` set in `prepare_body`, `Cookie` set in `prepare_cookies`, `Authorization`/`Proxy-Authorization` set during `prepare_auth` and redirect proxy rebuilding \u2014 are never validated. Any of those paths that incorporate externally-controlled data (e.g. credentials from a URL, netrc, or proxy environment variables) would bypass sanitisation entirely. The validation should be applied at the point of insertion (e.g. via `CaseInsensitiveDict.__setitem__`) or repeated at each of those sites.",
+          "confidence": 0.88
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            411
+          ],
+          "severity": "major",
+          "title": "Regex `$` anchor permits trailing `\\n` \u2014 use `\\Z` instead",
+          "detail": "Python's `re` module treats `$` as matching just before a trailing `\\n` at the end of the string (even without `re.MULTILINE`). As a result, `re.match(r'^\\S[^\\r\\n]*$', 'foo\\n')` unexpectedly matches because `$` anchors before the trailing `\\n` rather than after it. A header value of `'foo\\n'` will therefore pass validation and not raise `InvalidHeader`. Replace `$` with `\\Z` (absolute end-of-string anchor) to close this bypass.",
+          "confidence": 0.85
         },
         {
           "agent": "test_coverage",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            739,
-            752
+            412,
+            415
+          ],
+          "severity": "major",
+          "title": "No test for invalid header *names* (keys containing `\\r`/`\\n`)",
+          "detail": "The validation loop only checks header values; there is no test exercising a header key/name that contains `\\r`, `\\n`, or leading whitespace. If validation of names is intentionally omitted, this is an untested security boundary; if validation is expected (as the related finding recommends), both the logic and the test are absent.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "correctness, style",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            411
           ],
           "severity": "minor",
-          "title": "No direct unit test for `check_header_validity` in isolation",
-          "detail": "`check_header_validity` is a standalone utility function but is only exercised indirectly through full HTTP requests (requiring `httpbin`) in `test_requests.py`. A direct unit test in `tests/test_utils.py` would be simpler, faster, and free of network dependencies, and would also make it straightforward to cover edge cases like the bytes branch, `None` values, non-string types, and names with injection characters.",
-          "confidence": 0.75
+          "title": "Regex recompiled on every call to `prepare_headers`",
+          "detail": "The pattern is compiled fresh on each invocation of `prepare_headers`. Although Python's `re` module maintains a small internal cache, relying on it is fragile. Consistent with the existing module-level constants in this file (e.g. `DEFAULT_REDIRECT_LIMIT`, `REDIRECT_STATI`), the compiled regex should be hoisted to a module-level constant such as `VALID_HEADER_REGEX = re.compile(r'^\\S[^\\r\\n]*\\Z|^\\Z')`.",
+          "confidence": 0.92
+        },
+        {
+          "agent": "style",
+          "file": "requests/exceptions.py",
+          "line_range": [
+            82,
+            86
+          ],
+          "severity": "minor",
+          "title": "Missing blank line between class definitions and trailing spaces in docstrings",
+          "detail": "The existing style in `exceptions.py` consistently places a blank line between class definitions. The new `InvalidHeader` class is missing the blank line separating it from `InvalidURL` above and `ChunkedEncodingError` below. Additionally, the docstrings on both `InvalidURL` (line 83) and `InvalidHeader` (line 86) contain a trailing space before the closing `\"\"\"`, inconsistent with other one-liner docstrings in the file such as `\"\"\"An HTTP error occurred.\"\"\"`; these trailing spaces should be removed.",
+          "confidence": 0.92
         },
         {
           "agent": "test_coverage",
           "file": "tests/test_requests.py",
           "line_range": [
             1131,
-            1138
+            1168
           ],
           "severity": "minor",
-          "title": "`test_header_validation` asserts only one of the four valid header values",
-          "detail": "`test_header_validation` provides four valid headers (`'foo'`, `'bar'`, `'baz'` (empty string), and `'qux'` (bytes)), but only asserts `r.request.headers['foo']`. The other three are silently unchecked, so a regression that drops or mutates them (e.g. silently converting `b'fbbq'` to the wrong type, or stripping the empty-string header) would go undetected.",
-          "confidence": 0.7
+          "title": "Incomplete test coverage: only one valid header asserted; no multi-header invalid-entry test",
+          "detail": "(1) `test_header_validation` defines `headers_ok` with three entries (`foo`, `bar`, `baz`) but only asserts the value of `foo`. Regressions that incorrectly reject empty-string or single-character values would go undetected. (2) All invalid-header tests pass a single-entry dict; there is no test with a dict where the first header is valid and a later one is invalid, to confirm the loop raises on the offending entry rather than silently skipping it.",
+          "confidence": 0.85
         },
         {
           "agent": "security",
-          "file": "requests/utils.py",
+          "file": "requests/models.py",
           "line_range": [
-            751,
-            752
+            411,
+            411
           ],
           "severity": "minor",
-          "title": "Raw header name interpolated into `InvalidHeader` message enables log injection",
-          "detail": "The error message `\"Invalid return character or leading space in header: %s\" % name` embeds the raw, caller-controlled header name directly. If the name contains control characters or newlines and the exception message is logged or displayed downstream, this enables log injection. The name should be wrapped with `repr()` (i.e. `repr(name)`) to render control characters visibly and safely.",
-          "confidence": 0.6
+          "title": "Regex does not block lone vertical-tab (`\\x0b`) or form-feed (`\\x0c`) characters",
+          "detail": "RFC 7230 forbids any bare control character in header field values. The pattern `[^\\r\\n]` only excludes carriage-return and line-feed; characters such as `\\x0b` (vertical tab) and `\\x0c` (form feed) are also illegal and may be treated as line separators by some server implementations. Consider a broader exclusion such as `[^\\x00-\\x1f\\x7f]` matching the RFC 7230 `field-vchar` production, or at minimum adding `\\x0b\\x0c` to the excluded set.",
+          "confidence": 0.8
+        },
+        {
+          "agent": "correctness",
+          "file": "requests/models.py",
+          "line_range": [
+            413,
+            413
+          ],
+          "severity": "minor",
+          "title": "`to_native_string` on bytes header values may raise `UnicodeDecodeError` instead of `InvalidHeader`",
+          "detail": "The PR now calls `to_native_string(val)` on header values. In Python 3, `to_native_string` calls `.decode('ascii')` on `bytes` inputs. If a header value is `bytes` containing non-ASCII data, this raises a `UnicodeDecodeError` rather than the expected `InvalidHeader`, which is a confusing API regression. Previously the value was left as-is and passed to urllib3 for handling. The error should be caught and re-raised as `InvalidHeader`.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "security",
+          "file": "requests/models.py",
+          "line_range": [
+            415,
+            415
+          ],
+          "severity": "minor",
+          "title": "Error message interpolates raw, unsanitised header name",
+          "detail": "The `InvalidHeader` message at line 415 interpolates the user-supplied `name` directly: `'Invalid return character or leading space in header: %s' % (name)`. If `name` contains CRLF or other control characters (which are not yet validated), the resulting string can corrupt log output or terminal display. Use `repr(name)` (or equivalent) when building the message.",
+          "confidence": 0.75
         },
         {
           "agent": "test_coverage",
           "file": "requests/models.py",
           "line_range": [
             407,
-            413
+            416
           ],
           "severity": "minor",
-          "title": "No test verifies that `prepare_headers(None)` still produces an empty `CaseInsensitiveDict`",
-          "detail": "The refactored `prepare_headers` now unconditionally initialises `self.headers = CaseInsensitiveDict()` before the conditional block. While this should still handle `headers=None` correctly, there is no dedicated test asserting this, so a future refactor could silently break the `None` path.",
+          "title": "No direct unit test for `prepare_headers(None)` / `prepare_headers({})`",
+          "detail": "The refactored `prepare_headers` always initialises `self.headers = CaseInsensitiveDict()` before the `if headers:` branch. All existing tests call `prepare_headers` indirectly via `requests.get(...)` with a non-None dict. A direct unit-level test calling `prepare_headers(None)` and `prepare_headers({})` is missing to confirm the header dict is properly initialised and no exception is raised.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            415
+          ],
+          "severity": "minor",
+          "title": "No test for non-string (e.g. integer) header values passed to `prepare_headers`",
+          "detail": "There is no test covering what happens when a non-string header value such as `{'foo': 123}` is provided. It is unclear whether `to_native_string` handles integers correctly and whether validation still passes or raises an unexpected error. A test case should document the expected behaviour.",
           "confidence": 0.6
         },
         {
@@ -590,94 +682,82 @@
           ],
           "severity": "nit",
           "title": "Missing space after comma in test method signature",
-          "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. All other test methods in the file consistently use `def test_foo(self, httpbin):`.",
+          "detail": "`def test_header_validation(self,httpbin):` is missing a space after the comma. All existing test methods in this file use `def test_foo(self, httpbin):` style.",
           "confidence": 0.99
         },
         {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1163,
-            1163
+            1147,
+            1168
           ],
           "severity": "nit",
-          "title": "`headers_tab` value contains spaces, not a tab character",
-          "detail": "The variable is named `headers_tab` and the comment describes it as \"Test for tab\", but the value `' bar'` is three spaces \u2014 not a tab character (`\\t`). The name is misleading and the test does not actually exercise tab-in-header-value behaviour.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "requests/models.py",
-          "line_range": [
-            30,
-            31
-          ],
-          "severity": "nit",
-          "title": "Trailing whitespace on import line",
-          "detail": "Line 30 ends with a trailing space after the comma in the import list (`to_native_string, `). No other import line in this file has trailing whitespace.",
-          "confidence": 0.95
-        },
-        {
-          "agent": "style",
-          "file": "requests/utils.py",
-          "line_range": [
-            735,
-            753
-          ],
-          "severity": "nit",
-          "title": "Missing two-blank-line separators around `check_header_validity`",
-          "detail": "The project style (and PEP 8) requires two blank lines between top-level definitions. There is only one blank line between `to_native_string` and the comment/regex block that precedes `check_header_validity`, and only one blank line between the end of `check_header_validity` and `urldefragauth`. Both gaps should be two blank lines.",
-          "confidence": 0.92
-        },
-        {
-          "agent": "style",
-          "file": "tests/test_requests.py",
-          "line_range": [
-            1150,
-            1170
-          ],
-          "severity": "nit",
-          "title": "Dead `r =` assignments inside `pytest.raises` blocks",
-          "detail": "Inside `with pytest.raises(InvalidHeader):` blocks, the result of `requests.get(...)` is assigned to `r`, but `r` is never used afterwards. The existing test style (see `test_invalid_url`) simply calls the expression without assignment. These are dead assignments and should be removed.",
-          "confidence": 0.9
+          "title": "Missing space after `#` in inline comments within tests",
+          "detail": "Comments such as `#test for newline`, `#test for line feed`, `#test for carriage return`, `#test for whitespace`, and `#test for tab` are missing the conventional space after `#`. The existing test file uses `# comment` style throughout.",
+          "confidence": 0.99
         },
         {
           "agent": "style",
           "file": "requests/models.py",
           "line_range": [
             409,
-            411
+            409
           ],
           "severity": "nit",
-          "title": "Unpacking loop variable could be done in the `for` statement directly",
-          "detail": "The loop currently reads `for header in headers.items(): ... name, value = header`, which is roundabout. The more idiomatic and concise form is `for name, value in headers.items():`, consistent with how similar loops are written elsewhere in the file.",
-          "confidence": 0.8
+          "title": "Missing space after `#` in inline comment",
+          "detail": "The comment `#Regex checks that string doesn't begin with whitespace...` is missing the conventional space after `#`. All existing comments in this file use the `# comment text` style (e.g. line 38). All new comments in this block should follow the same convention.",
+          "confidence": 0.95
         },
         {
           "agent": "style",
           "file": "tests/test_requests.py",
           "line_range": [
-            1133,
-            1136
+            1149,
+            1169
           ],
           "severity": "nit",
-          "title": "Dict literal formatting inconsistent with surrounding test code",
-          "detail": "The `headers_ok` dict has its opening brace on the same line as the assignment with multiple entries that are not consistently aligned. The surrounding test code uses simpler one-liners or consistently spaced multi-line dicts. Minor style inconsistency worth harmonising.",
-          "confidence": 0.6
+          "title": "Unused variable `r` inside `pytest.raises` blocks",
+          "detail": "Each `with pytest.raises(InvalidHeader):` block assigns the result of `requests.get(...)` to `r`, which is never used. Existing tests in this file omit capturing the return value when it is not needed. The assignments should be dropped.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "style, test_coverage",
+          "file": "tests/test_requests.py",
+          "line_range": [
+            1157,
+            1169
+          ],
+          "severity": "nit",
+          "title": "Tab character not actually tested \u2014 misleading variable name and comment",
+          "detail": "`headers_tab` is assigned `{'foo': '   bar'}` (three spaces) and the comment reads `#test for tab`, but no actual tab character (`\\t`) appears in the test. RFC 7230 treats horizontal tab as obsolete leading whitespace; a test with a real `\\t` leading character is missing. Either add a genuine `\\t` test case or rename the variable/comment to reflect that it tests spaces.",
+          "confidence": 0.88
+        },
+        {
+          "agent": "style",
+          "file": "requests/models.py",
+          "line_range": [
+            411,
+            411
+          ],
+          "severity": "nit",
+          "title": "Non-descriptive variable name `pat` for compiled regex",
+          "detail": "The name `pat` is vague. If the regex is promoted to a module-level constant (see related finding), a descriptive name like `VALID_HEADER_REGEX` is preferable. Even as a local variable, something like `header_val_re` would be more self-documenting and consistent with the naming style of the surrounding code.",
+          "confidence": 0.8
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4702,
-      "tokens_out": 2894,
-      "cost_usd": 0.057516,
-      "duration_s": 50.10733349993825,
+      "tokens_in": 4896,
+      "tokens_out": 3121,
+      "cost_usd": 0.061503,
+      "duration_s": 56.4228641660884,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 108803,
-    "tokens_out": 7384,
-    "cost_usd": 0.437169,
-    "duration_s": 145.0
+    "tokens_in": 111260,
+    "tokens_out": 7759,
+    "cost_usd": 0.450165,
+    "duration_s": 156.5
   }
 }

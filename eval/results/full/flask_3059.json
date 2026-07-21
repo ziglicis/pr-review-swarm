@@ -2,30 +2,40 @@
   "case": "flask_3059",
   "experiment": "full",
   "pr_url": "https://github.com/pallets/flask/pull/3059",
-  "head_sha": "25de45cbb6fc7304f67b685034151f9ac6ea0df5",
+  "head_sha": "0312111d17c151163f8a134490891efb61d0734d",
   "sha_matches_dataset": true,
-  "timestamp": 1784178543,
-  "summary": "This PR adds PathLike (PEP 519) support to Flask's static file helpers (`send_file`, `send_from_directory`) via a compatibility shim in `_compat.py`. The core logic is sound but the polyfill's lenient fallback behaviour diverges from the real `os.fspath()` contract in a way that could mask bugs or, in the `send_from_directory` path, allow unexpected objects to reach filesystem APIs. Several secondary style and test-coverage gaps were also identified. (1 finding(s) below the 0.4 confidence threshold hidden.)",
+  "timestamp": 1784589728,
+  "summary": "This PR adds PathLike (PEP 519) support to Flask's static file helpers (`send_file`, `send_from_directory`, `send_static_file`) via a `fspath` compatibility shim. The implementation works for the happy path but has several correctness and consistency issues: the two main call sites handle PathLike detection asymmetrically, bytes-returning PathLike objects are not safely handled downstream, and a raw PathLike may be passed to user-overridable hooks. Test coverage and changelog hygiene also need attention.",
   "findings": [
     {
-      "agent": "correctness, security, test_coverage",
-      "file": "flask/_compat.py",
-      "line_start": 107,
-      "line_end": 108,
+      "agent": "correctness",
+      "file": "flask/helpers.py",
+      "line_start": 987,
+      "line_end": 988,
       "severity": "major",
-      "title": "Fallback fspath() silently accepts arbitrary non-path objects instead of raising TypeError",
-      "detail": "The PEP 519 / `os.fspath()` specification requires that `TypeError` be raised when the argument is neither `str`, `bytes`, nor an object implementing `__fspath__()`. The polyfill's `else path` branch returns any arbitrary object (integer, dict, custom class, \u2026) unchanged, silently violating this contract.\n\nIn the `send_file` path this is partially guarded by the subsequent `isinstance(filename_or_fp, string_types)` check, but in `send_from_directory` both arguments are passed directly into `safe_join()` and then into `os.path.*` calls without any type guard, so a non-string/non-PathLike object can reach filesystem APIs in an unexpected state.\n\nAdditionally, the fallback is never exercised by the test suite \u2014 all tests run on Python 3 and use the real `os.fspath`; the `else` branch is completely untested.\n\nRecommended fix:\n```python\ndef fspath(path):\n    if isinstance(path, (str, bytes)):\n        return path\n    if hasattr(path, '__fspath__'):\n        return path.__fspath__()\n    raise TypeError('expected str, bytes or os.PathLike, not ' + type(path).__name__)\n```",
-      "confidence": 0.8
+      "title": "`get_send_file_max_age` receives raw PathLike object before `fspath` conversion in `send_static_file`",
+      "detail": "`send_static_file` calls `self.get_send_file_max_age(filename)` before `send_from_directory` has a chance to call `fspath()` on the filename. If a PathLike object is passed, user-defined subclasses of `Flask` that override `get_send_file_max_age` to inspect the filename (e.g., checking the extension via `filename.lower().endswith('.js')`) will receive a PathLike object instead of a string and raise `AttributeError`. The `fspath` conversion should happen in `send_static_file` before the call to `get_send_file_max_age`, or the method's docstring must be updated to explicitly state that the value may be a PathLike object.",
+      "confidence": 0.9
     },
     {
-      "agent": "security",
+      "agent": "test_coverage",
+      "file": "flask/_compat.py",
+      "line_start": 106,
+      "line_end": 125,
+      "severity": "major",
+      "title": "Custom `fspath` fallback has no direct unit tests",
+      "detail": "The custom `fspath` implementation is only exercised indirectly through the public API when `os.fspath` already exists on Python 3; the fallback (ImportError) branch is never explicitly tested. Specifically untested sub-cases: (1) passing a plain `str` or `bytes` directly; (2) an object whose `__fspath__` raises something other than `AttributeError`; (3) an object with no `__fspath__` at all (TypeError path); (4) an object whose `__fspath__()` returns a non-str/bytes value. Direct unit tests for the compat shim would ensure the fallback implementation is correct independently of the OS-provided version.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "correctness, security",
       "file": "flask/helpers.py",
       "line_start": 715,
       "line_end": 716,
       "severity": "major",
-      "title": "Return value of fspath() not validated before safe_join() traversal checks",
-      "detail": "After calling `fspath(filename)` in `send_from_directory`, neither the polyfill nor the call-site asserts that the returned value is actually `str` or `bytes`. A malicious `__fspath__()` implementation could return a string-like object that overrides `__contains__`, `startswith`, or `__eq__`, causing the path-traversal checks inside `safe_join()` (which rely on `filename.startswith('../')`, `sep in filename`, `os.path.isabs(filename)`, etc.) to pass incorrectly, potentially allowing directory traversal.\n\nThe fix is to validate the return type immediately after the `fspath()` call:\n```python\ndirectory = fspath(directory)\nfilename = fspath(filename)\nif not isinstance(filename, (str, bytes)):\n    raise TypeError('filename must be a str or bytes, not %s' % type(filename).__name__)\n```\nNote that fixing the polyfill (see `_compat.py` finding) would also mitigate this for the fallback path, but an explicit post-call check is the safest approach for both the polyfill and real `os.fspath()`.",
-      "confidence": 0.7
+      "title": "Bytes-returning PathLike objects bypass `safe_join` path-traversal checks",
+      "detail": "`fspath()` is called unconditionally on both `directory` and `filename` before passing to `safe_join`. On Python 3, `os.fspath` (and the compat shim) can return `bytes` if the PathLike's `__fspath__` returns `bytes`. `safe_join`'s traversal checks (string comparisons with `../`, `os.path.isabs`, `startswith`, etc.) behave differently or raise `TypeError` on bytes inputs. On Python 3 this typically results in a `TypeError` (no file access), but on Python 2 where `bytes is str`, a bytes path encoding `../` in a non-UTF-8 encoding could slip past the ASCII-only `../` check, potentially allowing path traversal. Additionally, this inconsistency with `send_file`'s guarded approach means a bytes-returning PathLike `directory` is accepted here but would be treated as a file-like object in `send_file`. Fix: after calling `fspath`, explicitly reject or coerce `bytes` results to `text_type`/`str`, or document that bytes PathLike objects are unsupported.",
+      "confidence": 0.8
     },
     {
       "agent": "style",
@@ -33,9 +43,9 @@
       "line_start": 18,
       "line_end": 19,
       "severity": "minor",
-      "title": "Typo in changelog entry: \"as describe\" should be \"as described\"",
-      "detail": "Line 18 reads: \"supports ``PathLike`` objects as describe in\" \u2014 should be \"as described in\". All other entries in the changelog are carefully proofread; this typo should be corrected.",
-      "confidence": 0.98
+      "title": "Changelog entry has typo, missing PR link, and capitalisation inconsistency",
+      "detail": "The new changelog entry reads \"as describe in PEP 0519\" \u2014 should be \"as described in PEP 0519\". Additionally: (1) PEP references in this file are typically hyperlinked with issue/PR cross-reference anchors at the bottom of the section; this entry lacks that. (2) The convention in CHANGES.rst capitalises \"Python 3\" (capital P), not \"python 3\" as written here.",
+      "confidence": 0.95
     },
     {
       "agent": "correctness, security, style",
@@ -43,8 +53,18 @@
       "line_start": 545,
       "line_end": 546,
       "severity": "minor",
-      "title": "Redundant and inconsistent hasattr guard before calling fspath() in send_file",
-      "detail": "Lines 545-546 use `if hasattr(filename_or_fp, '__fspath__'): filename_or_fp = fspath(filename_or_fp)` before the `isinstance(filename_or_fp, string_types)` check. This is redundant \u2014 `fspath()` already performs the `__fspath__` check internally \u2014 and is inconsistent with `send_from_directory` (lines 715-716), which calls `fspath()` unconditionally.\n\nThe guard also means plain `str`/`bytes` values are not passed through `fspath()` (harmless in practice, but needlessly different). On Python 2, a `bytes` path passed to `send_file` would not trigger the `hasattr` guard, potentially causing it to be treated as a file-handle rather than a filename path.\n\nThe simpler and semantically correct approach is to call `fspath()` unconditionally and then perform the `isinstance` check, matching the pattern already used in `send_from_directory`.",
+      "title": "Redundant and inconsistent PathLike detection in `send_file` \u2014 use `fspath` unconditionally",
+      "detail": "The guard `if hasattr(filename_or_fp, '__fspath__')` before calling `fspath()` is redundant and inconsistent with `send_from_directory` (lines 715\u2013716), which calls `fspath()` unconditionally. The `fspath` shim already handles `str`/`bytes` identity and raises `TypeError` for non-path-like objects. Additionally, any object that happens to define `__fspath__` for unrelated reasons will be silently coerced to a path string. If `__fspath__` returns a non-str/bytes value, `fspath()` raises `TypeError` that bubbles up as an unhandled exception instead of a documented `ValueError`/`TypeError`. The recommended fix is: `try: filename_or_fp = fspath(filename_or_fp) except TypeError: pass` \u2014 unconditional, consistent with the polyfill's design and how `send_from_directory` operates. The asymmetry between the two call sites also represents a minor security surface where a file-like object with a spurious `__fspath__` attribute could be unexpectedly treated as a path.",
+      "confidence": 0.85
+    },
+    {
+      "agent": "correctness, security",
+      "file": "flask/_compat.py",
+      "line_start": 102,
+      "line_end": 125,
+      "severity": "minor",
+      "title": "Compat `fspath` shim silently accepts bytes paths that are not safely handled downstream",
+      "detail": "The custom `fspath` shim returns `bytes` paths unchanged (matching CPython's `os.fspath` semantics). However, Flask's downstream code in `send_file` and `send_from_directory` does not guard against bytes results: `safe_join` uses string comparisons, `send_file` checks `isinstance(filename_or_fp, string_types)` where `string_types` on Python 3 is `(str,)` only \u2014 so a bytes path from a PathLike object would be treated as a file-like object rather than a path. On Python 3, most OS-level calls would then raise `TypeError`, but the error paths are not consistently caught. Consider explicitly rejecting bytes results in the Flask helpers (or in the shim for Flask's purposes) and documenting that bytes PathLike objects are unsupported.",
       "confidence": 0.75
     },
     {
@@ -53,9 +73,9 @@
       "line_start": 545,
       "line_end": 546,
       "severity": "minor",
-      "title": "PathLike path in send_file is not tested with as_attachment, x-sendfile, or absolute paths",
-      "detail": "The new PathLike branch in `send_file` is only exercised by `test_send_file_pathlike` via a basic relative-path serving case. Three edge cases are completely untested:\n1. `FakePath` with `as_attachment=True` (exercises Content-Disposition header generation).\n2. `FakePath` with `app.use_x_sendfile = True` (exercises x-sendfile header generation).\n3. `FakePath` wrapping an absolute path (exercises the `os.path.isabs` branch).\n\nAny of these could silently regress without a test failure.",
-      "confidence": 0.72
+      "title": "`send_file` PathLike test only covers relative path; absolute path and flag combinations untested",
+      "detail": "`test_send_file_pathlike` only exercises a relative path through the new `hasattr` branch. The absolute-path sub-branch (`os.path.isabs(filename)` is True) with a PathLike object is not covered. The combinations of PathLike with `as_attachment=True` and `use_x_sendfile=True` are also not tested.",
+      "confidence": 0.75
     },
     {
       "agent": "test_coverage",
@@ -63,9 +83,19 @@
       "line_start": 715,
       "line_end": 716,
       "severity": "minor",
-      "title": "send_from_directory PathLike test only covers both-arguments-as-PathLike; partial combinations untested",
-      "detail": "`test_send_from_directory_pathlike` passes both `directory` and `filename` as `FakePath` objects. There is no test covering the case where only one of the two arguments is a `PathLike` and the other is a plain `str`, leaving partial-PathLike argument combinations untested.",
-      "confidence": 0.6
+      "title": "`send_from_directory`: only both-PathLike case tested; mixed str/PathLike combinations untested",
+      "detail": "`test_send_from_directory_pathlike` only calls `send_from_directory` with both arguments as `FakePath` objects. The cases where `directory` is a PathLike and `filename` is a plain string, or vice versa, are not exercised. Since `fspath()` is applied independently to each argument (lines 715\u2013716), each combination is a distinct code path worth validating.",
+      "confidence": 0.7
+    },
+    {
+      "agent": "test_coverage",
+      "file": "tests/test_helpers.py",
+      "line_start": 706,
+      "line_end": 710,
+      "severity": "minor",
+      "title": "`send_static_file` with PathLike only tested with non-default cache age",
+      "detail": "The `FakePath` test for `app.send_static_file` is placed after `app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600`, so the PathLike path is only exercised with a custom cache age. There is no coverage of `send_static_file` with a PathLike under the default 12-hour cache timeout, which could hide regressions in that configuration.",
+      "confidence": 0.55
     },
     {
       "agent": "style",
@@ -73,29 +103,19 @@
       "line_start": 513,
       "line_end": 514,
       "severity": "nit",
-      "title": "Docstring versionchanged note uses single backtick instead of double backtick for PathLike",
-      "detail": "Line 514: `PathLike` is wrapped in single backticks rather than double backticks. The rest of the docstrings in `helpers.py` consistently use double backticks for code/type names (e.g. ``filename_or_fp``, ``Flask.root_path``). This should be ``PathLike``.",
-      "confidence": 0.92
+      "title": "Docstring uses plain backtick markup instead of RST `:class:` role for `PathLike`",
+      "detail": "The `versionchanged` note uses `` `PathLike` `` (plain interpreted text) while the surrounding docstring consistently uses explicit RST roles (e.g., `:attr:`, `:class:`, `:func:`). For consistency with other version notes in this file, use ``:class:`os.PathLike``` instead.",
+      "confidence": 0.8
     },
     {
       "agent": "style",
       "file": "tests/test_helpers.py",
-      "line_start": 40,
-      "line_end": 40,
+      "line_start": 39,
+      "line_end": 49,
       "severity": "nit",
-      "title": "Docstring backtick grouping wraps 'PathLike object' instead of just 'PathLike'",
-      "detail": "Line 40: The docstring reads `\"Fake object to represent a ``PathLike object``.\"` \u2014 the double backticks wrap both \"PathLike\" and \"object\" together. Conventionally only the type/symbol itself should be wrapped: `\"a ``PathLike`` object\"`.",
-      "confidence": 0.85
-    },
-    {
-      "agent": "style",
-      "file": "flask/_compat.py",
-      "line_start": 107,
-      "line_end": 108,
-      "severity": "nit",
-      "title": "Fallback fspath function body should be expanded to multi-line style per surrounding conventions",
-      "detail": "Line 108 uses a one-liner ternary expression for the entire function body. The rest of `_compat.py` (`reraise`, `implements_to_string`, `with_metaclass`, etc.) uses properly indented multi-line `def` bodies. For consistency and readability this should be expanded into explicit `if/elif/else` branches \u2014 which also dovetails with the recommended fix for the TypeError issue.",
-      "confidence": 0.8
+      "title": "`FakePath` docstring has awkward double-backtick markup",
+      "detail": "The docstring reads ``Fake object to represent a ``PathLike object``.`` \u2014 the inner double-backticks create awkward nested markup. It should be a plain string description, e.g., `\"Fake object to represent a :class:\\`os.PathLike\\` object.\"`",
+      "confidence": 0.7
     }
   ],
   "agent_runs": [
@@ -105,34 +125,58 @@
       "findings": [
         {
           "agent": "correctness",
-          "file": "flask/_compat.py",
-          "line_range": [
-            107,
-            108
-          ],
-          "severity": "major",
-          "title": "Fallback fspath() silently accepts plain strings/bytes instead of raising TypeError",
-          "detail": "The PEP 519 specification for os.fspath() states that it should raise TypeError if the argument is not str, bytes, or an object implementing __fspath__(). The fallback implementation here just returns `path` unchanged for any object without __fspath__(), including objects that are neither str/bytes nor PathLike. This means an invalid argument (e.g., an integer or some arbitrary object) that would raise TypeError with the real os.fspath() will instead be silently passed through. While the downstream code (isinstance(filename_or_fp, string_types)) will still catch it for the send_file path, it changes the documented contract of fspath and may hide bugs in callers that rely on fspath to validate types.",
-          "confidence": 0.7
-        },
-        {
-          "agent": "correctness",
           "file": "flask/helpers.py",
           "line_range": [
             545,
             546
           ],
           "severity": "minor",
-          "title": "Redundant __fspath__ check in send_file \u2014 should just call fspath() directly",
-          "detail": "The code at line 545-546 does `if hasattr(filename_or_fp, '__fspath__'): filename_or_fp = fspath(filename_or_fp)`. However, calling `fspath(filename_or_fp)` unconditionally would be both simpler and more correct: on Python 3.6+, os.fspath() already handles str/bytes/PathLike correctly and returns strings/bytes unchanged. Using the hasattr guard means a plain str or bytes will *not* be normalised through fspath (not a problem in practice since those paths are identical), but the real issue is that the guard duplicates the check that fspath already performs internally, making the code fragile: if another PathLike mechanism is ever used (e.g. one that only has __fspath__ on the class, not the instance), hasattr might return False. The cleaner and semantically equivalent approach is to call `fspath()` unconditionally for the filename path and then check isinstance.",
+          "title": "PathLike detection uses `hasattr` instead of `os.fspath` / duck-typing via the compat shim",
+          "detail": "The check `if hasattr(filename_or_fp, '__fspath__')` is a reasonable guard, but it diverges from the CPython implementation (and the project's own `fspath` shim): a plain `str` or `bytes` also has no `__fspath__` attribute, so they correctly skip this branch. However, a file-like object whose class happens to define `__fspath__` for unrelated reasons would be silently coerced to a path string and then fail the `isinstance(filename_or_fp, string_types)` check only if `__fspath__` returns something other than str/bytes. More critically, this is a redundant double-dispatch: `fspath()` itself already handles the `isinstance(path, (text_type, bytes))` fast-path and raises `TypeError` for non-PathLike objects. The guard could simply be `try: filename_or_fp = fspath(filename_or_fp) except TypeError: pass`, or the existing `fspath` shim could be called unconditionally before the `isinstance` check \u2014 relying on `fspath` raising `TypeError` for non-path file objects. As written, any object that has `__fspath__` but returns a non-str/bytes value causes `fspath()` to raise `TypeError` which bubbles up as an unhandled exception instead of the documented `ValueError`/`TypeError` about missing MIME type. This is a latent correctness issue but matches CPython behaviour, so confidence is moderate.",
+          "confidence": 0.55
+        },
+        {
+          "agent": "correctness",
+          "file": "flask/helpers.py",
+          "line_range": [
+            715,
+            716
+          ],
+          "severity": "major",
+          "title": "`fspath()` called unconditionally on plain strings in `send_from_directory`, breaking Python 2 `str` bytes objects",
+          "detail": "In `send_from_directory`, `fspath(filename)` and `fspath(directory)` are called unconditionally on every argument before passing to `safe_join`. On Python 2, `str` is bytes; the custom `fspath` shim (lines 106-125 of `_compat.py`) treats `bytes` as an identity case (`isinstance(path, (text_type, bytes))`), so plain byte strings are returned unchanged \u2014 that part is fine.\n\nHowever, the real problem is that `fspath` is called unconditionally even when the value is already a plain `str`/`unicode` on both Python 2 and 3. This is harmless for identity but introduces an **asymmetry with `send_file`**: in `send_file` the conversion is guarded by `hasattr(filename_or_fp, '__fspath__')`, while in `send_from_directory` it is always applied. Neither approach is wrong by itself, but the inconsistency means that a bytes-returning `__fspath__` on a PathLike directory will be accepted by `send_from_directory` (bytes path) and then passed to `safe_join` which does string operations (`posixpath.normpath`, `startswith`, etc.) on bytes, likely causing a `TypeError` on Python 3. The test only covers the happy path (str-returning `__fspath__`), so this edge case is untested.",
           "confidence": 0.6
+        },
+        {
+          "agent": "correctness",
+          "file": "flask/helpers.py",
+          "line_range": [
+            987,
+            988
+          ],
+          "severity": "major",
+          "title": "`get_send_file_max_age` receives a raw PathLike object when called from `send_static_file`",
+          "detail": "`send_static_file` calls `self.get_send_file_max_age(filename)` on line 987 *before* `send_from_directory` (line 988) has a chance to call `fspath()` on the filename. If the caller passed a PathLike object (e.g., `FakePath('index.html')`), `get_send_file_max_age` receives the raw PathLike \u2014 not a string. The default implementation just passes it through and the built-in config lookup ignores the value, but any user-defined subclass of `Flask` that overrides `get_send_file_max_age` to inspect the filename (e.g., checking the extension with `filename.lower().endswith('.js')`) will receive a PathLike object instead of a string and will raise `AttributeError`. The fspath conversion should happen in `send_static_file` before `get_send_file_max_age` is called, or the docstring for `get_send_file_max_age` must be updated to note that the value may be PathLike.",
+          "confidence": 0.9
+        },
+        {
+          "agent": "correctness",
+          "file": "flask/_compat.py",
+          "line_range": [
+            102,
+            125
+          ],
+          "severity": "minor",
+          "title": "Fallback `fspath` implementation silently accepts `bytes` paths, which are unsupported on some platforms",
+          "detail": "The custom `fspath` shim returns `bytes` paths unchanged (`isinstance(path, (text_type, bytes)): return path`). On Windows with Python 3, `os.fspath` accepts bytes but many OS-level functions then raise `TypeError`. More importantly, if a PathLike's `__fspath__` returns bytes, the returned value is treated as a valid path string throughout `send_file`/`send_from_directory`, but `string_types` on Python 3 is `(str,)` only, so the `isinstance(filename_or_fp, string_types)` guard in `send_file` will be `False` for a bytes path, causing the object to be treated as a file-like object rather than a path \u2014 silently incorrect behaviour. This matches CPython `os.fspath` semantics but is an unhandled edge case for Flask's own code downstream.",
+          "confidence": 0.7
         }
       ],
-      "tool_calls": 4,
-      "tokens_in": 61972,
-      "tokens_out": 877,
-      "cost_usd": 0.199071,
-      "duration_s": 19.949853708036244,
+      "tool_calls": 3,
+      "tokens_in": 71236,
+      "tokens_out": 1686,
+      "cost_usd": 0.238998,
+      "duration_s": 43.69813566701487,
       "skip_or_error_reason": null
     },
     {
@@ -141,26 +185,14 @@
       "findings": [
         {
           "agent": "security",
-          "file": "flask/_compat.py",
-          "line_range": [
-            107,
-            108
-          ],
-          "severity": "minor",
-          "title": "Polyfill fspath() silently accepts arbitrary non-path objects",
-          "detail": "The Python 2 / pre-3.6 polyfill returns the object unchanged when it has no `__fspath__` attribute (`else path`). This means any arbitrary object (integer, dict, custom class, \u2026) will pass through `fspath()` without raising `TypeError`, contrary to the behaviour of the real `os.fspath()` which explicitly raises `TypeError` for non-path-like, non-string objects. In the `send_file` path this is partially guarded by the `isinstance(filename_or_fp, string_types)` check that follows, but in `send_from_directory` both arguments are passed directly through `fspath()` into `safe_join()` and then `os.path.*` calls without any type guard, so a non-string / non-PathLike object could reach file-system APIs in an unexpected state. The real `os.fspath` raises `TypeError` in this case; the polyfill should be tightened to match:\n\n```python\ndef fspath(path):\n    if isinstance(path, (str, bytes)):\n        return path\n    if hasattr(path, '__fspath__'):\n        return path.__fspath__()\n    raise TypeError('expected str, bytes or os.PathLike, not ' + type(path).__name__)\n```",
-          "confidence": 0.75
-        },
-        {
-          "agent": "security",
           "file": "flask/helpers.py",
           "line_range": [
             545,
             546
           ],
           "severity": "minor",
-          "title": "send_file PathLike detection inconsistent with send_from_directory",
-          "detail": "In `send_file` the PathLike check is done with `hasattr(filename_or_fp, '__fspath__')` before calling `fspath()`, while `send_from_directory` (line 715-716) calls `fspath()` unconditionally for both arguments. These two patterns are inconsistent: if a future caller passes a bytes object (which has no `__fspath__`) to `send_file`, the `hasattr` guard will not fire, but `isinstance(filename_or_fp, string_types)` on Python 2 would pass it through the filename branch (since `string_types` includes `str` which is bytes on Py2). The inconsistency could be exploited to cause `send_file` to treat a bytes path object as a file-handle and try to read from it, or to bypass expected error handling. Both sites should use the same mechanism (the `fspath()` helper unconditionally, relying on it to do the right thing).",
+          "title": "PathLike detection uses hasattr instead of os.fspath / isinstance check",
+          "detail": "The check `if hasattr(filename_or_fp, '__fspath__')` at line 545 in `send_file` allows any object that happens to define `__fspath__` to be treated as a path, including objects that are also file-like (e.g. have both `read` and `__fspath__`). A malicious or confused caller could supply a file-object-like thing whose `__fspath__` returns an arbitrary path string. The more standard approach \u2014 used correctly in `send_from_directory` \u2014 is to just call `fspath()` unconditionally on a try/except TypeError basis, or use `isinstance(filename_or_fp, os.PathLike)` (Python 3.6+). The inconsistency between the two call sites is itself a minor risk surface. Mitigation: replace the `hasattr` guard + conditional `fspath()` call with an unconditional `try: filename_or_fp = fspath(filename_or_fp) except TypeError: pass` pattern, consistent with the polyfill already in `_compat.py`.",
           "confidence": 0.6
         },
         {
@@ -171,16 +203,28 @@
             716
           ],
           "severity": "major",
-          "title": "fspath() applied to user-controlled filename before safe_join() path-traversal check \u2014 return type not validated",
-          "detail": "On Python 2 (or any environment using the polyfill), `fspath(filename)` where `filename` has no `__fspath__` attribute simply returns the object unchanged. If the value returned by `__fspath__()` is not a `str` or `bytes` but some other string-like object that overrides `__contains__` or `startswith`, the traversal checks inside `safe_join()` (lines 675-680 in helpers.py) \u2014 which call `filename.startswith('../')`, check `sep in filename`, and call `os.path.isabs(filename)` \u2014 could silently pass without raising `NotFound`. A malicious `__fspath__` implementation returning such an object would then allow path traversal through `send_from_directory`. The fix is to assert after the `fspath()` call that the returned value is actually `str` or `bytes`, e.g. `if not isinstance(filename, (str, bytes)): raise TypeError(...)`.",
-          "confidence": 0.7
+          "title": "fspath() applied to both directory and filename before safe_join, allowing bytes paths to bypass path-traversal checks",
+          "detail": "At lines 715-716, `fspath()` is called on both `filename` and `directory` before they are passed to `safe_join`. The `fspath` polyfill (and the real `os.fspath`) can return `bytes` when the PathLike object's `__fspath__` returns `bytes`. `safe_join` (lines 651-685) does all its traversal checks against string separators and string prefixes (`os.path.isabs`, `filename.startswith('../')`, `any(sep in filename ...)`). If `filename` is a `bytes` object the string comparisons either throw a TypeError (caught and turned into `BadRequest` downstream, so no file access occurs) or silently pass through \u2014 depending on the Python version. More critically, on Python 2 where `bytes is str`, a bytes path that encodes `../` in a non-UTF-8 encoding could slip past the ASCII `../` prefix check. Consider asserting or coercing to `text_type` / `str` after calling `fspath`, rejecting `bytes` paths explicitly.",
+          "confidence": 0.75
+        },
+        {
+          "agent": "security",
+          "file": "flask/_compat.py",
+          "line_range": [
+            102,
+            125
+          ],
+          "severity": "minor",
+          "title": "Polyfill fspath() accepts bytes paths; callers may not expect or handle bytes safely",
+          "detail": "The polyfill at lines 106-125 correctly mirrors CPython's `os.fspath` and will return `bytes` when the PathLike object's `__fspath__` returns `bytes`. Downstream callers in `helpers.py` do not guard against bytes results: `safe_join` uses `posixpath.join` and string comparisons which behave differently on bytes; `send_file` passes the value to `os.path.isabs`, `os.path.join`, `open()`, etc. On Python 3 most of these will raise `TypeError`, but the error paths are not consistently caught, and in edge cases (Python 2, native bytes filenames) could allow unexpected file access. Recommendation: after calling `fspath`, explicitly reject `bytes` results in the Flask helpers or document that `bytes` PathLike objects are not supported.",
+          "confidence": 0.65
         }
       ],
       "tool_calls": 3,
-      "tokens_in": 51835,
-      "tokens_out": 1221,
-      "cost_usd": 0.17382,
-      "duration_s": 38.78443025005981,
+      "tokens_in": 52906,
+      "tokens_out": 1138,
+      "cost_usd": 0.175788,
+      "duration_s": 31.11259612487629,
       "skip_or_error_reason": null
     },
     {
@@ -195,21 +239,9 @@
             19
           ],
           "severity": "minor",
-          "title": "Typo in changelog entry: \"as describe\" should be \"as described\"",
-          "detail": "Line 18: \"supports ``PathLike`` objects as describe in\" \u2014 should read \"as described in\". The existing changelog entries are carefully proofread; this typo breaks that consistency.",
-          "confidence": 0.98
-        },
-        {
-          "agent": "style",
-          "file": "CHANGES.rst",
-          "line_range": [
-            19,
-            19
-          ],
-          "severity": "nit",
-          "title": "Changelog reference format inconsistency: backtick link style",
-          "detail": "Line 19: The issue reference is written as ``(`#3059`_)`` while ALL other entries in the same section use the same format \u2014 but looking at other entries closely (e.g. `#2935`, `#2994`), those don't append a trailing underscore to the inline reference either in most styles. More importantly, this is consistent with the rest of the file, so this is fine as written. No actual issue here \u2014 disregard.",
-          "confidence": 0.2
+          "title": "Changelog entry has a typo: \"as describe\" should be \"as described\"",
+          "detail": "The new entry reads \"as describe in PEP 0519\" \u2014 it should be \"as described in PEP 0519\". Additionally, looking at other entries in CHANGES.rst, the PEP is normally referenced with a hyperlink (e.g., `` (`#NNNN`_) ``) and cross-reference anchors are added at the bottom of the section. This entry lacks that cross-reference and the issue/PR link. Also, the convention in this file capitalises \"Python 3\" (capital P), not \"python 3\".",
+          "confidence": 0.95
         },
         {
           "agent": "style",
@@ -219,9 +251,9 @@
             546
           ],
           "severity": "minor",
-          "title": "Redundant `hasattr` guard before calling `fspath`",
-          "detail": "Lines 545-546 check `hasattr(filename_or_fp, '__fspath__')` before calling `fspath(filename_or_fp)`. The `fspath` compatibility shim already handles this case gracefully (it returns `path` unchanged if `__fspath__` is absent). The guard is therefore redundant and adds noise. A simpler `filename_or_fp = fspath(filename_or_fp)` would be sufficient and more consistent with how `fspath` is used unconditionally in `send_from_directory` (lines 715-716).",
-          "confidence": 0.9
+          "title": "PathLike detection uses `hasattr` instead of simply calling `fspath`",
+          "detail": "The guard `if hasattr(filename_or_fp, '__fspath__')` before calling `fspath()` is redundant. The `fspath()` shim already handles the case where the object is already a str/bytes (returning it unchanged) and raises `TypeError` for anything that isn't a recognised path type. Calling `fspath(filename_or_fp)` unconditionally \u2014 and then testing `isinstance(filename_or_fp, string_types)` as before \u2014 would be both simpler and more consistent with how `fspath` is used in `send_from_directory` (lines 715\u2013716), where no `hasattr` guard is present. The asymmetry between the two call sites makes the code harder to follow.",
+          "confidence": 0.88
         },
         {
           "agent": "style",
@@ -231,40 +263,28 @@
             514
           ],
           "severity": "nit",
-          "title": "Docstring versionchanged note uses backtick instead of double-backtick for `PathLike`",
-          "detail": "Line 514: ``PathLike`` is wrapped in single backticks (` PathLike `) rather than double backticks (``PathLike``). The rest of the docstrings in helpers.py consistently use double backticks for code/type names (e.g. ``filename_or_fp``, ``Flask.root_path``, etc.).",
-          "confidence": 0.92
+          "title": "Docstring uses backtick-only markup instead of the project's RST role convention",
+          "detail": "The versionchanged note says `` `PathLike` `` (plain backtick = interpreted text), while the surrounding docstring uses explicit RST roles everywhere (e.g., `:attr:`, `:class:`, `:func:`). The existing version notes in this file use ``:class:`os.PathLike``` \u2014 consistent with that style would be ``:class:`os.PathLike```.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "tests/test_helpers.py",
           "line_range": [
-            40,
-            40
+            39,
+            49
           ],
           "severity": "nit",
-          "title": "Docstring says \"a ``PathLike object``\" with mismatched backtick grouping",
-          "detail": "Line 40: The docstring reads `\"Fake object to represent a ``PathLike object``.\"` \u2014 the double backticks wrap both \"PathLike\" and \"object\" together. Conventionally (and as seen elsewhere in the file), only the type/symbol itself would be wrapped: `\"a ``PathLike`` object\"`.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "style",
-          "file": "flask/_compat.py",
-          "line_range": [
-            107,
-            108
-          ],
-          "severity": "nit",
-          "title": "Fallback `fspath` function body should be on its own line per surrounding style",
-          "detail": "Line 108 puts the entire function body on a single line (`return path.__fspath__() if hasattr(path, '__fspath__') else path`). The rest of `_compat.py` uses multi-line `def` bodies (see `reraise`, `implements_to_string`, `with_metaclass`). For consistency, this should be expanded to a proper indented body.",
-          "confidence": 0.8
+          "title": "FakePath docstring says `PathLike object` inside double backticks, creating awkward markup",
+          "detail": "The docstring reads ``Fake object to represent a ``PathLike object``.",
+          "confidence": 0.7
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 7605,
-      "tokens_out": 962,
-      "cost_usd": 0.037245,
-      "duration_s": 19.309658167185262,
+      "tokens_in": 7728,
+      "tokens_out": 713,
+      "cost_usd": 0.033879,
+      "duration_s": 15.750783458119258,
       "skip_or_error_reason": null
     },
     {
@@ -275,37 +295,25 @@
           "agent": "test_coverage",
           "file": "flask/_compat.py",
           "line_range": [
-            107,
-            108
+            106,
+            125
+          ],
+          "severity": "major",
+          "title": "Custom `fspath` fallback has no direct unit tests",
+          "detail": "The custom `fspath` implementation (lines 106-125) is only exercised indirectly when running on Python 3 where `os.fspath` already exists. The fallback branch (ImportError path) is never explicitly tested. Specifically, the following sub-cases in the fallback are not covered by any test:\n- Passing a plain `str` or `bytes` (returns early, line 107-108)\n- An object whose `__fspath__` raises something other than AttributeError (the `raise` re-raise path, lines 114-115)\n- An object with no `__fspath__` at all (TypeError path, lines 116-118)\n- An object whose `__fspath__()` returns a non-str/bytes value (TypeError path, lines 122-124)\nBecause tests only run the `FakePath` happy-path through the public `send_file`/`send_from_directory` APIs, none of these branches in the compat shim are directly validated.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "test_coverage",
+          "file": "flask/helpers.py",
+          "line_range": [
+            545,
+            546
           ],
           "severity": "minor",
-          "title": "Fallback `fspath` implementation (Python 2 path) has no test coverage",
-          "detail": "The `try/except ImportError` block in `_compat.py` defines a fallback `fspath()` for Python 2 (or environments where `os.fspath` is unavailable). The test suite's `FakePath` always exercises the real `os.fspath` (Python 3) path; no test exercises the custom fallback function directly (e.g., by calling `flask._compat.fspath` with a PathLike object or a plain string when the fallback is active). In particular, the `else` branch inside the fallback \u2014 where `path` has no `__fspath__` and is returned as-is \u2014 is never executed by any test.",
+          "title": "`send_file` PathLike branch: only the relative-path sub-path is tested",
+          "detail": "The new `hasattr(filename_or_fp, '__fspath__')` check in `send_file` (lines 545-546) converts the PathLike to a string and then falls through to the existing string handling. The test `test_send_file_pathlike` only exercises a *relative* path. The absolute-path branch (where `os.path.isabs(filename)` is True) with a PathLike object is not covered. Additionally, the combination of a PathLike object with `as_attachment=True` or with `use_x_sendfile=True` is not tested.",
           "confidence": 0.75
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/helpers.py",
-          "line_range": [
-            545,
-            546
-          ],
-          "severity": "minor",
-          "title": "PathLike path in `send_file` with `as_attachment=True` is not tested",
-          "detail": "The new `hasattr(filename_or_fp, '__fspath__')` branch in `send_file` is only tested via `test_send_file_pathlike`, which verifies basic serving. No test exercises a `FakePath` object passed to `send_file` with `as_attachment=True`, which exercises a different code path (Content-Disposition header generation). This edge case could silently break.",
-          "confidence": 0.72
-        },
-        {
-          "agent": "test_coverage",
-          "file": "flask/helpers.py",
-          "line_range": [
-            545,
-            546
-          ],
-          "severity": "minor",
-          "title": "PathLike path in `send_file` with x-sendfile enabled is not tested",
-          "detail": "There is no test that passes a `FakePath` object to `send_file` while `app.use_x_sendfile = True` is set. The existing x-sendfile tests only use plain string filenames, so the interaction of the new PathLike conversion with the x-sendfile header is untested.",
-          "confidence": 0.7
         },
         {
           "agent": "test_coverage",
@@ -315,28 +323,28 @@
             716
           ],
           "severity": "minor",
-          "title": "`send_from_directory` with only one PathLike argument (directory OR filename, not both) is untested",
-          "detail": "`test_send_from_directory_pathlike` passes both `directory` and `filename` as `FakePath` objects simultaneously. There is no test covering the case where only one of the two arguments is a `PathLike` object and the other is a plain string, leaving partial-PathLike combinations untested.",
-          "confidence": 0.6
+          "title": "`send_from_directory`: only both-PathLike case is tested; mixed str/PathLike cases are not",
+          "detail": "`test_send_from_directory_pathlike` (test line 737-743) only calls `send_from_directory` with *both* arguments as `FakePath` objects. The cases where `directory` is a PathLike and `filename` is a plain string, or vice versa, are not exercised. The `fspath()` calls on lines 715-716 are independently applied to each argument, so each combination represents a distinct code path.",
+          "confidence": 0.7
         },
         {
           "agent": "test_coverage",
-          "file": "flask/helpers.py",
+          "file": "tests/test_helpers.py",
           "line_range": [
-            545,
-            546
+            706,
+            710
           ],
-          "severity": "nit",
-          "title": "PathLike support in `send_file` is not tested with an absolute path",
-          "detail": "The existing `test_send_file_pathlike` uses a relative path (`'static/index.html'`). No test covers passing a `FakePath` wrapping an absolute path, which exercises a different branch inside `send_file` (`os.path.isabs` check at the subsequent `isinstance` block).",
-          "confidence": 0.65
+          "severity": "minor",
+          "title": "`send_static_file` with PathLike only tested after setting custom `SEND_FILE_MAX_AGE_DEFAULT`",
+          "detail": "The `FakePath` test for `app.send_static_file` (lines 706-710) is placed after `app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600`, meaning the PathLike path is only exercised with the non-default cache age. There is no coverage of `send_static_file` with a PathLike under the default 12-hour cache timeout, which could hide regressions in that specific configuration.",
+          "confidence": 0.55
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 14915,
-      "tokens_out": 837,
-      "cost_usd": 0.0573,
-      "duration_s": 15.594283957965672,
+      "tokens_in": 15092,
+      "tokens_out": 892,
+      "cost_usd": 0.058656,
+      "duration_s": 17.539126333082095,
       "skip_or_error_reason": null
     },
     {
@@ -344,28 +352,40 @@
       "status": "ok",
       "findings": [
         {
-          "agent": "correctness, security, test_coverage",
-          "file": "flask/_compat.py",
+          "agent": "correctness",
+          "file": "flask/helpers.py",
           "line_range": [
-            107,
-            108
+            987,
+            988
           ],
           "severity": "major",
-          "title": "Fallback fspath() silently accepts arbitrary non-path objects instead of raising TypeError",
-          "detail": "The PEP 519 / `os.fspath()` specification requires that `TypeError` be raised when the argument is neither `str`, `bytes`, nor an object implementing `__fspath__()`. The polyfill's `else path` branch returns any arbitrary object (integer, dict, custom class, \u2026) unchanged, silently violating this contract.\n\nIn the `send_file` path this is partially guarded by the subsequent `isinstance(filename_or_fp, string_types)` check, but in `send_from_directory` both arguments are passed directly into `safe_join()` and then into `os.path.*` calls without any type guard, so a non-string/non-PathLike object can reach filesystem APIs in an unexpected state.\n\nAdditionally, the fallback is never exercised by the test suite \u2014 all tests run on Python 3 and use the real `os.fspath`; the `else` branch is completely untested.\n\nRecommended fix:\n```python\ndef fspath(path):\n    if isinstance(path, (str, bytes)):\n        return path\n    if hasattr(path, '__fspath__'):\n        return path.__fspath__()\n    raise TypeError('expected str, bytes or os.PathLike, not ' + type(path).__name__)\n```",
-          "confidence": 0.8
+          "title": "`get_send_file_max_age` receives raw PathLike object before `fspath` conversion in `send_static_file`",
+          "detail": "`send_static_file` calls `self.get_send_file_max_age(filename)` before `send_from_directory` has a chance to call `fspath()` on the filename. If a PathLike object is passed, user-defined subclasses of `Flask` that override `get_send_file_max_age` to inspect the filename (e.g., checking the extension via `filename.lower().endswith('.js')`) will receive a PathLike object instead of a string and raise `AttributeError`. The `fspath` conversion should happen in `send_static_file` before the call to `get_send_file_max_age`, or the method's docstring must be updated to explicitly state that the value may be a PathLike object.",
+          "confidence": 0.9
         },
         {
-          "agent": "security",
+          "agent": "test_coverage",
+          "file": "flask/_compat.py",
+          "line_range": [
+            106,
+            125
+          ],
+          "severity": "major",
+          "title": "Custom `fspath` fallback has no direct unit tests",
+          "detail": "The custom `fspath` implementation is only exercised indirectly through the public API when `os.fspath` already exists on Python 3; the fallback (ImportError) branch is never explicitly tested. Specifically untested sub-cases: (1) passing a plain `str` or `bytes` directly; (2) an object whose `__fspath__` raises something other than `AttributeError`; (3) an object with no `__fspath__` at all (TypeError path); (4) an object whose `__fspath__()` returns a non-str/bytes value. Direct unit tests for the compat shim would ensure the fallback implementation is correct independently of the OS-provided version.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness, security",
           "file": "flask/helpers.py",
           "line_range": [
             715,
             716
           ],
           "severity": "major",
-          "title": "Return value of fspath() not validated before safe_join() traversal checks",
-          "detail": "After calling `fspath(filename)` in `send_from_directory`, neither the polyfill nor the call-site asserts that the returned value is actually `str` or `bytes`. A malicious `__fspath__()` implementation could return a string-like object that overrides `__contains__`, `startswith`, or `__eq__`, causing the path-traversal checks inside `safe_join()` (which rely on `filename.startswith('../')`, `sep in filename`, `os.path.isabs(filename)`, etc.) to pass incorrectly, potentially allowing directory traversal.\n\nThe fix is to validate the return type immediately after the `fspath()` call:\n```python\ndirectory = fspath(directory)\nfilename = fspath(filename)\nif not isinstance(filename, (str, bytes)):\n    raise TypeError('filename must be a str or bytes, not %s' % type(filename).__name__)\n```\nNote that fixing the polyfill (see `_compat.py` finding) would also mitigate this for the fallback path, but an explicit post-call check is the safest approach for both the polyfill and real `os.fspath()`.",
-          "confidence": 0.7
+          "title": "Bytes-returning PathLike objects bypass `safe_join` path-traversal checks",
+          "detail": "`fspath()` is called unconditionally on both `directory` and `filename` before passing to `safe_join`. On Python 3, `os.fspath` (and the compat shim) can return `bytes` if the PathLike's `__fspath__` returns `bytes`. `safe_join`'s traversal checks (string comparisons with `../`, `os.path.isabs`, `startswith`, etc.) behave differently or raise `TypeError` on bytes inputs. On Python 3 this typically results in a `TypeError` (no file access), but on Python 2 where `bytes is str`, a bytes path encoding `../` in a non-UTF-8 encoding could slip past the ASCII-only `../` check, potentially allowing path traversal. Additionally, this inconsistency with `send_file`'s guarded approach means a bytes-returning PathLike `directory` is accepted here but would be treated as a file-like object in `send_file`. Fix: after calling `fspath`, explicitly reject or coerce `bytes` results to `text_type`/`str`, or document that bytes PathLike objects are unsupported.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
@@ -375,9 +395,9 @@
             19
           ],
           "severity": "minor",
-          "title": "Typo in changelog entry: \"as describe\" should be \"as described\"",
-          "detail": "Line 18 reads: \"supports ``PathLike`` objects as describe in\" \u2014 should be \"as described in\". All other entries in the changelog are carefully proofread; this typo should be corrected.",
-          "confidence": 0.98
+          "title": "Changelog entry has typo, missing PR link, and capitalisation inconsistency",
+          "detail": "The new changelog entry reads \"as describe in PEP 0519\" \u2014 should be \"as described in PEP 0519\". Additionally: (1) PEP references in this file are typically hyperlinked with issue/PR cross-reference anchors at the bottom of the section; this entry lacks that. (2) The convention in CHANGES.rst capitalises \"Python 3\" (capital P), not \"python 3\" as written here.",
+          "confidence": 0.95
         },
         {
           "agent": "correctness, security, style",
@@ -387,8 +407,20 @@
             546
           ],
           "severity": "minor",
-          "title": "Redundant and inconsistent hasattr guard before calling fspath() in send_file",
-          "detail": "Lines 545-546 use `if hasattr(filename_or_fp, '__fspath__'): filename_or_fp = fspath(filename_or_fp)` before the `isinstance(filename_or_fp, string_types)` check. This is redundant \u2014 `fspath()` already performs the `__fspath__` check internally \u2014 and is inconsistent with `send_from_directory` (lines 715-716), which calls `fspath()` unconditionally.\n\nThe guard also means plain `str`/`bytes` values are not passed through `fspath()` (harmless in practice, but needlessly different). On Python 2, a `bytes` path passed to `send_file` would not trigger the `hasattr` guard, potentially causing it to be treated as a file-handle rather than a filename path.\n\nThe simpler and semantically correct approach is to call `fspath()` unconditionally and then perform the `isinstance` check, matching the pattern already used in `send_from_directory`.",
+          "title": "Redundant and inconsistent PathLike detection in `send_file` \u2014 use `fspath` unconditionally",
+          "detail": "The guard `if hasattr(filename_or_fp, '__fspath__')` before calling `fspath()` is redundant and inconsistent with `send_from_directory` (lines 715\u2013716), which calls `fspath()` unconditionally. The `fspath` shim already handles `str`/`bytes` identity and raises `TypeError` for non-path-like objects. Additionally, any object that happens to define `__fspath__` for unrelated reasons will be silently coerced to a path string. If `__fspath__` returns a non-str/bytes value, `fspath()` raises `TypeError` that bubbles up as an unhandled exception instead of a documented `ValueError`/`TypeError`. The recommended fix is: `try: filename_or_fp = fspath(filename_or_fp) except TypeError: pass` \u2014 unconditional, consistent with the polyfill's design and how `send_from_directory` operates. The asymmetry between the two call sites also represents a minor security surface where a file-like object with a spurious `__fspath__` attribute could be unexpectedly treated as a path.",
+          "confidence": 0.85
+        },
+        {
+          "agent": "correctness, security",
+          "file": "flask/_compat.py",
+          "line_range": [
+            102,
+            125
+          ],
+          "severity": "minor",
+          "title": "Compat `fspath` shim silently accepts bytes paths that are not safely handled downstream",
+          "detail": "The custom `fspath` shim returns `bytes` paths unchanged (matching CPython's `os.fspath` semantics). However, Flask's downstream code in `send_file` and `send_from_directory` does not guard against bytes results: `safe_join` uses string comparisons, `send_file` checks `isinstance(filename_or_fp, string_types)` where `string_types` on Python 3 is `(str,)` only \u2014 so a bytes path from a PathLike object would be treated as a file-like object rather than a path. On Python 3, most OS-level calls would then raise `TypeError`, but the error paths are not consistently caught. Consider explicitly rejecting bytes results in the Flask helpers (or in the shim for Flask's purposes) and documenting that bytes PathLike objects are unsupported.",
           "confidence": 0.75
         },
         {
@@ -399,9 +431,9 @@
             546
           ],
           "severity": "minor",
-          "title": "PathLike path in send_file is not tested with as_attachment, x-sendfile, or absolute paths",
-          "detail": "The new PathLike branch in `send_file` is only exercised by `test_send_file_pathlike` via a basic relative-path serving case. Three edge cases are completely untested:\n1. `FakePath` with `as_attachment=True` (exercises Content-Disposition header generation).\n2. `FakePath` with `app.use_x_sendfile = True` (exercises x-sendfile header generation).\n3. `FakePath` wrapping an absolute path (exercises the `os.path.isabs` branch).\n\nAny of these could silently regress without a test failure.",
-          "confidence": 0.72
+          "title": "`send_file` PathLike test only covers relative path; absolute path and flag combinations untested",
+          "detail": "`test_send_file_pathlike` only exercises a relative path through the new `hasattr` branch. The absolute-path sub-branch (`os.path.isabs(filename)` is True) with a PathLike object is not covered. The combinations of PathLike with `as_attachment=True` and `use_x_sendfile=True` are also not tested.",
+          "confidence": 0.75
         },
         {
           "agent": "test_coverage",
@@ -411,9 +443,21 @@
             716
           ],
           "severity": "minor",
-          "title": "send_from_directory PathLike test only covers both-arguments-as-PathLike; partial combinations untested",
-          "detail": "`test_send_from_directory_pathlike` passes both `directory` and `filename` as `FakePath` objects. There is no test covering the case where only one of the two arguments is a `PathLike` and the other is a plain `str`, leaving partial-PathLike argument combinations untested.",
-          "confidence": 0.6
+          "title": "`send_from_directory`: only both-PathLike case tested; mixed str/PathLike combinations untested",
+          "detail": "`test_send_from_directory_pathlike` only calls `send_from_directory` with both arguments as `FakePath` objects. The cases where `directory` is a PathLike and `filename` is a plain string, or vice versa, are not exercised. Since `fspath()` is applied independently to each argument (lines 715\u2013716), each combination is a distinct code path worth validating.",
+          "confidence": 0.7
+        },
+        {
+          "agent": "test_coverage",
+          "file": "tests/test_helpers.py",
+          "line_range": [
+            706,
+            710
+          ],
+          "severity": "minor",
+          "title": "`send_static_file` with PathLike only tested with non-default cache age",
+          "detail": "The `FakePath` test for `app.send_static_file` is placed after `app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600`, so the PathLike path is only exercised with a custom cache age. There is no coverage of `send_static_file` with a PathLike under the default 12-hour cache timeout, which could hide regressions in that configuration.",
+          "confidence": 0.55
         },
         {
           "agent": "style",
@@ -423,47 +467,35 @@
             514
           ],
           "severity": "nit",
-          "title": "Docstring versionchanged note uses single backtick instead of double backtick for PathLike",
-          "detail": "Line 514: `PathLike` is wrapped in single backticks rather than double backticks. The rest of the docstrings in `helpers.py` consistently use double backticks for code/type names (e.g. ``filename_or_fp``, ``Flask.root_path``). This should be ``PathLike``.",
-          "confidence": 0.92
+          "title": "Docstring uses plain backtick markup instead of RST `:class:` role for `PathLike`",
+          "detail": "The `versionchanged` note uses `` `PathLike` `` (plain interpreted text) while the surrounding docstring consistently uses explicit RST roles (e.g., `:attr:`, `:class:`, `:func:`). For consistency with other version notes in this file, use ``:class:`os.PathLike``` instead.",
+          "confidence": 0.8
         },
         {
           "agent": "style",
           "file": "tests/test_helpers.py",
           "line_range": [
-            40,
-            40
+            39,
+            49
           ],
           "severity": "nit",
-          "title": "Docstring backtick grouping wraps 'PathLike object' instead of just 'PathLike'",
-          "detail": "Line 40: The docstring reads `\"Fake object to represent a ``PathLike object``.\"` \u2014 the double backticks wrap both \"PathLike\" and \"object\" together. Conventionally only the type/symbol itself should be wrapped: `\"a ``PathLike`` object\"`.",
-          "confidence": 0.85
-        },
-        {
-          "agent": "style",
-          "file": "flask/_compat.py",
-          "line_range": [
-            107,
-            108
-          ],
-          "severity": "nit",
-          "title": "Fallback fspath function body should be expanded to multi-line style per surrounding conventions",
-          "detail": "Line 108 uses a one-liner ternary expression for the entire function body. The rest of `_compat.py` (`reraise`, `implements_to_string`, `with_metaclass`, etc.) uses properly indented multi-line `def` bodies. For consistency and readability this should be expanded into explicit `if/elif/else` branches \u2014 which also dovetails with the recommended fix for the TypeError issue.",
-          "confidence": 0.8
+          "title": "`FakePath` docstring has awkward double-backtick markup",
+          "detail": "The docstring reads ``Fake object to represent a ``PathLike object``.`` \u2014 the inner double-backticks create awkward nested markup. It should be a plain string description, e.g., `\"Fake object to represent a :class:\\`os.PathLike\\` object.\"`",
+          "confidence": 0.7
         }
       ],
       "tool_calls": 0,
-      "tokens_in": 4070,
-      "tokens_out": 2263,
-      "cost_usd": 0.046155,
-      "duration_s": 40.23750687483698,
+      "tokens_in": 4741,
+      "tokens_out": 2685,
+      "cost_usd": 0.054498,
+      "duration_s": 45.184937624959275,
       "skip_or_error_reason": null
     }
   ],
   "totals": {
-    "tokens_in": 140397,
-    "tokens_out": 6160,
-    "cost_usd": 0.513591,
-    "duration_s": 133.9
+    "tokens_in": 151703,
+    "tokens_out": 7114,
+    "cost_usd": 0.561819,
+    "duration_s": 153.3
   }
 }

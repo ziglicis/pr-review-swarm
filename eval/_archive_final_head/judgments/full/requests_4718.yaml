@@ -1,0 +1,87 @@
+case: requests_4718
+experiment: full
+ground_truth_matches:
+- ground_truth: g1
+  issue: Comparing scheme+host alone would strip the Authorization header on http->https upgrade
+    redirects too; browsers keep credentials on secure upgrades, so stripping there breaks a common
+    legitimate pattern and the logic must special-case the upgrade.
+  matched_finding: null
+  note: fixed during review — the http→https standard-port exemption is at the reviewed head (discussion_r199569417)
+  matchable: false
+- ground_truth: g2
+  issue: 'The origin comparison must normalize implicit vs explicit ports: urlparse returns port
+    None for implicit defaults, so http://example.com:80 -> https://example.com must be treated the
+    same as http://example.com -> https://example.com.'
+  matched_finding: 0
+  note: the reviewer's port-normalization concern was only fixed inside the upgrade branch; the standard
+    case still treats :80 vs implicit as different origins and strips auth on a same-origin redirect
+    — this residual is live at the head (and survives in requests to this day); finding 0 flags it
+    precisely
+  matchable: true
+- ground_truth: g3
+  issue: The redirect-stripping logic grew complex enough that it should be extracted into its own
+    dedicated method rather than living inline.
+  matched_finding: null
+  note: fixed during review — logic extracted into should_strip_auth (discussion_r209668067)
+  matchable: false
+- ground_truth: g4
+  issue: Tests should explicitly assert the Authorization header is absent from the redirected request
+    (and verify it was not sent on the wire), not just check a falsey value.
+  matched_finding: null
+  note: fixed during review — the test asserts 'Authorization' not in headers (discussion_r198935315)
+  matchable: false
+finding_validity:
+- finding: 0
+  title: Port comparison treats explicit default port as different from implicit default port
+  valid: true
+  note: 'verified: 80 != None strips on a same-origin redirect; the residual of g2 — over-stripping
+    (safe direction) but a real correctness gap'
+- finding: 1
+  title: test_should_strip_auth_port_change changes scheme AND port — no pure port-change test exists
+  valid: true
+  note: 'factual: 1234→4321 with a scheme change never isolates the port clause; no same-scheme port-change
+    test exists'
+- finding: 2
+  title: No integration test for auth stripping on http→https redirect with non-standard ports
+  valid: uncertain
+  note: the wiring is exercised by the downgrade integration test; a non-standard-port variation
+    adds little
+- finding: 3
+  title: No test for http→https upgrade with both explicit standard ports (http:80 → https:443)
+  valid: true
+  note: 'factual: no test uses explicit standard ports on both sides simultaneously'
+- finding: 4
+  title: No guard against relative or malformed URLs reaching should_strip_auth
+  valid: false
+  note: 'unreachable: resolve_redirects resolves Location to an absolute URL before rebuild_auth
+    runs'
+- finding: 5
+  title: No test for rebuild_auth short-circuit when Authorization header is absent
+  valid: uncertain
+  note: dedicated-test ask; the short-circuit is exercised implicitly by every unauthenticated redirect
+    test
+- finding: 6
+  title: No test for should_strip_auth when one hostname is None (malformed URL edge case)
+  valid: uncertain
+  note: edge shares the unreachable premise of finding 4; marginal
+- finding: 7
+  title: Docstring missing trailing period
+  valid: true
+  note: factual, trivial
+- finding: 8
+  title: Tests instantiate full Session rather than SessionRedirectMixin
+  valid: false
+  note: testing through Session() is the realistic and conventional choice; requests' own tests do
+    this
+- finding: 9
+  title: http→https exemption logic is correct but asymmetry is worth documenting
+  valid: false
+  note: the in-code comment already documents the exemption's rationale; self-described as correct
+- finding: 10
+  title: Variable naming inconsistent with pre-existing conventions in the file
+  valid: false
+  note: the old names were deleted by this PR — no remaining inconsistency to align with
+- finding: 11
+  title: IDN / Unicode hostname normalization not performed before comparison
+  valid: false
+  note: both URLs are already IDNA-encoded by prepare_url before rebuild_auth compares them
