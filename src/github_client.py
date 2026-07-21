@@ -62,25 +62,45 @@ class GitHubClient:
             self._cache[key] = resp.text
         return self._cache[key]
 
-    async def fetch_pr(self, url: str) -> PRData:
-        """Fetch metadata + unified diff for a PR. Raises PRTooLargeError over the size cap."""
+    async def fetch_pr(self, url: str, ref: str | None = None) -> PRData:
+        """Fetch metadata + unified diff for a PR. Raises PRTooLargeError over the size cap.
+
+        With `ref` set, the diff is taken at that commit (base...ref) rather than
+        the PR's final head — used by the eval harness to review the code state the
+        reviewers actually saw, before their feedback was applied. `ref` may be a
+        commit that was later force-pushed away; GitHub keeps review-referenced
+        commits fetchable.
+        """
         owner, repo, number = parse_pr_url(url)
         path = f"/repos/{owner}/{repo}/pulls/{number}"
         meta = json.loads(await self._get(path, "application/vnd.github+json"))
-        changed_lines = meta["additions"] + meta["deletions"]
+        if ref is None:
+            head_sha = meta["head"]["sha"]
+            changed_lines = meta["additions"] + meta["deletions"]
+            diff = await self._get(path, "application/vnd.github.diff")
+        else:
+            head_sha = ref
+            base_sha = meta["base"]["sha"]
+            diff = await self._get(
+                f"/repos/{owner}/{repo}/compare/{base_sha}...{ref}",
+                "application/vnd.github.diff",
+            )
+            changed_lines = sum(
+                1 for ln in diff.splitlines()
+                if ln[:1] in ("+", "-") and not ln.startswith(("+++", "---"))
+            )
         if changed_lines > MAX_CHANGED_LINES:
             raise PRTooLargeError(
                 f"PR changes {changed_lines} lines; the cap is {MAX_CHANGED_LINES}. "
                 "Large PRs are out of scope by design."
             )
-        diff = await self._get(path, "application/vnd.github.diff")
         return PRData(
             owner=owner,
             repo=repo,
             number=number,
             title=meta["title"],
             body=meta.get("body"),
-            head_sha=meta["head"]["sha"],
+            head_sha=head_sha,
             changed_lines=changed_lines,
             diff=diff,
         )
