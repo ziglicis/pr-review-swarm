@@ -172,19 +172,27 @@ async def run_with_tools(
                     break  # -> status "error" with the validation reason
                 validation_retries += 1
                 must_report = True
+                # Answer EVERY tool_use in the turn, not just report_findings: in
+                # auto mode the model can emit report_findings alongside an
+                # investigation call, and a tool_result is required for each id or
+                # the next request 400s. Co-occurring calls get a stub (we're about
+                # to force a re-report anyway).
                 messages += [
                     {"role": "assistant", "content": resp.content},
                     {
                         "role": "user",
                         "content": [{
                             "type": "tool_result",
-                            "tool_use_id": report.id,
+                            "tool_use_id": tu.id,
                             "content": (
                                 f"Validation failed: {reason}. "
                                 "Call report_findings again with corrected findings."
+                                if tu.id == report.id else
+                                "Ignored — call report_findings now with your "
+                                "complete findings."
                             ),
                             "is_error": True,
-                        }],
+                        } for tu in tool_uses],
                     },
                 ]
                 continue

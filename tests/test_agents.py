@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.agents.base import validate_findings, run_single_pass
+from src.agents.base import validate_findings, run_single_pass, run_with_tools
 from src.agents.correctness import build_context
 from src.diff_parser import parse_diff
 from src.github_client import PRData
@@ -110,6 +110,47 @@ async def test_truncated_tool_input_retries_not_crashes():
     assert run.status == "ok"
     assert len(client.calls) == 2
     assert "truncated" in client.calls[1]["messages"][-1]["content"][0]["content"]
+
+
+async def test_report_alongside_investigation_call_answers_all_tool_uses():
+    # Auto-mode turn returns an investigation call AND report_findings together,
+    # and the report fails validation. The retry must emit a tool_result for BOTH
+    # tool_use ids, or the next request 400s (the flask_2570 baseline crash).
+    bad = {**GOOD, "severity": "blocker"}
+    turns = [
+        [  # co-occurring investigation + invalid report
+            SimpleNamespace(type="tool_use", name="read_file", id="inv_1",
+                            input={"path": "src/app.py"}),
+            SimpleNamespace(type="tool_use", name="report_findings", id="rep_1",
+                            input={"findings": [bad]}),
+        ],
+        [SimpleNamespace(type="tool_use", name="report_findings", id="rep_2",
+                         input={"findings": [GOOD]})],
+    ]
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=turns.pop(0),
+                               usage=SimpleNamespace(input_tokens=10, output_tokens=10))
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+
+    class FakeExecutor:
+        async def execute(self, name, inp):
+            return ("file contents", False)
+
+    run = await run_with_tools(
+        "correctness", "sys", "ctx", VALID_FILES,
+        executor=FakeExecutor(),
+        investigation_tools=[{"name": "read_file"}],
+        client=client,
+    )
+    assert run.status == "ok"
+    assert len(calls) == 2
+    # every tool_use id from the first turn is answered in the retry user message
+    answered = {tr["tool_use_id"] for tr in calls[1]["messages"][-1]["content"]}
+    assert answered == {"inv_1", "rep_1"}
 
 
 async def test_api_exception_recorded_not_raised():
